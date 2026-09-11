@@ -1,0 +1,446 @@
+import { V86 } from "../../build/libv86.mjs";
+import { setupDisk } from "./disk-ui.js";
+
+const $ = id => document.getElementById(id);
+const media = { cdrom: null, fda: null, fdb: null };
+let emulator, diskName = "windows98.img", busy = false, muted = false;
+let fatal = false, diskBlocked = false;
+let diskController, encryptedSession = false;
+
+function status(message, error = false)
+{
+    const target = $("session").hidden ? $("welcome-status") : $("session-status");
+    target.textContent = message;
+    target.classList.toggle("error", error);
+}
+
+function syncMediaNames()
+{
+    for(const drive of Object.keys(media))
+    {
+        const present = drive === "cdrom" ? emulator.v86.cpu.devices.cdrom.has_disk() : emulator["get_disk_" + drive]();
+        if(!present) media[drive] = null;
+        else if(!media[drive]) media[drive] = drive === "cdrom" ? "CD from saved state" : "Floppy from saved state";
+    }
+}
+
+function updateControls()
+{
+    document.querySelectorAll("button, input, select").forEach(element => element.disabled = busy);
+    diskController?.syncControls(busy);
+    for(const id of ["download-disk", "save-state", "load-state"]) $(id).disabled = busy || encryptedSession;
+    if(!emulator) return;
+    $("pause").textContent = emulator.is_running() ? "Pause" : "Resume";
+    $("mute").textContent = muted ? "Unmute" : "Mute";
+    $("mouse").textContent = document.pointerLockElement ? "Release mouse" : "Capture mouse";
+    for(const drive of Object.keys(media))
+    {
+        $(drive + "-name").textContent = media[drive] || "Empty";
+        $(drive + "-name").title = media[drive] || "Empty";
+        $("eject-" + drive).disabled = busy || !media[drive];
+        if(drive !== "cdrom") $("download-" + drive).disabled = busy || !media[drive];
+    }
+    if(fatal || diskBlocked) document.querySelectorAll("#controls button").forEach(button => button.disabled = true);
+}
+
+async function action(message, work)
+{
+    if(busy || fatal || diskBlocked) return;
+    busy = true;
+    updateControls();
+    status(message);
+    try { await work(); }
+    catch(error) { status(message.replace(/…$/, "") + ": " + (error.message || error), true); }
+    finally { busy = false; updateControls(); if(emulator && !fatal) focusScreen(); }
+}
+
+// Keep a strong DOM reference while the native panel is open, including in WebKit.
+function pickFiles(multiple = false)
+{
+    return new Promise((resolve, reject) => {
+        const input = document.createElement("input");
+        input.type = "file";
+        input.multiple = multiple;
+        input.hidden = true;
+        document.body.append(input);
+        const finish = files => { input.remove(); resolve(files); };
+        input.onchange = () => finish(Array.from(input.files));
+        input.oncancel = () => finish([]);
+        try { input.click(); }
+        catch(error) { input.remove(); reject(error); }
+    });
+}
+
+async function readDisk(file, drive)
+{
+    if(!file?.size) throw new Error("The file is empty. Choose a disk image.");
+    const alignment = drive === "cdrom" ? 2048 : 512;
+    if(file.size % alignment) throw new Error("The image size is invalid for this drive.");
+    if(drive === "fda" || drive === "fdb")
+    {
+        if(![160, 180, 200, 320, 360, 400, 410, 420, 640, 720, 800, 820, 830, 880, 1040, 1120, 1200, 1440, 1476, 1494, 1600, 1680, 1722, 1743, 1760, 1840, 1920, 2880, 3120, 3200, 3520, 3840].includes(file.size / 1024))
+            throw new Error("Choose a standard-size floppy image.");
+    }
+    // Match the existing frontend's snapshot representation and lazy-read threshold.
+    // Reading small files ourselves also reports I/O errors and avoids set_*'s FileReader race.
+    if(file.size < 256 * 1024 * 1024 || drive === "fda" || drive === "fdb")
+        return { buffer: await file.arrayBuffer() };
+    await file.slice(0, alignment).arrayBuffer();
+    return { buffer: file, async: true };
+}
+
+async function readAsset(path)
+{
+    const response = await fetch(path);
+    if(!response.ok) throw new Error("Could not load " + path + " (" + response.status + ").");
+    return response.arrayBuffer();
+}
+
+function focusScreen()
+{
+    if(!emulator || busy) return;
+    $("display").focus({ preventScroll: true });
+    emulator.keyboard_set_enabled(true);
+    emulator.speaker_adapter?.audio_context?.resume().catch(() => {});
+}
+
+function fitScreen()
+{
+    const display = $("display"), screen = $("screen_container");
+    const canvas = $("vga"), text = $("screen");
+    const graphical = getComputedStyle(canvas).display !== "none";
+    const width = graphical ? canvas.width : text.offsetWidth;
+    const height = graphical ? canvas.height : text.offsetHeight;
+    if(!width || !height) return;
+    const area = display.getBoundingClientRect();
+    const scale = Math.min(area.width / width, area.height / height);
+    // V86 measures its canvas when modes change. Scaling its parent feeds
+    // that scale back into those measurements, so size the canvas directly.
+    if(graphical)
+    {
+        canvas.style.width = width * scale + "px";
+        canvas.style.height = height * scale + "px";
+        canvas.style.imageRendering = Number.isInteger(scale) ? "pixelated" : "";
+    }
+    screen.style.transform = `translate(-50%, -50%) scale(${graphical ? 1 : scale})`;
+    // Center relative to the displayed screen dimensions.
+    screen.style.transformOrigin = "center center";
+}
+
+function captureMouse()
+{
+    if(document.pointerLockElement || busy || fatal || !emulator) return;
+    emulator.mouse_set_enabled(true);
+    try
+    {
+        // Some browsers report completion only through pointerlockchange/error.
+        const pending = $("display").requestPointerLock();
+        pending?.catch(() => status("Could not capture the mouse. Click inside Windows to try again."));
+    }
+    catch { status("Could not capture the mouse. Click inside Windows to try again."); }
+}
+
+async function fullscreen()
+{
+    const display = $("display");
+    // Fullscreen consumes activation; request pointer lock first, without awaiting it.
+    captureMouse();
+    try
+    {
+        const request = display.requestFullscreen || display.webkitRequestFullscreen;
+        if(!request) throw new Error("Fullscreen unavailable");
+        await request.call(display);
+    }
+    catch
+    {
+        status("Windows is still running here. Use the Fullscreen button when your browser allows it.");
+    }
+    fitScreen();
+}
+
+async function paused(work)
+{
+    const running = emulator.is_running();
+    await emulator.stop();
+    try { return await work(); }
+    finally { if(running && !fatal) emulator.run(); }
+}
+
+function datedName(name, extension)
+{
+    const stem = name.replace(/\.[^.]+$/, "");
+    const date = new Date();
+    const pad = n => String(n).padStart(2, "0");
+    const stamp = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}_${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`;
+    return `${stem}_${stamp}.${extension}`;
+}
+
+function download(blob, name)
+{
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = name;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    // Downloads may begin after the click handler returns, especially in WebKit.
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+function diskBuffer(drive)
+{
+    const devices = emulator.v86.cpu.devices;
+    if(drive === "hda") return devices.ide.primary.master.buffer;
+    return devices.fdc.drives[drive === "fda" ? 0 : 1].buffer;
+}
+
+async function exportDisk(drive)
+{
+    await paused(async () => {
+        const buffer = diskBuffer(drive);
+        if(!buffer) throw new Error("The drive is empty.");
+        const name = datedName(drive === "hda" ? diskName : media[drive], "img");
+        const blob = buffer.get_as_file ? buffer.get_as_file(name) :
+            new Blob([await new Promise(resolve => buffer.get_buffer(resolve))]);
+        download(blob, name);
+    });
+    status("Disk download prepared.");
+}
+
+async function start(disk, state, attached = {}, diskAdapter = null)
+{
+    // Invoke fullscreen before the first asynchronous read loses user activation.
+    $("welcome").hidden = true;
+    $("session").hidden = false;
+    const fullscreenAttempt = fullscreen();
+    try
+    {
+        status(state ? "Preparing state…" : "Preparing Windows…");
+        const hda = diskAdapter ? { disk_adapter: diskAdapter } : await readDisk(disk, "hda");
+        encryptedSession = !!diskAdapter;
+        const stateBytes = state ? await state.arrayBuffer() : null;
+        const disks = {};
+        for(const drive of Object.keys(media))
+            if(attached[drive]) disks[drive] = await readDisk(attached[drive], drive);
+        // The existing baseline build avoids the WebKit optimized-WASM JIT panic.
+        const wasmPath = diskAdapter ? "build/v86-fallback.wasm" : "build/v86.wasm";
+        const [bios, vgaBios, wasm] = await Promise.all([
+            readAsset("bios/seabios.bin"), readAsset("bios/bochs-vgabios.bin"), readAsset(wasmPath),
+        ]);
+        const module = await WebAssembly.compile(wasm);
+        let initializationError;
+        emulator = new V86({
+            wasm_fn: async imports => {
+                try { return (await WebAssembly.instantiate(module, imports)).exports; }
+                catch(error) { initializationError = error; return new Promise(() => {}); }
+            },
+            memory_size: 128 * 1024 * 1024,
+            vga_memory_size: 8 * 1024 * 1024,
+            bios: { buffer: bios }, vga_bios: { buffer: vgaBios },
+            hda, ...disks, boot_order: 0x312, acpi: false,
+            net_device: { type: "ne2k", relay_url: "wss://relay.widgetry.org/", mtu: 1500 },
+            screen: { container: $("screen_container"), use_graphical_text: false },
+            disable_speaker: false, autostart: false,
+        });
+        await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => finish(initializationError || new Error("The machine could not initialize. Choose the files again.")), 30000);
+            const loaded = () => finish();
+            const failed = event => finish(new Error(event.file_name || "Error loading the machine."));
+            function finish(error)
+            {
+                clearTimeout(timer);
+                emulator.remove_listener("emulator-loaded", loaded);
+                emulator.remove_listener("download-error", failed);
+                error ? reject(error) : resolve();
+            }
+            emulator.add_listener("emulator-loaded", loaded);
+            emulator.add_listener("download-error", failed);
+        });
+        emulator.wasm_source = wasm;
+        if(stateBytes) await emulator.restore_state(stateBytes);
+        diskName = disk.name;
+        $("disk-name").textContent = diskName;
+        $("disk-name").title = diskName;
+        for(const drive of Object.keys(media)) media[drive] = attached[drive]?.name || null;
+        syncMediaNames();
+        emulator.add_listener("screen-set-size", fitScreen);
+        emulator.add_listener("emulator-started", updateControls);
+        emulator.add_listener("emulator-stopped", updateControls);
+        emulator.run();
+        await fullscreenAttempt;
+        status((encryptedSession ? "Encrypted disk: shut down Windows and save the full disk when you finish." : "Preserve your changes by downloading the disk or saving the state.") +
+            (!(document.fullscreenElement || document.webkitFullscreenElement) ? " Fullscreen is available in the toolbar." : ""));
+        fitScreen();
+        // action() still owns the pending state until it returns.
+        setTimeout(focusScreen, 0);
+    }
+    catch(error)
+    {
+        if(emulator) { await emulator.destroy(); emulator = undefined; }
+        if(document.fullscreenElement) await document.exitFullscreen();
+        else if(document.webkitFullscreenElement) document.webkitExitFullscreen();
+        $("session").hidden = true;
+        $("welcome").hidden = false;
+        throw error;
+    }
+}
+
+function bind(id, message, work)
+{
+    $(id).addEventListener("click", () => action(message, work));
+}
+
+bind("choose-disk", "Choosing disk…", async () => {
+    const [disk] = await pickFiles();
+    if(disk) await start(disk);
+    else status("");
+});
+$("show-resume").onclick = () => {
+    $("resume-form").hidden = !$("resume-form").hidden;
+    if(!$("resume-form").hidden) $("resume-disk").focus();
+};
+$("resume-form").onsubmit = event => {
+    event.preventDefault();
+    const attached = Object.fromEntries(Object.keys(media).map(drive => [drive, $("resume-" + drive).files[0]]));
+    action("Resuming state…", () => start($("resume-disk").files[0], $("resume-state").files[0], attached));
+};
+bind("pause", "", async () => {
+    if(emulator.is_running()) await emulator.stop(); else emulator.run();
+    status(emulator.is_running() ? "Windows is running." : "Machine paused.");
+});
+bind("reset", "", async () => {
+    if(!window.confirm("Reset Windows? Any work not saved within Windows will be lost."))
+    {
+        status("Reset cancelled.");
+        return;
+    }
+    emulator.restart();
+    status("Machine reset.");
+});
+// Fullscreen and pointer lock must run directly in a user gesture.
+$("fullscreen").onclick = () => fullscreen().then(focusScreen);
+$("mouse").onclick = () => {
+    if(document.pointerLockElement) document.exitPointerLock();
+    else captureMouse();
+    focusScreen();
+};
+bind("ctrlaltdel", "", async () => { emulator.keyboard_send_scancodes([0x1D, 0x38, 0x53, 0xD3, 0xB8, 0x9D]); });
+bind("mute", "", async () => {
+    muted = !muted;
+    emulator.speaker_adapter?.mixer.set_volume(muted ? 0 : 1, undefined);
+    if(!muted) await emulator.speaker_adapter?.audio_context?.resume();
+    status(muted ? "Sound muted." : "Sound enabled.");
+});
+bind("screenshot", "Taking screenshot…", async () => {
+    const image = emulator.screen_make_screenshot();
+    if(!image) throw new Error("The display is not available yet.");
+    const response = await fetch(image.src);
+    download(await response.blob(), datedName(diskName, "png"));
+    status("Screenshot prepared.");
+});
+bind("download-disk", "Preparing disk download…", () => exportDisk("hda"));
+bind("save-state", "Saving state…", async () => {
+    await paused(async () => download(new Blob([await emulator.save_state()]), datedName(diskName, "bin")));
+    status("State prepared. Keep the same base disk and inserted media to resume it.");
+});
+bind("load-state", "Loading state…", async () => {
+    const [file] = await pickFiles();
+    if(!file) { status(""); return; }
+    const bytes = await file.arrayBuffer();
+    await paused(async () => {
+        const previous = await emulator.save_state();
+        try { await emulator.restore_state(bytes); }
+        catch(error)
+        {
+            try { await emulator.restore_state(previous); }
+            catch
+            {
+                fatal = true;
+                throw new Error("Could not recover the previous session. The machine remains stopped; reload and resume a saved state.");
+            }
+            throw new Error("Could not restore the state. Check the base disk and media; the previous session has been recovered. " + error.message);
+        }
+    });
+    fitScreen();
+    syncMediaNames();
+    status("State restored with the selected media.");
+});
+for(const drive of Object.keys(media))
+{
+    bind("insert-" + drive, "Inserting media…", async () => {
+        const files = await pickFiles(drive === "cdrom");
+        if(!files.length) { status(""); return; }
+        const file = files[0];
+        let disk;
+        if(drive === "cdrom" && !(files.length === 1 && /\.(iso(9660|img)?|cdr|img)$/i.test(file.name)))
+        {
+            const { generate } = await import("../../slop86/src/iso9660.js");
+            const contents = await Promise.all(files.map(async file => ({ name: file.name, contents: new Uint8Array(await file.arrayBuffer()) })));
+            disk = { buffer: generate(contents).buffer };
+        }
+        else disk = await readDisk(file, drive);
+        await paused(() => emulator["set_" + drive](disk));
+        media[drive] = files.map(file => file.name).join(", ");
+        status("Media inserted: " + media[drive]);
+    });
+    bind("eject-" + drive, "Ejecting media…", async () => {
+        await paused(() => emulator["eject_" + drive]());
+        media[drive] = null;
+        status("Media ejected.");
+    });
+    if(drive !== "cdrom") bind("download-" + drive, "Preparing download…", () => exportDisk(drive));
+}
+$("display").addEventListener("pointerdown", () => { focusScreen(); captureMouse(); });
+document.addEventListener("focusin", event => {
+    if(emulator) emulator.keyboard_set_enabled($("display").contains(event.target));
+});
+for(const event of ["fullscreenchange", "webkitfullscreenchange"])
+    document.addEventListener(event, () => { fitScreen(); focusScreen(); });
+document.addEventListener("pointerlockchange", () => {
+    updateControls();
+    focusScreen();
+    status(document.pointerLockElement ? "Mouse captured. Press Esc to release it." : "Mouse released.");
+});
+document.addEventListener("pointerlockerror", () => status("Could not capture the mouse."));
+new ResizeObserver(fitScreen).observe($("display"));
+window.addEventListener("resize", fitScreen);
+let lastCount = 0, lastTime = performance.now();
+setInterval(() => {
+    const now = performance.now();
+    const count = emulator?.get_instruction_counter() || 0;
+    const mips = Math.max(0, (count - lastCount) / ((now - lastTime) * 1000));
+    $("ips").textContent = mips.toFixed(1) + " MIPS";
+    lastCount = count;
+    lastTime = now;
+}, 1000);
+
+
+diskController = setupDisk({
+    pickFiles, download,
+    busy: () => busy,
+    hasSession: () => !!emulator,
+    setBusy(value) { busy = value; updateControls(); },
+    async stop() { if(emulator) await emulator.stop(); },
+    async boot(adapter, name) {
+        if(emulator) { await emulator.destroy(); emulator = undefined; }
+        fatal = false; diskBlocked = false;
+        await start({ name }, null, {}, adapter);
+    },
+    async close() {
+        if(encryptedSession && emulator) { await emulator.destroy(); emulator = undefined; }
+        if(encryptedSession) {
+            encryptedSession = false; fatal = false; diskBlocked = false;
+            $("session").hidden = true; $("welcome").hidden = false;
+        }
+        updateControls();
+    },
+    async resume() { diskBlocked = false; if(emulator) emulator.run(); updateControls(); },
+    async fail(error) {
+        diskBlocked = true;
+        if(emulator) await emulator.stop();
+        status("Encrypted disk stopped: " + error.message, true);
+        updateControls();
+    },
+});
+updateControls();

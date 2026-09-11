@@ -1,0 +1,2 @@
+# Root v86 ignores Cargo.lock; this independent protocol pins its dependency graph.
+!Cargo.lock

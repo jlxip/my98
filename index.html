@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Windows 98 · my98</title>
+    <link rel="stylesheet" href="win98.css">
+    <script type="module">
+        import("./src/browser/win98.js").catch(() => {
+            const message = document.getElementById("welcome-status");
+            message.textContent = "Could not load the emulator. Check that the build is available and reload the page.";
+            message.classList.add("error");
+        });
+    </script>
+</head>
+<body>
+    <details id="disk-panel">
+        <summary>Encrypted disk</summary>
+        <form id="disk-login" autocomplete="off">
+            <label>Username <input id="disk-user" autocomplete="off" required></label>
+            <label>Password <input id="disk-password" type="password" autocomplete="off" required></label>
+            <label>Machine <input id="disk-machine" value="main" autocomplete="off" required></label>
+            <button type="submit">Unlock identity</button>
+        </form>
+        <div id="disk-workspace" hidden>
+            <p id="disk-identity" class="hint"></p>
+            <button id="disk-create">Create disk from image</button>
+            <button id="disk-open">Open encrypted disk</button>
+            <button id="disk-boot">Boot disk</button>
+            <button id="disk-save">Save full disk after Windows shutdown</button>
+            <button id="disk-discard">Discard pending writes</button>
+            <button id="disk-download">Download full disk</button>
+            <button id="disk-retry">Retry download</button>
+            <button id="disk-verify">Verify full disk</button>
+            <button id="disk-close">Close identity</button>
+        </div>
+        <button id="disk-resume" hidden>Retry and resume</button>
+        <button id="disk-cancel" hidden>Cancel operation</button>
+        <p id="disk-status" role="status" aria-live="polite"></p>
+        <p class="hint">Each save downloads a complete disk. Your password, pending changes and prepared download are lost when you close this page.</p>
+    </details>
+    <main id="welcome">
+        <p class="eyebrow">my98</p>
+        <h1>Windows 98</h1>
+        <p class="intro">Your disk, ready to boot.</p>
+        <button id="choose-disk" class="primary">Choose Windows 98 disk</button>
+        <button id="show-resume">Resume state</button>
+        <p class="hint">Save your changes by downloading the disk or machine state.</p>
+        <form id="resume-form" hidden>
+            <label>Base disk <input id="resume-disk" type="file" required></label>
+            <label>Machine state <input id="resume-state" type="file" required></label>
+            <p class="hint">Use the same base disk used when saving the state. Also attach any media that were inserted.</p>
+            <label>CD (optional) <input id="resume-cdrom" type="file"></label>
+            <label>Floppy A (optional) <input id="resume-fda" type="file"></label>
+            <label>Floppy B (optional) <input id="resume-fdb" type="file"></label>
+            <button class="primary" type="submit">Resume Windows</button>
+        </form>
+        <p id="welcome-status" role="status" aria-live="polite"></p>
+        <noscript>Enable JavaScript to boot Windows.</noscript>
+    </main>
+    <main id="session" hidden>
+        <header>
+            <div class="session-title"><strong>Windows 98</strong><span id="disk-name"></span><span id="ips">0 MIPS</span><button id="fullscreen" class="primary">Fullscreen</button></div>
+            <div id="controls">
+                <fieldset><legend>Machine</legend>
+                    <button id="pause">Pause</button><button id="reset">Reset</button>
+                    <button id="ctrlaltdel">Ctrl+Alt+Del</button>
+                </fieldset>
+                <fieldset><legend>Saving</legend>
+                    <button id="download-disk">Download disk</button><button id="save-state">Save state</button><button id="load-state">Load state</button>
+                </fieldset>
+                <fieldset><legend>Input and output</legend>
+                    <button id="mute">Mute</button><button id="mouse">Capture mouse</button><button id="screenshot">Take screenshot</button>
+                </fieldset>
+                <fieldset class="media"><legend>CD</legend><span id="cdrom-name">Empty</span>
+                    <button id="insert-cdrom">Insert CD</button><button id="eject-cdrom">Eject</button>
+                </fieldset>
+                <fieldset class="media"><legend>Floppy A</legend><span id="fda-name">Empty</span>
+                    <button id="insert-fda">Insert</button><button id="eject-fda">Eject</button><button id="download-fda">Download</button>
+                </fieldset>
+                <fieldset class="media"><legend>Floppy B</legend><span id="fdb-name">Empty</span>
+                    <button id="insert-fdb">Insert</button><button id="eject-fdb">Eject</button><button id="download-fdb">Download</button>
+                </fieldset>
+            </div>
+            <p id="session-status" role="status" aria-live="polite"></p>
+        </header>
+        <div id="display" tabindex="0" aria-label="Windows 98 display">
+            <div id="screen_container"><div id="screen"></div><canvas id="vga"></canvas></div>
+        </div>
+    </main>
+</body>
+</html>

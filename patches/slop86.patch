@@ -1,0 +1,48 @@
+diff --git a/src/browser/main.js b/src/browser/main.js
+index 0ae15374..d647d401 100644
+--- a/src/browser/main.js
++++ b/src/browser/main.js
+@@ -2358,7 +2358,7 @@ function start_emulation(profile, query_args)
+         }
+         if(!settings.vga_bios)
+         {
+-            settings.vga_bios = { url: BIOSPATH + (DEBUG ? "vgabios-debug.bin" : "vgabios.bin") };
++            settings.vga_bios = { url: BIOSPATH + "bochs-vgabios.bin" };
+         }
+         if(settings.use_bochs_bios)
+         {
+diff --git a/src/buffer.js b/src/buffer.js
+index 828797f1..b962b899 100644
+--- a/src/buffer.js
++++ b/src/buffer.js
+@@ -741,7 +741,16 @@ export function buffer_from_object(obj, zstd_decompress_worker)
+ {
+     // TODO: accept Uint8Array, ArrayBuffer, File, url rather than { url }
+ 
+-    if(obj.buffer instanceof ArrayBuffer)
++    if(obj.disk_adapter)
++    {
++        const adapter = obj.disk_adapter;
++        if(!Number.isSafeInteger(adapter.byteLength) || adapter.byteLength <= 0 ||
++            typeof adapter.load !== "function" || typeof adapter.get !== "function" ||
++            typeof adapter.set !== "function" || typeof adapter.get_from_cache !== "function")
++            throw new Error("Invalid encrypted disk adapter");
++        return adapter;
++    }
++    else if(obj.buffer instanceof ArrayBuffer)
+     {
+         return new SyncBuffer(obj.buffer);
+     }
+diff --git a/src/main.js b/src/main.js
+index fcc588f0..5b50118b 100644
+--- a/src/main.js
++++ b/src/main.js
+@@ -76,6 +76,8 @@ v86.prototype.stop = function()
+     if(this.running)
+     {
+         this.stopping = true;
++        // Wake the yield Worker instead of waiting for its pending idle timer.
++        this.next_tick(0);
+     }
+ };
+ 
