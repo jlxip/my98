@@ -9,8 +9,9 @@ struct Memory {
     files: RefCell<HashMap<String, Vec<u8>>>,
     read: Cell<u64>,
 }
+#[async_trait::async_trait(?Send)]
 impl Io for Memory {
-    fn read(&self, id: &str, offset: u64, n: usize) -> Result<Vec<u8>> {
+    async fn read(&self, id: &str, offset: u64, n: usize) -> Result<Vec<u8>> {
         self.read.set(self.read.get() + n as u64);
         if id == "raw" {
             return Ok((offset..offset + n as u64)
@@ -30,7 +31,7 @@ fn engine() -> Engine {
 }
 fn finish(e: &mut Engine, io: &Memory, id: &str) -> u64 {
     let mut b = e.header().unwrap();
-    while let Some(chunk) = e.next(io).unwrap() {
+    while let Some(chunk) = futures::executor::block_on(e.next(io)).unwrap() {
         b.extend(chunk);
         if let Ok(state) = e.describe() {
             assert!(state.cache_bytes <= CACHE_LIMIT);
@@ -55,15 +56,15 @@ fn scaling_full_save_and_constant_cold_reads() {
         let mut reader = engine();
         io.read.set(0);
         let start = Instant::now();
-        reader.open(&io, "base".into(), total).unwrap();
-        reader.read(&io, 0, 512).unwrap();
+        futures::executor::block_on(reader.open(&io, "base".into(), total)).unwrap();
+        futures::executor::block_on(reader.read(&io, 0, 512)).unwrap();
         let cold_ms = start.elapsed().as_secs_f64() * 1000.;
         assert_eq!(io.read.get(), 65796);
-        reader.write(&io, 7, &[99]).unwrap();
+        futures::executor::block_on(reader.write(&io, 7, &[99])).unwrap();
         reader.clear_cache();
         io.read.set(0);
         let start = Instant::now();
-        assert!(reader.begin_save(&io).unwrap());
+        assert!(futures::executor::block_on(reader.begin_save(&io)).unwrap());
         finish(&mut reader, &io, "saved");
         let save_ms = start.elapsed().as_secs_f64() * 1000.;
         assert_eq!(io.read.get(), total - HEADER as u64);

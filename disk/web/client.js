@@ -46,6 +46,7 @@ export class Slop86Disk {
     }
     createFromImage(file) {return this.call("create", {file});}
     open(file) {return this.call("open", {file});}
+    openRemote({gateway} = {}) {return this.call("openRemote", {gateway});}
     describe() {return this.call("describe");}
     read(offset,length) {return this.call("read", {offset,length});}
     write(offset,data) {const bytes=new Uint8Array(data).slice();return this.call("write", {offset,bytes}, [bytes.buffer]);}

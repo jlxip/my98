@@ -26,6 +26,9 @@
             <p id="disk-identity" class="hint"></p>
             <button id="disk-create">Create disk from image</button>
             <button id="disk-open">Open encrypted disk</button>
+            <button id="disk-remote">Open remote disk</button>
+            <p class="hint">A remote disk must already be published for this identity. Local saves are not uploaded.</p>
+            <details><summary>Remote disk settings</summary><label>IPFS gateway <input id="disk-gateway" type="url" value="https://trustless-gateway.net" spellcheck="false"></label></details>
             <button id="disk-boot">Boot disk</button>
             <button id="disk-save">Save full disk after Windows shutdown</button>
             <button id="disk-discard">Discard pending writes</button>

@@ -1,6 +1,6 @@
 # my98 application; the emulator remains a pinned, unmodified submodule.
 .DEFAULT_GOAL := all
-.PHONY: all emulator prepare-emulator run crypto crypto-test crypto-test-browser disk disk-test disk-test-browser test-stop
+.PHONY: remote-test all emulator prepare-emulator run crypto crypto-test crypto-test-browser disk disk-test disk-test-browser test-stop
 all: emulator crypto disk
 
 prepare-emulator:
@@ -21,7 +21,10 @@ crypto-test:
 crypto-test-browser: crypto
 	sh crypto/scripts/test-browser.sh
 
-disk:
+node_modules/.package-lock.json: package.json package-lock.json
+	npm ci
+
+disk: node_modules/.package-lock.json
 	sh disk/scripts/build.sh
 
 disk-test:
@@ -33,3 +36,7 @@ disk-test-browser: emulator disk
 
 test-stop: prepare-emulator
 	node tests/api/stop.js
+
+remote-test: disk
+	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo run --manifest-path disk/Cargo.toml --locked --release --example compat
+	node disk/browser-tests/remote-run.mjs

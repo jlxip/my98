@@ -6,7 +6,7 @@ export function setupDisk(host) {
     function syncControls(busy) {
         $("workspace").hidden=!client;$("login").hidden=!!client;
         $("panel").querySelectorAll("button,input").forEach(e=>e.disabled=busy||working);
-        $("create").disabled ||= !!state;$("open").disabled ||= !!state;
+        $("create").disabled ||= !!state;$("open").disabled ||= !!state;$("remote").disabled ||= !!state;$("gateway").disabled ||= !!state;
         for(const id of ["boot","save","download","discard","verify"]) $(id).disabled ||= !state;
         $("boot").disabled ||= active || !!adapter?.failed;
         $("save").disabled ||= !active || !!adapter?.failed;
@@ -24,7 +24,7 @@ export function setupDisk(host) {
     }
     function download(result) {
         prepared=true;
-        host.download(result.blob,`slop86-${state.disk_id.slice(0,4).map(n=>n.toString(16).padStart(2,"0")).join("")}.slop86`);
+        host.download(result.blob,`${state.disk_id.slice(0,4).map(n=>n.toString(16).padStart(2,"0")).join("")}.my98`);
         message(`Full download prepared (${(result.size/1048576).toFixed(2)} MiB). Check that the file was saved.`);
     }
     $("login").onsubmit=event=>{
@@ -32,9 +32,10 @@ export function setupDisk(host) {
         run("Unlocking identity…",async()=>{
             const module=await import("../../build/disk/web/client.js");BufferClass=module.DiskBuffer;
             const candidate=await module.Slop86Disk.create({onProgress:p=>{
-                if(capturing) message(`${p.phase==="verify"?"Verifying":"Encrypting"}: ${(p.completed/1048576).toFixed(1)} MiB…`);
+                if(capturing && p.phase==="resolve") message("Finding remote disk…");
+                else if(capturing) message(`${({verify:"Verifying",encrypt:"Encrypting",download:"Downloading",resolve:"Finding remote disk"})[p.phase]||"Working"}: ${(p.completed/1048576).toFixed(1)} MiB…`);
             }});
-            try {const identity=await candidate.unlock(username,password,machine);client=candidate;$("identity").textContent=identity.ipnsName;message("Identity unlocked. Create a disk or open a .slop86 file.");}
+            try {const identity=await candidate.unlock(username,password,machine);client=candidate;$("identity").textContent=identity.ipnsName;message("Identity unlocked. Create a disk, open a .my98 file, or find your remote disk.");}
             catch(error){await candidate.close().catch(()=>{});throw error;}
             finally {username=password=machine="";}
         });
@@ -46,6 +47,11 @@ export function setupDisk(host) {
     $("open").onclick=()=>run("Opening encrypted disk…",async()=>{
         const [file]=await host.pickFiles();if(!file)return;
         state=await client.open(file);prepared=false;message("Header authenticated. Disk data will be read and verified on demand.");
+    });
+    $("remote").onclick=()=>run("Finding remote disk…",async()=>{
+        capturing=true;syncControls(true);
+        state=await client.openRemote({gateway:$("gateway").value});prepared=false;
+        message("Remote disk authenticated. Data will be downloaded and verified on demand. Changes are saved locally.");
     });
     $("boot").onclick=()=>run("Booting encrypted disk…",async()=>{
         if(state.size%512)throw new Error("The image is preserved exactly, but its length does not allow booting it as an HDD.");
@@ -59,7 +65,7 @@ export function setupDisk(host) {
         await host.stop();capturing=true;syncControls(true);const saved=await client.save();state=saved;
         if(saved.outcome==="unchanged")message("No changes. The VM remains stopped.");else download(saved.download);
     });
-    $("download").onclick=()=>run("Preparing full download…",async()=>download(await client.downloadCurrent()));
+    $("download").onclick=()=>run("Preparing full download…",async()=>{await host.stop();capturing=true;syncControls(true);download(await client.downloadCurrent());});
     $("retry").onclick=()=>run("Retrying download…",async()=>download(await client.retryDownload()));
     $("verify").onclick=()=>run("Verifying full disk…",async()=>{
         await host.stop();capturing=true;syncControls(true);const hash=await client.verifyImage();

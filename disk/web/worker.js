@@ -1,23 +1,28 @@
 import init, {Vault} from "../pkg/slop86_disk.js";
-const sources = new Map(), reader = new FileReaderSync();
+import {RemoteDisk} from "./remote.js";
+const sources = new Map();
+let identity, activeRequest;
+let networkBytes = 0, networkRequests = 0;
 let vault, sourceId = 0, current, prepared, nextDownload = 0;
 let sequence = Promise.resolve(), cancelEpoch = 0, activeEpoch = 0, cancelView;
 let readBytes = 0, readCalls = 0, progressAt = 0, initError;
 const fail = (code, message) => Object.assign(new Error(message), {code});
-const describe = () => JSON.parse(vault.describe());
-const source = blob => { const id = `file:${++sourceId}`; sources.set(id, blob); return id; };
+const describe = () => ({...JSON.parse(vault.describe()), ...(sources.get(current)?.remote ? {remote:sources.get(current).remote} : {})});
+const source = value => { const id = `source:${++sourceId}`; sources.set(id, value instanceof RemoteDisk ? value : {size:value.size, blob:value, read:async(offset,length)=>new Uint8Array(await value.slice(offset,offset+length).arrayBuffer())}); return id; };
+const remove = id => {sources.get(id)?.close?.();sources.delete(id);};
 globalThis.slopDiskCancelled = () => activeEpoch !== cancelEpoch || !!(cancelView && Atomics.load(cancelView, 0) !== activeEpoch);
 function check() { if(globalThis.slopDiskCancelled()) throw fail("CANCELLED", "Operation cancelled"); }
-globalThis.slopDiskRead = (id, offset, length) => {
-    check(); const blob = sources.get(id);
-    if(!blob || !Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 0 || offset + length > blob.size) throw fail("IO_ERROR", "Source range unavailable");
-    const bytes = new Uint8Array(reader.readAsArrayBuffer(blob.slice(offset, offset + length)));
+globalThis.slopDiskRead = async (id, offset, length) => {
+    check(); const input = sources.get(id);
+    if(!input || !Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 0 || offset + length > input.size) throw fail("IO_ERROR", "Source range unavailable");
+    const bytes = await input.read(offset, length, activeRequest?.signal);
+    check();
     if(bytes.length !== length) throw fail("IO_ERROR", "Short source read");
     readBytes += length; readCalls++; return bytes;
 };
 function progress(phase, completed, total) {
     if(performance.now() - progressAt > 100 || completed === total) {
-        progressAt = performance.now(); self.postMessage({type:"progress", phase, completed, total, readBytes, readCalls});
+        progressAt = performance.now(); self.postMessage({type:"progress", phase, completed, total, readBytes, readCalls, networkBytes, networkRequests});
     }
 }
 const yieldEvents = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -26,7 +31,7 @@ async function build() {
     const parts = [vault.header()]; let count = 0, id;
     try {
         for(;;) {
-            check(); const bytes = vault.next(); if(!bytes) break;
+            check(); const bytes = await vault.next(); if(!bytes) break;
             parts.push(new Blob([bytes]));
             if(++count % 16 === 0) { progress("encrypt", count * 65536, 0); await yieldEvents(); }
         }
@@ -36,54 +41,77 @@ async function build() {
         id = source(blob); vault.accept(id, blob.size);
         const previous = current; current = id;
         prepared = {id:++nextDownload, blob, size:blob.size};
-        if(previous) sources.delete(previous);
+        if(previous) remove(previous);
         progress("encrypt", describe().size, describe().size);
         return {...describe(), outcome:"created", download:prepared};
-    } catch(error) { if(id && id !== current) sources.delete(id); vault.cancel(); throw error; }
+    } catch(error) { if(id && id !== current) remove(id); vault.cancel(); throw error; }
 }
 async function execute(op,a) {
     if(op === "unlock") {
         if(vault) throw fail("OPERATION_FAILED", "Close the previous identity first");
-        vault = new Vault(a.username,a.password,a.machine); return JSON.parse(vault.identity());
+        vault = new Vault(a.username,a.password,a.machine); identity = JSON.parse(vault.identity()); return identity;
     }
     if(!vault) throw fail("OPERATION_FAILED", "Identity is closed");
     switch(op) {
     case "create": {
         const id = source(a.file);
         try {vault.begin_create(id,a.file.size);return await build();}
-        finally {sources.delete(id);}
+        finally {remove(id);}
     }
     case "open": {
         const id = source(a.file);
-        try {vault.open(id,a.file.size);current = id;prepared = undefined;return describe();}
-        catch(error) {sources.delete(id);throw error;}
+        try {await vault.open(id,a.file.size);current = id;prepared = undefined;return describe();}
+        catch(error) {remove(id);throw error;}
+    }
+    case "openRemote": {
+        if(current) throw fail("OPERATION_FAILED", "Close the current disk before opening another");
+        const remote = new RemoteDisk({gateway:a.gateway, onNetwork:(bytes, calls)=>{networkBytes+=bytes;networkRequests+=calls;}});
+        let id;
+        try {
+            progress("resolve",0,0);
+            await remote.open(identity, activeRequest.signal); check();
+            id = source(remote); await vault.open(id,remote.size);
+            current = id; prepared = undefined; return describe();
+        } catch(error) {if(id)remove(id);else remote.close();throw error;}
     }
     case "describe": return describe();
     case "read": {
         if(!Number.isSafeInteger(a.length) || a.length < 0 || a.length > 0xffffffff) throw fail("IO_ERROR","Invalid read length");
-        return vault.read(a.offset,a.length);
+        return await vault.read(a.offset,a.length);
     }
-    case "write": vault.write(a.offset,a.bytes);return describe();
+    case "write": await vault.write(a.offset,a.bytes);return describe();
     case "save": {
-        if(!vault.begin_save()) {await yieldEvents();check();vault.accept_unchanged();return {...describe(),outcome:"unchanged"};}
+        if(!await vault.begin_save()) {await yieldEvents();check();vault.accept_unchanged();return {...describe(),outcome:"unchanged"};}
         return build();
     }
     case "download": {
         if(describe().dirty_bytes) throw fail("OPERATION_FAILED", "Save or discard pending writes before downloading");
-        if(!prepared) {const blob=sources.get(current);prepared={id:++nextDownload,blob,size:blob.size};}
+        if(!prepared) {
+            const input=sources.get(current); let blob=input.blob;
+            if(!blob) {
+                const parts=[];
+                for(let offset=0;offset<input.size;offset+=1048576) {
+                    check(); const bytes=await input.read(offset,Math.min(1048576,input.size-offset),activeRequest.signal);check();
+                    parts.push(new Blob([bytes]));progress("download",Math.min(offset+1048576,input.size),input.size);
+                }
+                blob=new Blob(parts,{type:"application/octet-stream"});
+                await yieldEvents();check();
+            }
+            prepared={id:++nextDownload,blob,size:blob.size};
+        }
         return prepared;
     }
     case "retry": if(!prepared) throw fail("OPERATION_FAILED","No prepared download");return prepared;
     case "discard": vault.discard();return describe();
     case "verify": {
         vault.verify_start();let count=0;
-        try {for(;;) {check();const hash=vault.verify_step();count++;if(hash) {await yieldEvents();check();progress("verify",describe().size,describe().size);return hash;}
+        try {for(;;) {check();const hash=await vault.verify_step();count++;if(hash) {await yieldEvents();check();progress("verify",describe().size,describe().size);return hash;}
             if(count%16===0) {progress("verify",count*65536,describe().size);await yieldEvents();}
         }} catch(error) {vault.cancel();throw error;}
     }
-    case "readStats": return {readBytes,readCalls};
-    case "clearCaches": vault.clear_cache();return null;
-    case "close": vault.free();vault=undefined;sources.clear();current=prepared=undefined;return null;
+    case "readStats": return {readBytes,readCalls,networkBytes,networkRequests,blockCacheBytes:sources.get(current)?.cacheBytes||0};
+    case "clearCaches": vault.clear_cache();sources.get(current)?.clearCache?.();return null;
+    case "close": vault.free();vault=undefined;for(const id of sources.keys())remove(id);identity=current=prepared=undefined;return null;
     default: throw fail("OPERATION_FAILED","Unknown disk operation");
     }
 }
@@ -93,15 +121,15 @@ function errorInfo(error) {
     return {code:error?.code || "OPERATION_FAILED",message};
 }
 self.onmessage = ({data}) => {
-    if(data.op === "cancel") {cancelEpoch=data.epoch;return;}
+    if(data.op === "cancel") {cancelEpoch=data.epoch;activeRequest?.abort();return;}
     if(data.op === "configure") {cancelView=data.buffer ? new Int32Array(data.buffer):undefined;return;}
     sequence=sequence.then(async()=>{
         const {id,op,args,epoch}=data;
-        try {await ready;if(initError)throw initError;activeEpoch=epoch;progressAt=-Infinity;check();const result=await execute(op,args);
+        try {await ready;if(initError)throw initError;activeEpoch=epoch;activeRequest=new AbortController();progressAt=-Infinity;check();const result=await execute(op,args);
             self.postMessage({id,ok:true,result},result instanceof Uint8Array?[result.buffer]:[]);
         }catch(error) {
             if(globalThis.slopDiskCancelled()) {vault?.cancel();error=fail("CANCELLED","Operation cancelled");}
             self.postMessage({id,ok:false,error:errorInfo(error)});
-        }finally {args?.password?.fill(0);args?.bytes?.fill(0);}
+        }finally {activeRequest=undefined;args?.password?.fill(0);args?.bytes?.fill(0);}
     }).catch(()=>self.postMessage({type:"fatal",error:"Disk Worker failed"}));
 };

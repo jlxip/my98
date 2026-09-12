@@ -24,11 +24,12 @@ impl Memory {
         self.reads.borrow().iter().map(|r| r.2).sum()
     }
 }
+#[async_trait::async_trait(?Send)]
 impl Io for Memory {
     fn cancelled(&self) -> bool {
         self.stop.get()
     }
-    fn read(&self, id: &str, o: u64, n: usize) -> Result<Vec<u8>> {
+    async fn read(&self, id: &str, o: u64, n: usize) -> Result<Vec<u8>> {
         self.reads.borrow_mut().push((id.into(), o, n));
         if self.fail.get().is_some_and(|v| o >= v) {
             return Err(error("IO_ERROR", "Injected failure"));
@@ -46,7 +47,7 @@ fn engine() -> Engine {
 }
 fn assemble(e: &mut Engine, io: &Memory) -> Vec<u8> {
     let mut b = e.header().unwrap();
-    while let Some(v) = e.next(io).unwrap() {
+    while let Some(v) = futures::executor::block_on(e.next(io)).unwrap() {
         b.extend(v);
     }
     b
@@ -61,7 +62,7 @@ fn create(e: &mut Engine, io: &Memory, bytes: Vec<u8>) {
     e.accept(io, "base".into(), n as u64).unwrap();
 }
 fn save(e: &mut Engine, io: &Memory, id: &str) -> Vec<u8> {
-    assert!(e.begin_save(io).unwrap());
+    assert!(futures::executor::block_on(e.begin_save(io)).unwrap());
     let b = assemble(e, io);
     io.put(id, b.clone());
     e.accept(io, id.into(), b.len() as u64).unwrap();
@@ -89,22 +90,25 @@ fn exact_lazy_ranges_and_header_only_authentication() {
     assert_eq!(base.len(), HEADER + plain.len() + 6 * OVERHEAD);
     let mut reader = engine();
     io.reset();
-    reader.open(&io, "base".into(), base.len() as u64).unwrap();
+    futures::executor::block_on(reader.open(&io, "base".into(), base.len() as u64)).unwrap();
     assert_eq!(io.count(), HEADER);
-    assert_eq!(reader.read(&io, 0, 512).unwrap(), plain[..512]);
+    assert_eq!(
+        futures::executor::block_on(reader.read(&io, 0, 512)).unwrap(),
+        plain[..512]
+    );
     assert_eq!(io.count(), HEADER + CHUNK + OVERHEAD);
     io.reset();
     assert_eq!(
-        reader.read(&io, (CHUNK * 4 + 30) as u64, 18).unwrap(),
+        futures::executor::block_on(reader.read(&io, (CHUNK * 4 + 30) as u64, 18)).unwrap(),
         plain[CHUNK * 4 + 30..CHUNK * 4 + 48]
     );
     assert_eq!(io.count(), CHUNK + OVERHEAD);
     assert_eq!(
-        reader.read(&io, (CHUNK - 3) as u64, 10).unwrap(),
+        futures::executor::block_on(reader.read(&io, (CHUNK - 3) as u64, 10)).unwrap(),
         plain[CHUNK - 3..CHUNK + 7]
     );
     assert_eq!(
-        reader.verify_image(&io).unwrap(),
+        futures::executor::block_on(reader.verify_image(&io)).unwrap(),
         Sha256::digest(&plain).to_vec()
     );
     for (user, pw, machine) in [
@@ -115,8 +119,7 @@ fn exact_lazy_ranges_and_header_only_authentication() {
         io.reset();
         let mut wrong = Engine::new(user, pw.as_bytes().to_vec(), machine).unwrap();
         assert_eq!(
-            wrong
-                .open(&io, "base".into(), base.len() as u64)
+            futures::executor::block_on(wrong.open(&io, "base".into(), base.len() as u64))
                 .unwrap_err()
                 .code,
             "AUTHENTICATION_FAILED"
@@ -131,19 +134,19 @@ fn atomic_writes_noop_save_and_rekey() {
     let mut e = engine();
     let mut plain = support::bytes(CHUNK * 2 + 7);
     create(&mut e, &io, plain.clone());
-    e.write(&io, 511, &[9, 8, 7]).unwrap();
-    e.write(&io, 511, &plain[511..514]).unwrap();
-    assert!(!e.begin_save(&io).unwrap());
+    futures::executor::block_on(e.write(&io, 511, &[9, 8, 7])).unwrap();
+    futures::executor::block_on(e.write(&io, 511, &plain[511..514])).unwrap();
+    assert!(!futures::executor::block_on(e.begin_save(&io)).unwrap());
     e.accept_unchanged(&io).unwrap();
     assert_eq!(e.describe().unwrap().dirty_bytes, 0);
     let old = io.bytes("base");
     let old_id = e.describe().unwrap().disk_id;
-    e.write(&io, (CHUNK - 1) as u64, &[42, 43, 44]).unwrap();
+    futures::executor::block_on(e.write(&io, (CHUNK - 1) as u64, &[42, 43, 44])).unwrap();
     plain[CHUNK - 1..CHUNK + 2].copy_from_slice(&[42, 43, 44]);
-    e.write(&io, (plain.len() - 1) as u64, &[99]).unwrap();
+    futures::executor::block_on(e.write(&io, (plain.len() - 1) as u64, &[99])).unwrap();
     *plain.last_mut().unwrap() = 99;
     assert_eq!(
-        e.verify_image(&io).unwrap(),
+        futures::executor::block_on(e.verify_image(&io)).unwrap(),
         Sha256::digest(&plain).to_vec()
     );
     let new = save(&mut e, &io, "saved");
@@ -154,10 +157,10 @@ fn atomic_writes_noop_save_and_rekey() {
     );
     assert_eq!(e.describe().unwrap().dirty_bytes, 0);
     assert_eq!(
-        e.verify_image(&io).unwrap(),
+        futures::executor::block_on(e.verify_image(&io)).unwrap(),
         Sha256::digest(&plain).to_vec()
     );
-    assert!(!e.begin_save(&io).unwrap());
+    assert!(!futures::executor::block_on(e.begin_save(&io)).unwrap());
     e.accept_unchanged(&io).unwrap();
 }
 #[test]
@@ -165,12 +168,15 @@ fn failures_and_cancellation_never_publish_or_clear_pending() {
     let io = Memory::default();
     let mut e = engine();
     create(&mut e, &io, support::bytes(CHUNK * 3));
-    e.write(&io, 10, &[31]).unwrap();
+    futures::executor::block_on(e.write(&io, 10, &[31])).unwrap();
     let before = e.describe().unwrap().disk_id;
-    assert!(e.begin_save(&io).unwrap());
-    e.next(&io).unwrap();
+    assert!(futures::executor::block_on(e.begin_save(&io)).unwrap());
+    futures::executor::block_on(e.next(&io)).unwrap();
     io.stop.set(true);
-    assert_eq!(e.next(&io).unwrap_err().code, "CANCELLED");
+    assert_eq!(
+        futures::executor::block_on(e.next(&io)).unwrap_err().code,
+        "CANCELLED"
+    );
     assert_eq!(
         e.accept(&io, "bad".into(), 0).unwrap_err().code,
         "CANCELLED"
@@ -180,22 +186,28 @@ fn failures_and_cancellation_never_publish_or_clear_pending() {
     assert_eq!(e.describe().unwrap().dirty_bytes, 512);
     assert_eq!(e.describe().unwrap().disk_id, before);
     e.clear_cache();
-    assert!(e.begin_save(&io).unwrap());
+    assert!(futures::executor::block_on(e.begin_save(&io)).unwrap());
     io.fail.set(Some((HEADER + CHUNK + OVERHEAD) as u64));
-    e.next(&io).unwrap();
-    assert_eq!(e.next(&io).unwrap_err().code, "IO_ERROR");
+    futures::executor::block_on(e.next(&io)).unwrap();
+    assert_eq!(
+        futures::executor::block_on(e.next(&io)).unwrap_err().code,
+        "IO_ERROR"
+    );
     e.cancel();
     io.fail.set(None);
-    assert!(e.begin_save(&io).unwrap());
+    assert!(futures::executor::block_on(e.begin_save(&io)).unwrap());
     let enc = assemble(&mut e, &io);
     assert!(e.accept(&io, "bad".into(), enc.len() as u64 - 1).is_err());
     e.cancel();
     assert_eq!(e.describe().unwrap().dirty_bytes, 512);
-    assert!(e.begin_save(&io).unwrap());
-    e.write(&io, 20, &[7]).unwrap();
-    assert!(e.next(&io).is_err());
+    assert!(futures::executor::block_on(e.begin_save(&io)).unwrap());
+    futures::executor::block_on(e.write(&io, 20, &[7])).unwrap();
+    assert!(futures::executor::block_on(e.next(&io)).is_err());
     e.cancel();
-    assert_eq!(e.read(&io, 20, 1).unwrap(), [7]);
+    assert_eq!(
+        futures::executor::block_on(e.read(&io, 20, 1)).unwrap(),
+        [7]
+    );
     save(&mut e, &io, "retry");
 }
 #[test]
@@ -206,15 +218,18 @@ fn partial_write_failure_is_atomic_and_full_sectors_need_no_old_reads() {
     create(&mut e, &io, plain.clone());
     e.clear_cache();
     io.fail.set(Some(0));
-    e.write(&io, 512, &vec![7; 512]).unwrap();
-    assert_eq!(e.read(&io, 512, 512).unwrap(), vec![7; 512]);
-    assert!(e
-        .write(&io, (CHUNK - 1) as u64, &vec![4; CHUNK + 2])
-        .is_err());
+    futures::executor::block_on(e.write(&io, 512, &vec![7; 512])).unwrap();
+    assert_eq!(
+        futures::executor::block_on(e.read(&io, 512, 512)).unwrap(),
+        vec![7; 512]
+    );
+    assert!(
+        futures::executor::block_on(e.write(&io, (CHUNK - 1) as u64, &vec![4; CHUNK + 2])).is_err()
+    );
     assert_eq!(e.describe().unwrap().dirty_sectors, 1);
     io.fail.set(None);
     assert_eq!(
-        e.read(&io, (CHUNK - 1) as u64, 3).unwrap(),
+        futures::executor::block_on(e.read(&io, (CHUNK - 1) as u64, 3)).unwrap(),
         plain[CHUNK - 1..CHUNK + 2]
     );
 }
@@ -230,7 +245,7 @@ fn corruption_substitution_and_legacy_rejected() {
         io.put("bad", b);
         let mut r = engine();
         assert_eq!(
-            r.open(&io, "bad".into(), base.len() as u64)
+            futures::executor::block_on(r.open(&io, "bad".into(), base.len() as u64))
                 .unwrap_err()
                 .code,
             "CORRUPTION"
@@ -240,33 +255,42 @@ fn corruption_substitution_and_legacy_rejected() {
         let mut b = base.clone();
         b.resize(total, 0);
         io.put("bad", b);
-        assert!(engine().open(&io, "bad".into(), total as u64).is_err());
+        assert!(
+            futures::executor::block_on(engine().open(&io, "bad".into(), total as u64)).is_err()
+        );
     }
     for pos in [HEADER, HEADER + 46, HEADER + CHUNK + OVERHEAD - 1] {
         let mut b = base.clone();
         b[pos] ^= 1;
         io.put("bad", b);
         let mut r = engine();
-        r.open(&io, "bad".into(), base.len() as u64).unwrap();
-        assert_eq!(r.read(&io, 0, 1).unwrap_err().code, "CORRUPTION");
+        futures::executor::block_on(r.open(&io, "bad".into(), base.len() as u64)).unwrap();
+        assert_eq!(
+            futures::executor::block_on(r.read(&io, 0, 1))
+                .unwrap_err()
+                .code,
+            "CORRUPTION"
+        );
     }
     let mut b = base.clone();
     let record = b[HEADER..HEADER + CHUNK + OVERHEAD].to_vec();
     b[HEADER + CHUNK + OVERHEAD..HEADER + 2 * (CHUNK + OVERHEAD)].copy_from_slice(&record);
     io.put("swap", b);
     let mut r = engine();
-    r.open(&io, "swap".into(), base.len() as u64).unwrap();
-    assert!(r.read(&io, CHUNK as u64, 1).is_err());
-    e.write(&io, 0, &[7]).unwrap();
+    futures::executor::block_on(r.open(&io, "swap".into(), base.len() as u64)).unwrap();
+    assert!(futures::executor::block_on(r.read(&io, CHUNK as u64, 1)).is_err());
+    futures::executor::block_on(e.write(&io, 0, &[7])).unwrap();
     let mut new = save(&mut e, &io, "new");
     new[HEADER..HEADER + CHUNK + OVERHEAD].copy_from_slice(&record);
     io.put("mixed", new);
     let mut r = engine();
-    r.open(&io, "mixed".into(), base.len() as u64).unwrap();
-    assert!(r.read(&io, 0, 1).is_err());
+    futures::executor::block_on(r.open(&io, "mixed".into(), base.len() as u64)).unwrap();
+    assert!(futures::executor::block_on(r.read(&io, 0, 1)).is_err());
     io.put("car", vec![0; 300]);
     assert_eq!(
-        engine().open(&io, "car".into(), 300).unwrap_err().code,
+        futures::executor::block_on(engine().open(&io, "car".into(), 300))
+            .unwrap_err()
+            .code,
         "UNSUPPORTED_FORMAT"
     );
 }
@@ -276,17 +300,17 @@ fn cache_bound_and_noop_comparisons_grouped() {
     let mut e = engine();
     create(&mut e, &io, support::bytes(34 * 1024 * 1024));
     for i in 0..544 {
-        e.read(&io, (i * CHUNK) as u64, 1).unwrap();
+        futures::executor::block_on(e.read(&io, (i * CHUNK) as u64, 1)).unwrap();
         assert!(e.describe().unwrap().cache_bytes <= CACHE_LIMIT);
     }
     io.reset();
-    e.read(&io, 0, 1).unwrap();
+    futures::executor::block_on(e.read(&io, 0, 1)).unwrap();
     assert_eq!(io.count(), CHUNK + OVERHEAD);
-    e.write(&io, 0, &vec![0; 512]).unwrap();
-    e.write(&io, 512, &vec![0; 512]).unwrap();
+    futures::executor::block_on(e.write(&io, 0, &vec![0; 512])).unwrap();
+    futures::executor::block_on(e.write(&io, 512, &vec![0; 512])).unwrap();
     e.clear_cache();
     io.reset();
-    assert!(e.begin_save(&io).unwrap());
+    assert!(futures::executor::block_on(e.begin_save(&io)).unwrap());
     assert_eq!(io.count(), CHUNK + OVERHEAD);
     e.cancel();
 }
@@ -297,7 +321,10 @@ fn fat32_free_space_slack_and_partial_tail_exact() {
     let (image, _, _) = support::fat_image();
     let hash = Sha256::digest(&image).to_vec();
     create(&mut e, &io, image);
-    assert_eq!(e.verify_image(&io).unwrap(), hash);
+    assert_eq!(
+        futures::executor::block_on(e.verify_image(&io)).unwrap(),
+        hash
+    );
 }
 #[test]
 fn length_bounds_and_cancelled_noop() {
@@ -307,14 +334,78 @@ fn length_bounds_and_cancelled_noop() {
     let io = Memory::default();
     let mut e = engine();
     create(&mut e, &io, vec![42]);
-    e.write(&io, 0, &[42]).unwrap();
-    assert!(!e.begin_save(&io).unwrap());
+    futures::executor::block_on(e.write(&io, 0, &[42])).unwrap();
+    assert!(!futures::executor::block_on(e.begin_save(&io)).unwrap());
     io.stop.set(true);
     assert!(e.accept_unchanged(&io).is_err());
     assert_eq!(e.describe().unwrap().dirty_bytes, 1);
     io.stop.set(false);
     e.cancel();
-    assert!(!e.begin_save(&io).unwrap());
+    assert!(!futures::executor::block_on(e.begin_save(&io)).unwrap());
     e.accept_unchanged(&io).unwrap();
-    assert_eq!(e.read(&io, 0, 1).unwrap(), [42]);
+    assert_eq!(
+        futures::executor::block_on(e.read(&io, 0, 1)).unwrap(),
+        [42]
+    );
+}
+
+#[test]
+fn cancellation_after_async_read_never_commits() {
+    struct Deferred<'a> {
+        inner: &'a Memory,
+    }
+    #[async_trait::async_trait(?Send)]
+    impl Io for Deferred<'_> {
+        async fn read(&self, id: &str, offset: u64, length: usize) -> Result<Vec<u8>> {
+            // Actually suspend once, then cancel as the awaited read completes.
+            let mut yielded = false;
+            futures::future::poll_fn(|cx| {
+                if yielded {
+                    std::task::Poll::Ready(())
+                } else {
+                    yielded = true;
+                    cx.waker().wake_by_ref();
+                    std::task::Poll::Pending
+                }
+            })
+            .await;
+            let result = self.inner.read(id, offset, length).await;
+            self.inner.stop.set(true);
+            result
+        }
+        fn cancelled(&self) -> bool {
+            self.inner.stop.get()
+        }
+    }
+    let io = Memory::default();
+    let mut e = engine();
+    create(&mut e, &io, support::bytes(CHUNK * 2));
+    let deferred = Deferred { inner: &io };
+    let mut r = engine();
+    assert_eq!(
+        futures::executor::block_on(r.open(
+            &deferred,
+            "base".into(),
+            io.bytes("base").len() as u64
+        ))
+        .unwrap_err()
+        .code,
+        "CANCELLED"
+    );
+    assert!(r.describe().is_err());
+    io.stop.set(false);
+    futures::executor::block_on(e.write(&io, 512, &vec![7; 512])).unwrap();
+    e.clear_cache();
+    assert_eq!(
+        futures::executor::block_on(e.write(&deferred, 65535, &[1, 2, 3]))
+            .unwrap_err()
+            .code,
+        "CANCELLED"
+    );
+    assert_eq!(e.describe().unwrap().dirty_sectors, 1);
+    io.stop.set(false);
+    assert_eq!(
+        futures::executor::block_on(e.read(&io, 512, 1)).unwrap(),
+        [7]
+    );
 }

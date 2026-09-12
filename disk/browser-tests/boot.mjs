@@ -13,6 +13,7 @@ if(process.argv.length!==3) {
 }
 const fixture=JSON.parse(await readFile(resolve(repo,process.argv[2]),'utf8'));
 const sourcePath=resolve(repo,fixture.source),diskPath=resolve(repo,fixture.file);
+const outputPrefix=fixture.gateway?'remote-':'';
 const {chromium,webkit}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 async function hashFile(path){const h=createHash('sha256');for await(const b of createReadStream(path))h.update(b);return h.digest('hex');}
 const sourceBefore=await hashFile(sourcePath);if(sourceBefore!==fixture.sha256)throw Error('Source mismatch');
@@ -24,9 +25,9 @@ try {for(const [name,type] of Object.entries({chromium,webkit})) {
  await page.evaluate(()=>{document.body.innerHTML='<input type="file" id="fixture">';});await page.locator('#fixture').setInputFiles(diskPath);
  const before=await page.evaluate(async fixture=>{
   const file=document.querySelector('#fixture').files[0];const {Slop86Disk,DiskBuffer}=await import('/build/disk/web/client.js');const {V86}=await import('/build/libv86.mjs');
-  let last=0;let c=await Slop86Disk.create({onProgress:p=>{if(performance.now()-last>5000){last=performance.now();console.log('verify '+(p.completed/1048576).toFixed(1)+' MiB');}}});await c.unlock('disk fixtures','public compatibility password','main');await c.open(file);
+  let last=0;let c=await Slop86Disk.create({onProgress:p=>{if(performance.now()-last>5000){last=performance.now();console.log('verify '+(p.completed/1048576).toFixed(1)+' MiB');}}});await c.unlock('disk fixtures','public compatibility password','main');await (fixture.gateway ? c.openRemote({gateway:fixture.gateway}) : c.open(file));
   const t=performance.now(),hash=Array.from(await c.verifyImage(),b=>b.toString(16).padStart(2,'0')).join('');const verifyMs=performance.now()-t;if(hash!==fixture.sha256)throw Error('Preboot hash mismatch');await c.close();
-  c=await Slop86Disk.create();await c.unlock('disk fixtures','public compatibility password','main');const cold=performance.now();await c.open(file);await c.read(0,512);const coldMs=performance.now()-cold,reads=await c.readStats();
+  c=await Slop86Disk.create();await c.unlock('disk fixtures','public compatibility password','main');const cold=performance.now();await (fixture.gateway ? c.openRemote({gateway:fixture.gateway}) : c.open(file));await c.read(0,512);const coldMs=performance.now()-cold,reads=await c.readStats();
   if(reads.readBytes!==65796||reads.readCalls!==2)throw Error('Cold boot reads extra data');
   const actualRead=c.read.bind(c);let inject=true;c.read=async(offset,length)=>{if(inject&&offset>=65536){inject=false;throw Object.assign(Error('Injected transient disk read failure'),{code:'IO_ERROR'});}return actualRead(offset,length);};
   let blockedResolve;const blocked=new Promise(r=>blockedResolve=r);
@@ -45,9 +46,9 @@ try {for(const [name,type] of Object.entries({chromium,webkit})) {
  await page.waitForFunction(()=>{const c=document.querySelector('canvas');if(!c||c.width<640||c.height<480)return false;const p=c.getContext('2d').getImageData(0,0,c.width,c.height).data;let teal=0,bar=0;for(let i=0;i<p.length;i+=16)if(p[i]<10&&p[i+1]>=115&&p[i+1]<=140&&p[i+2]>=115&&p[i+2]<=140)teal++;
   for(let y=c.height-20;y<c.height-3;y++)for(let x=0;x<c.width;x++){const i=(y*c.width+x)*4,r=p[i],g=p[i+1],b=p[i+2];if(r>150&&r<220&&Math.abs(r-g)<12&&Math.abs(r-b)<12)bar++;}return teal>1000&&bar>c.width*8;},null,{timeout:180000,polling:1000});
  await page.waitForTimeout(5000);const after=await page.evaluate(async()=>{await vm.stop();return {instructions:vm.get_instruction_counter(),speakerAbsent:!vm.speaker_adapter,blocked:adapter.failed,stats:await client.describe()};});
- await page.screenshot({path:repo+`build/disk/win98-${name}.png`,fullPage:true});if(errors.length||after.blocked||!after.speakerAbsent)throw Error(JSON.stringify({errors,after}));
- await page.evaluate(async()=>{await vm.destroy();await client.close();});results.push({browser:name,version:browser.version(),before,after,errors});await writeFile(repo+`build/disk/win98-${name}.json`,JSON.stringify(results.at(-1),null,2));console.log(name+': desktop reached, silent, '+after.instructions+' instructions');
+ await page.screenshot({path:repo+`build/disk/${outputPrefix}win98-${name}.png`,fullPage:true});if(errors.length||after.blocked||!after.speakerAbsent)throw Error(JSON.stringify({errors,after}));
+ await page.evaluate(async()=>{await vm.destroy();await client.close();});results.push({browser:name,version:browser.version(),before,after,errors});await writeFile(repo+`build/disk/${outputPrefix}win98-${name}.json`,JSON.stringify(results.at(-1),null,2));console.log(name+': desktop reached, silent, '+after.instructions+' instructions');
  }finally{await browser.close();}
 }
-if(await hashFile(sourcePath)!==sourceBefore)throw Error('Source changed');await writeFile(repo+'build/disk/win98-results.json',JSON.stringify(results,null,2));
+if(await hashFile(sourcePath)!==sourceBefore)throw Error('Source changed');await writeFile(repo+`build/disk/${outputPrefix}win98-results.json`,JSON.stringify(results,null,2));
 }finally{await new Promise(r=>server.close(r));}

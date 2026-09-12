@@ -1,5 +1,15 @@
 {
   "name": "my98",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "@libp2p/crypto": "5.1.23",
+    "ipfs-unixfs-exporter": "16.2.2",
+    "ipns": "11.0.1",
+    "multiformats": "14.0.5"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "playwright": "1.63.0"
+  }
 }

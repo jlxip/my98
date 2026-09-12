@@ -12,4 +12,5 @@ fi
 cargo build --manifest-path "$disk_dir/Cargo.toml" --locked --release --target wasm32-unknown-unknown
 mkdir -p "$repo_dir/build/disk/pkg" "$repo_dir/build/disk/web"
 "$bindgen" --target web --out-dir "$repo_dir/build/disk/pkg" --out-name slop86_disk "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/slop86_disk.wasm"
-cp "$disk_dir"/web/* "$repo_dir/build/disk/web/"
+cp "$disk_dir"/web/client.* "$repo_dir/build/disk/web/"
+"$repo_dir/node_modules/.bin/esbuild" "$disk_dir/web/worker.js" --bundle --format=esm --platform=browser --target=es2022 --external:../pkg/slop86_disk.js --legal-comments=inline --outfile="$repo_dir/build/disk/web/worker.js"

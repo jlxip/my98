@@ -36,8 +36,9 @@ fn operation(e: String) -> Error {
 fn corrupt(e: impl Into<String>) -> Error {
     error("CORRUPTION", e)
 }
+#[async_trait::async_trait(?Send)]
 pub trait Io {
-    fn read(&self, source: &str, offset: u64, length: usize) -> Result<Vec<u8>>;
+    async fn read(&self, source: &str, offset: u64, length: usize) -> Result<Vec<u8>>;
     fn cancelled(&self) -> bool {
         false
     }
@@ -49,9 +50,10 @@ fn check(io: &dyn Io) -> Result<()> {
         Ok(())
     }
 }
-fn exact(io: &dyn Io, source: &str, offset: u64, length: usize) -> Result<Vec<u8>> {
+async fn exact(io: &dyn Io, source: &str, offset: u64, length: usize) -> Result<Vec<u8>> {
     check(io)?;
-    let b = io.read(source, offset, length)?;
+    let b = io.read(source, offset, length).await?;
+    check(io)?;
     if b.len() != length {
         return Err(error("IO_ERROR", "Short source read"));
     }
@@ -171,7 +173,7 @@ impl Image {
             Ok(())
         }
     }
-    fn original(&mut self, io: &dyn Io, index: u64) -> Result<Zeroizing<Vec<u8>>> {
+    async fn original(&mut self, io: &dyn Io, index: u64) -> Result<Zeroizing<Vec<u8>>> {
         check(io)?;
         if let Some(b) = self.cache.get(index) {
             return Ok(b);
@@ -188,7 +190,8 @@ impl Image {
             &self.source,
             HEADER as u64 + index * (CHUNK + OVERHEAD) as u64,
             len + OVERHEAD,
-        )?;
+        )
+        .await?;
         let b = Zeroizing::new(
             self.disk
                 .open_unit(&unit(index), &enc)
@@ -200,7 +203,7 @@ impl Image {
         self.cache.put(index, b.clone());
         Ok(b)
     }
-    fn read(&mut self, io: &dyn Io, offset: u64, len: usize) -> Result<Zeroizing<Vec<u8>>> {
+    async fn read(&mut self, io: &dyn Io, offset: u64, len: usize) -> Result<Zeroizing<Vec<u8>>> {
         self.bounds(offset, len)?;
         let mut out = Zeroizing::new(vec![0; len]);
         let mut done = 0;
@@ -216,7 +219,7 @@ impl Image {
                 continue;
             }
             let index = pos / CHUNK as u64;
-            let b = self.original(io, index)?;
+            let b = self.original(io, index).await?;
             let inner = (pos % CHUNK as u64) as usize;
             let end = (CHUNK - inner).min(len - done);
             out[done..done + end].copy_from_slice(&b[inner..inner + end]);
@@ -292,13 +295,13 @@ impl Engine {
             .ok_or_else(|| operation("No disk open".into()))?
             .source)
     }
-    pub fn open(&mut self, io: &dyn Io, source: String, total: u64) -> Result<()> {
+    pub async fn open(&mut self, io: &dyn Io, source: String, total: u64) -> Result<()> {
         if self.image.is_some() || self.build.is_some() {
             return Err(operation(
                 "Close the current disk before opening another".into(),
             ));
         }
-        let b = exact(io, &source, 0, total.min(HEADER as u64) as usize)?;
+        let b = exact(io, &source, 0, total.min(HEADER as u64) as usize).await?;
         let (disk, size) = parse_header(&self.identity, &b, total)?;
         check(io)?;
         self.image = Some(Image {
@@ -337,7 +340,7 @@ impl Engine {
         Ok(())
     }
     /// Returns false for unchanged; checked marks are cleared only after every comparison succeeds.
-    pub fn begin_save(&mut self, io: &dyn Io) -> Result<bool> {
+    pub async fn begin_save(&mut self, io: &dyn Io) -> Result<bool> {
         if self.build.is_some() {
             return Err(operation("A save is already being prepared".into()));
         }
@@ -353,7 +356,7 @@ impl Engine {
             check(io)?;
             let index = sector / 128;
             if group != Some(index) {
-                original = image.original(io, index)?;
+                original = image.original(io, index).await?;
                 group = Some(index);
             }
             let inside = (sector % 128) as usize * 512;
@@ -388,7 +391,7 @@ impl Engine {
             .header
             .clone())
     }
-    pub fn next(&mut self, io: &dyn Io) -> Result<Option<Vec<u8>>> {
+    pub async fn next(&mut self, io: &dyn Io) -> Result<Option<Vec<u8>>> {
         check(io)?;
         let b = self
             .build
@@ -404,9 +407,9 @@ impl Engine {
         }
         let len = (b.size - offset).min(CHUNK as u64) as usize;
         let bytes = if let Some(source) = &b.raw {
-            Zeroizing::new(exact(io, source, offset, len)?)
+            Zeroizing::new(exact(io, source, offset, len).await?)
         } else {
-            self.image.as_mut().unwrap().read(io, offset, len)?
+            self.image.as_mut().unwrap().read(io, offset, len).await?
         };
         let result = self
             .build
@@ -448,15 +451,16 @@ impl Engine {
         self.build = None;
         self.hash = None;
     }
-    pub fn read(&mut self, io: &dyn Io, offset: u64, len: usize) -> Result<Vec<u8>> {
+    pub async fn read(&mut self, io: &dyn Io, offset: u64, len: usize) -> Result<Vec<u8>> {
         Ok(self
             .image
             .as_mut()
             .ok_or_else(|| operation("No disk open".into()))?
-            .read(io, offset, len)?
+            .read(io, offset, len)
+            .await?
             .to_vec())
     }
-    pub fn write(&mut self, io: &dyn Io, offset: u64, bytes: &[u8]) -> Result<()> {
+    pub async fn write(&mut self, io: &dyn Io, offset: u64, bytes: &[u8]) -> Result<()> {
         let image = self
             .image
             .as_mut()
@@ -479,7 +483,7 @@ impl Engine {
             let mut value = if inside == 0 && n == actual {
                 Zeroizing::new(vec![0; actual])
             } else {
-                image.read(io, start, actual)?
+                image.read(io, start, actual).await?
             };
             value[inside..inside + n].copy_from_slice(&bytes[done..done + n]);
             staged.insert(sector, value);
@@ -510,7 +514,7 @@ impl Engine {
         self.hash = Some((Sha256::new(), 0, self.revision));
         Ok(())
     }
-    pub fn verify_step(&mut self, io: &dyn Io) -> Result<Option<Vec<u8>>> {
+    pub async fn verify_step(&mut self, io: &dyn Io) -> Result<Option<Vec<u8>>> {
         check(io)?;
         let (_, index, revision) = self
             .hash
@@ -522,11 +526,12 @@ impl Engine {
         let offset = *index * CHUNK as u64;
         let size = self.describe()?.size;
         if offset < size {
-            let b = self.image.as_mut().unwrap().read(
-                io,
-                offset,
-                (size - offset).min(CHUNK as u64) as usize,
-            )?;
+            let b = self
+                .image
+                .as_mut()
+                .unwrap()
+                .read(io, offset, (size - offset).min(CHUNK as u64) as usize)
+                .await?;
             let (h, index, _) = self.hash.as_mut().unwrap();
             h.update(&b);
             *index += 1;
@@ -537,10 +542,10 @@ impl Engine {
         }
         Ok(None)
     }
-    pub fn verify_image(&mut self, io: &dyn Io) -> Result<Vec<u8>> {
+    pub async fn verify_image(&mut self, io: &dyn Io) -> Result<Vec<u8>> {
         self.verify_start()?;
         loop {
-            if let Some(hash) = self.verify_step(io)? {
+            if let Some(hash) = self.verify_step(io).await? {
                 return Ok(hash);
             }
         }

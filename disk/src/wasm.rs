@@ -8,16 +8,37 @@ impl From<Error> for JsValue {
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(catch,js_namespace=globalThis,js_name=slopDiskRead)]
-    fn host_read(source: &str, offset: f64, length: usize)
-        -> std::result::Result<Vec<u8>, JsValue>;
+    async fn host_read(
+        source: &str,
+        offset: f64,
+        length: usize,
+    ) -> std::result::Result<JsValue, JsValue>;
     #[wasm_bindgen(js_namespace=globalThis,js_name=slopDiskCancelled)]
     fn host_cancelled() -> bool;
 }
 struct BrowserIo;
+#[async_trait::async_trait(?Send)]
 impl Io for BrowserIo {
-    fn read(&self, source: &str, offset: u64, length: usize) -> Result<Vec<u8>> {
+    async fn read(&self, source: &str, offset: u64, length: usize) -> Result<Vec<u8>> {
         host_read(source, offset as f64, length)
-            .map_err(|_| error("IO_ERROR", "Source read failed"))
+            .await
+            .map(|bytes| js_sys::Uint8Array::new(&bytes).to_vec())
+            .map_err(|value| {
+                let code = js_sys::Reflect::get(&value, &JsValue::from_str("code"))
+                    .ok()
+                    .and_then(|v| v.as_string());
+                let code = match code.as_deref() {
+                    Some("CORRUPTION") => "CORRUPTION",
+                    Some("CANCELLED") => "CANCELLED",
+                    Some("UNSUPPORTED_FORMAT") => "UNSUPPORTED_FORMAT",
+                    _ => "IO_ERROR",
+                };
+                let message = js_sys::Reflect::get(&value, &JsValue::from_str("message"))
+                    .ok()
+                    .and_then(|v| v.as_string())
+                    .unwrap_or_else(|| "Source read failed".into());
+                error(code, message)
+            })
     }
     fn cancelled(&self) -> bool {
         host_cancelled()
@@ -48,14 +69,14 @@ impl Vault {
     pub fn describe(&self) -> Result<String> {
         serde_json::to_string(&self.engine.describe()?).map_err(|e| operation(e.to_string()))
     }
-    pub fn open(&mut self, source: String, total: f64) -> Result<()> {
-        self.engine.open(&BrowserIo, source, number(total)?)
+    pub async fn open(&mut self, source: String, total: f64) -> Result<()> {
+        self.engine.open(&BrowserIo, source, number(total)?).await
     }
     pub fn begin_create(&mut self, source: String, size: f64) -> Result<()> {
         self.engine.begin_create(source, number(size)?)
     }
-    pub fn begin_save(&mut self) -> Result<bool> {
-        self.engine.begin_save(&BrowserIo)
+    pub async fn begin_save(&mut self) -> Result<bool> {
+        self.engine.begin_save(&BrowserIo).await
     }
     pub fn accept_unchanged(&mut self) -> Result<()> {
         self.engine.accept_unchanged(&BrowserIo)
@@ -63,8 +84,8 @@ impl Vault {
     pub fn header(&self) -> Result<Vec<u8>> {
         self.engine.header()
     }
-    pub fn next(&mut self) -> Result<Option<Vec<u8>>> {
-        self.engine.next(&BrowserIo)
+    pub async fn next(&mut self) -> Result<Option<Vec<u8>>> {
+        self.engine.next(&BrowserIo).await
     }
     pub fn accept(&mut self, source: String, total: f64) -> Result<()> {
         self.engine.accept(&BrowserIo, source, number(total)?)
@@ -72,12 +93,14 @@ impl Vault {
     pub fn cancel(&mut self) {
         self.engine.cancel();
     }
-    pub fn read(&mut self, offset: f64, len: u32) -> Result<Vec<u8>> {
-        self.engine.read(&BrowserIo, number(offset)?, len as usize)
+    pub async fn read(&mut self, offset: f64, len: u32) -> Result<Vec<u8>> {
+        self.engine
+            .read(&BrowserIo, number(offset)?, len as usize)
+            .await
     }
-    pub fn write(&mut self, offset: f64, bytes: Vec<u8>) -> Result<()> {
+    pub async fn write(&mut self, offset: f64, bytes: Vec<u8>) -> Result<()> {
         let bytes = Zeroizing::new(bytes);
-        self.engine.write(&BrowserIo, number(offset)?, &bytes)
+        self.engine.write(&BrowserIo, number(offset)?, &bytes).await
     }
     pub fn discard(&mut self) -> Result<()> {
         self.engine.discard()
@@ -88,7 +111,7 @@ impl Vault {
     pub fn verify_start(&mut self) -> Result<()> {
         self.engine.verify_start()
     }
-    pub fn verify_step(&mut self) -> Result<Option<Vec<u8>>> {
-        self.engine.verify_step(&BrowserIo)
+    pub async fn verify_step(&mut self) -> Result<Option<Vec<u8>>> {
+        self.engine.verify_step(&BrowserIo).await
     }
 }

@@ -13,7 +13,7 @@ export async function runUi() {
  const click=async id=>{$(id).click();await idle();};
  check('Machine default main',$('machine').value==='main');check('Username label is Username',$('user').parentElement.textContent.includes('Username'));
  $('user').value='ui';$('password').value='public test password';$('login').requestSubmit();await idle();check('login opens workspace',!$('workspace').hidden);check('password input cleared',$('password').value==='');
- await click('create');check('creation produces complete download',downloads.length===1&&downloads[0].name.endsWith('.slop86'));check('create/open disabled while disk active',$('create').disabled&&$('open').disabled);
+ await click('create');check('creation produces complete download',downloads.length===1&&/^[a-f0-9]{8}\.my98$/.test(downloads[0].name));check('create/open disabled while disk active',$('create').disabled&&$('open').disabled);
  await click('boot');check('boot geometry reserve exact',adapter.get_from_cache(510,2).join()==='85,170');
  await new Promise(r=>adapter.set(10,new Uint8Array([8]),r));
  window.confirm=()=>false;await click('save');check('shutdown confirmation cancellation keeps writes',(await adapter.client.describe()).dirty_bytes===512&&downloads.length===1);
