@@ -40,3 +40,12 @@ test-stop: prepare-emulator
 remote-test: disk
 	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo run --manifest-path disk/Cargo.toml --locked --release --example compat
 	node disk/browser-tests/remote-run.mjs
+
+.PHONY: site site-test
+site: all
+	python3 scripts/package-site.py
+
+site-test: site
+	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo build --manifest-path disk/Cargo.toml --locked --release --example compat
+	node tests/pages/run.mjs
+	node tests/pages/integration.mjs

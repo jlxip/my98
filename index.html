@@ -6,14 +6,16 @@
     <title>Windows 98 · my98</title>
     <link rel="stylesheet" href="win98.css">
     <script type="module">
-        import("./src/browser/win98.js").catch(() => {
+        import("./src/browser/bootstrap.js").then(module => module.start()).catch(() => {
+            document.body.inert = false;
+            document.querySelectorAll("button, input, select").forEach(element => element.disabled = true);
             const message = document.getElementById("welcome-status");
             message.textContent = "Could not load the emulator. Check that the build is available and reload the page.";
             message.classList.add("error");
         });
     </script>
 </head>
-<body>
+<body inert>
     <details id="disk-panel">
         <summary>Encrypted disk</summary>
         <form id="disk-login" autocomplete="off">
@@ -58,6 +60,7 @@
             <label>Floppy B (optional) <input id="resume-fdb" type="file"></label>
             <button class="primary" type="submit">Resume Windows</button>
         </form>
+        <p id="acceleration-status" class="hint" role="status" aria-live="polite"></p>
         <p id="welcome-status" role="status" aria-live="polite"></p>
         <noscript>Enable JavaScript to boot Windows.</noscript>
     </main>
