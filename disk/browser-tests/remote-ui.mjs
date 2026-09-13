@@ -22,7 +22,7 @@ export async function runRemoteUi(gateway) {
     check('unavailable disk leaves identity unlocked',!$('workspace').hidden&&!$('remote').disabled&&$('boot').disabled);
     await window.setGatewayMode('large');await click('remote');
     check('remote disk enables boot and prevents replacement',!$('boot').disabled&&$('remote').disabled&&$('open').disabled&&$('create').disabled);
-    check('remote opening explained',$('status').textContent.includes('on demand'));
+    check('remote opening explained',$('status').textContent.includes('downloads in the background'));
     await click('boot');check('remote disk attached to VM',hasSession&&adapter.byteLength>0);
     await new Promise(r=>adapter.set(17,new Uint8Array([211]),r));
     await window.setGatewayMode('missing');await adapter.client.clearCaches();

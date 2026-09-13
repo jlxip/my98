@@ -1,6 +1,6 @@
 # my98 application; the emulator remains a pinned, unmodified submodule.
 .DEFAULT_GOAL := all
-.PHONY: remote-test all emulator prepare-emulator run crypto crypto-test crypto-test-browser disk disk-test disk-test-browser test-stop
+.PHONY: prefetch-test remote-test all emulator prepare-emulator run crypto crypto-test crypto-test-browser disk disk-test disk-test-browser test-stop
 all: emulator crypto disk
 
 prepare-emulator:
@@ -40,6 +40,11 @@ test-stop: prepare-emulator
 remote-test: disk
 	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo run --manifest-path disk/Cargo.toml --locked --release --example compat
 	node disk/browser-tests/remote-run.mjs
+
+prefetch-test: disk
+	node --test disk/scripts/range-profile.test.mjs
+	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo run --manifest-path disk/Cargo.toml --locked --release --example compat
+	node disk/browser-tests/prefetch-run.mjs
 
 .PHONY: site site-test
 site: all

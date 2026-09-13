@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {build} from 'esbuild';
+import {build} from '../scripts/bundle.mjs';
 import {chromium,webkit} from 'playwright';
 import {writeFile,mkdir} from 'node:fs/promises';
 import {fileURLToPath} from 'node:url';

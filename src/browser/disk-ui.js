@@ -51,7 +51,7 @@ export function setupDisk(host) {
     $("remote").onclick=()=>run("Finding remote disk…",async()=>{
         capturing=true;syncControls(true);
         state=await client.openRemote({gateway:$("gateway").value});prepared=false;
-        message("Remote disk authenticated. Data will be downloaded and verified on demand. Changes are saved locally.");
+        message("Remote disk authenticated. The full disk downloads in the background while you use it. Changes are saved locally.");
     });
     $("boot").onclick=()=>run("Booting encrypted disk…",async()=>{
         if(state.size%512)throw new Error("The image is preserved exactly, but its length does not allow booting it as an HDD.");

@@ -8,13 +8,13 @@ export async function runRemote(fixture) {
     let c;
     try {
         for(const flavor of ['kubo','v1','path']) {
-            await mode(flavor);c=await make();const state=await c.openRemote({gateway:fixture.endpoint});
+            await mode(flavor);c=await make();const state=await c.openRemote({gateway:fixture.endpoint,prefetch:{enabled:false}});
             check(flavor+' exact image size',state.size===fixture.small.size);
             check(flavor+' header-only open',(await c.readStats()).readBytes===198);
             check(flavor+' full native hash',hex(await c.verifyImage())===fixture.small.sha256);
             await c.close();c=undefined;
         }
-        await mode('small');c=await make();await c.openRemote({gateway:fixture.endpoint});
+        await mode('small');c=await make();await c.openRemote({gateway:fixture.endpoint,prefetch:{enabled:false}});
         const plain=new Uint8Array(await(await fetch('/'+fixture.small.source)).arrayBuffer());
         check('cross-record range exact',hex(await c.read(65533,12))===hex(plain.slice(65533,65545)));
         const first=await c.readStats();await c.read(65533,12);check('repeat read uses cache',(await c.readStats()).networkRequests===first.networkRequests);
@@ -52,17 +52,18 @@ export async function runRemote(fixture) {
         check('retry reuses prepared download',(await c.retryDownload()).id===saved.download.id);
         await c.close();c=undefined;
         for(const flavor of ['expired','wrong','missing']) {
-            await mode(flavor);c=await make();await rejects(flavor+' IPNS rejected',()=>c.openRemote({gateway:fixture.endpoint}),flavor==='missing'?'IO_ERROR':'CORRUPTION');
+            await mode(flavor);c=await make();await rejects(flavor+' IPNS rejected',()=>c.openRemote({gateway:fixture.endpoint,prefetch:{enabled:false}}),flavor==='missing'?'IO_ERROR':'CORRUPTION');
             check(flavor+' leaves identity without disk',await c.describe().then(()=>false,()=>true));await c.close();c=undefined;
         }
-        await mode('large');c=await make();const started=performance.now();await c.openRemote({gateway:fixture.endpoint});await c.read(0,512);
+        await mode('large');c=await make();const started=performance.now();await c.openRemote({gateway:fixture.endpoint,prefetch:{enabled:false}});await c.read(0,512);
         let stats=await c.readStats();const cold={...stats,milliseconds:performance.now()-started};
         check('1GiB opens lazily',stats.readBytes===65796&&stats.networkBytes<2*1048576);
         check('1GiB far tail direct access',(await c.read(1073741823,1))[0]===0);
         const before=(await c.readStats()).networkBytes;
-        // Span >32MiB of ciphertext without materializing a complete disk.
+        // Retain >32MiB, then revisit the first block without another request.
         for(let offset=0;offset<36*1048576;offset+=262144)await c.read(offset,1);
-        stats=await c.readStats();check('block LRU bounded',stats.blockCacheBytes<=32*1048576&&stats.networkBytes-before>32*1048576);
+        stats=await c.readStats();check('blocks retained beyond former LRU limit',stats.blockCacheBytes>32*1048576&&stats.networkBytes-before>32*1048576);
+        const requests=stats.networkRequests;await c.read(0,1);check('retained first block needs no network',(await c.readStats()).networkRequests===requests);
         await c.close();c=undefined;
         return {checks,cold};
     } finally {await c?.close().catch(()=>{});}

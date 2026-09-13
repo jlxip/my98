@@ -46,7 +46,7 @@ export class Slop86Disk {
     }
     createFromImage(file) {return this.call("create", {file});}
     open(file) {return this.call("open", {file});}
-    openRemote({gateway} = {}) {return this.call("openRemote", {gateway});}
+    openRemote({gateway, prefetch} = {}) {return this.call("openRemote", {gateway,prefetch});}
     describe() {return this.call("describe");}
     read(offset,length) {return this.call("read", {offset,length});}
     write(offset,data) {const bytes=new Uint8Array(data).slice();return this.call("write", {offset,bytes}, [bytes.buffer]);}
@@ -56,6 +56,8 @@ export class Slop86Disk {
     verifyImage() {return this.call("verify");}
     discardWrites() {return this.call("discard");}
     readStats() {return this.call("readStats");}
+    readTrace() {return this.call("readTrace");}
+    resumePrefetch() {return this.call("resumePrefetch");}
     clearCaches() {return this.call("clearCaches");}
     cancel() {
         this.cancelEpoch = (this.cancelEpoch + 1) | 0;
@@ -120,6 +122,7 @@ export class DiskBuffer {
         if(this.pumping) throw new Error("Disk is still stopping");
         if(this.disposed) throw new Error("Disk adapter is closed");
         this.failed = false; this.error = undefined;
+        await this.client.resumePrefetch?.();
         await this.pump();
         if(this.failed) throw this.error;
     }

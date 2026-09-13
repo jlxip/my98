@@ -65,19 +65,22 @@ async function execute(op,a) {
     }
     case "openRemote": {
         if(current) throw fail("OPERATION_FAILED", "Close the current disk before opening another");
-        const remote = new RemoteDisk({gateway:a.gateway, onNetwork:(bytes, calls)=>{networkBytes+=bytes;networkRequests+=calls;}});
+        const remote = new RemoteDisk({gateway:a.gateway, prefetch:a.prefetch, onNetwork:(bytes, calls)=>{networkBytes+=bytes;networkRequests+=calls;}});
         let id;
         try {
             progress("resolve",0,0);
             await remote.open(identity, activeRequest.signal); check();
             id = source(remote); await vault.open(id,remote.size);
-            current = id; prepared = undefined; return describe();
+            current = id; prepared = undefined; remote.startPrefetch(); return describe();
         } catch(error) {if(id)remove(id);else remote.close();throw error;}
     }
     case "describe": return describe();
     case "read": {
         if(!Number.isSafeInteger(a.length) || a.length < 0 || a.length > 0xffffffff) throw fail("IO_ERROR","Invalid read length");
-        return await vault.read(a.offset,a.length);
+        const start=performance.now(), input=sources.get(current), before=readCalls;
+        input?.noteDemand?.(a.offset,a.length);
+        try {return await vault.read(a.offset,a.length);}
+        finally {input?.traceEvent?.('guest-read',{offset:a.offset,length:a.length,ms:performance.now()-start,hit:before===readCalls});}
     }
     case "write": await vault.write(a.offset,a.bytes);return describe();
     case "save": {
@@ -109,7 +112,9 @@ async function execute(op,a) {
             if(count%16===0) {progress("verify",count*65536,describe().size);await yieldEvents();}
         }} catch(error) {vault.cancel();throw error;}
     }
-    case "readStats": return {readBytes,readCalls,networkBytes,networkRequests,blockCacheBytes:sources.get(current)?.cacheBytes||0};
+    case "readStats": return {readBytes,readCalls,networkBytes,networkRequests,blockCacheBytes:sources.get(current)?.cacheBytes||0,remote:sources.get(current)?.stats?.()};
+    case "readTrace": return sources.get(current)?.trace || [];
+    case "resumePrefetch": sources.get(current)?.startPrefetch?.();return null;
     case "clearCaches": vault.clear_cache();sources.get(current)?.clearCache?.();return null;
     case "close": vault.free();vault=undefined;for(const id of sources.keys())remove(id);identity=current=prepared=undefined;return null;
     default: throw fail("OPERATION_FAILED","Unknown disk operation");
@@ -121,7 +126,7 @@ function errorInfo(error) {
     return {code:error?.code || "OPERATION_FAILED",message};
 }
 self.onmessage = ({data}) => {
-    if(data.op === "cancel") {cancelEpoch=data.epoch;activeRequest?.abort();return;}
+    if(data.op === "cancel") {cancelEpoch=data.epoch;activeRequest?.abort();sources.get(current)?.cancel?.();return;}
     if(data.op === "configure") {cancelView=data.buffer ? new Int32Array(data.buffer):undefined;return;}
     sequence=sequence.then(async()=>{
         const {id,op,args,epoch}=data;
