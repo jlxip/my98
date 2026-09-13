@@ -15,7 +15,8 @@ async function download(page, selector, path) {
     await file.saveAs(path); return path;
 }
 async function exitFullscreen(page) {
-    await page.evaluate(async () => { if(document.fullscreenElement) await document.exitFullscreen(); else if(document.webkitFullscreenElement) document.webkitExitFullscreen(); });
+    await page.evaluate(() => document.querySelector("#exit-fullscreen").click());
+    await page.waitForFunction(() => !document.querySelector("#vm-view").classList.contains("expanded"));
 }
 async function login(page) {
     await page.locator("#disk-panel > summary").click();

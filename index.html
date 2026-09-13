@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>Windows 98 · my98</title>
     <link rel="stylesheet" href="win98.css">
     <script type="module">
@@ -90,8 +90,16 @@
             </div>
             <p id="session-status" role="status" aria-live="polite"></p>
         </header>
-        <div id="display" tabindex="0" aria-label="Windows 98 display">
-            <div id="screen_container"><div id="screen"></div><canvas id="vga"></canvas></div>
+        <div id="vm-view">
+            <div id="display" tabindex="0" aria-label="Windows 98 display" aria-describedby="touch-hint">
+                <div id="screen_container"><div id="screen"></div><canvas id="vga"></canvas></div>
+            </div>
+            <div id="view-controls">
+                <span id="touch-hint" class="touch-control">Slide to move · Tap to click</span>
+                <button id="touch-drag" class="touch-control" aria-pressed="false" title="Hold the left mouse button during the next swipe">Drag</button>
+                <button id="touch-right" class="touch-control">Right click</button>
+                <button id="exit-fullscreen" hidden>Controls</button>
+            </div>
         </div>
     </main>
 </body>

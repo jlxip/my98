@@ -9,7 +9,7 @@ SITE = ROOT / "build/site"
 # An explicit file list excludes fixtures and stale build outputs by construction.
 FILES = [
     "index.html", "win98.css", "coi-serviceworker.js",
-    "src/browser/bootstrap.js", "src/browser/win98.js", "src/browser/disk-ui.js",
+    "src/browser/vm-input.js", "src/browser/bootstrap.js", "src/browser/win98.js", "src/browser/disk-ui.js",
     "build/libv86.mjs", "build/v86.wasm", "build/v86-fallback.wasm",
     "build/disk/web/client.js", "build/disk/web/worker.js",
     "build/disk/pkg/slop86_disk.js", "build/disk/pkg/slop86_disk_bg.wasm",

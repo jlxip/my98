@@ -54,3 +54,4 @@ site-test: site
 	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo build --manifest-path disk/Cargo.toml --locked --release --example compat
 	node tests/pages/run.mjs
 	node tests/pages/integration.mjs
+	node tests/pages/mobile.mjs

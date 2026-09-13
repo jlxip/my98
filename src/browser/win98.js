@@ -1,5 +1,6 @@
 import { V86 } from "../../build/libv86.mjs";
 import { setupDisk } from "./disk-ui.js";
+import { setupTouch, setupFullscreen } from "./vm-input.js";
 
 const $ = id => document.getElementById(id);
 const media = { cdrom: null, fda: null, fdb: null };
@@ -28,6 +29,9 @@ function updateControls()
 {
     document.querySelectorAll("button, input, select").forEach(element => element.disabled = busy);
     diskController?.syncControls(busy);
+    $("exit-fullscreen").disabled = false;
+    for(const id of ["touch-drag", "touch-right"]) $(id).disabled = busy || fatal || diskBlocked || !emulator?.is_running();
+    if(busy || fatal || diskBlocked || !emulator?.is_running()) touch.release();
     for(const id of ["download-disk", "save-state", "load-state"]) $(id).disabled = busy || encryptedSession;
     if(!emulator) return;
     $("pause").textContent = emulator.is_running() ? "Pause" : "Resume";
@@ -129,7 +133,8 @@ function fitScreen()
 
 function captureMouse()
 {
-    if(document.pointerLockElement || busy || fatal || !emulator) return;
+    if(document.pointerLockElement || busy || fatal || !emulator ||
+        !$("display").requestPointerLock || matchMedia("(pointer: coarse)").matches) return;
     emulator.mouse_set_enabled(true);
     try
     {
@@ -140,22 +145,11 @@ function captureMouse()
     catch { status("Could not capture the mouse. Click inside Windows to try again."); }
 }
 
-async function fullscreen()
+function fullscreen()
 {
-    const display = $("display");
-    // Fullscreen consumes activation; request pointer lock first, without awaiting it.
+    // Fullscreen consumes activation; request desktop pointer lock first.
     captureMouse();
-    try
-    {
-        const request = display.requestFullscreen || display.webkitRequestFullscreen;
-        if(!request) throw new Error("Fullscreen unavailable");
-        await request.call(display);
-    }
-    catch
-    {
-        status("Windows is still running here. Use the Fullscreen button when your browser allows it.");
-    }
-    fitScreen();
+    return screenView.enter();
 }
 
 async function paused(work)
@@ -270,16 +264,16 @@ async function start(disk, state, attached = {}, diskAdapter = null)
         emulator.run();
         await fullscreenAttempt;
         status((encryptedSession ? "Encrypted disk: shut down Windows and save the full disk when you finish." : "Preserve your changes by downloading the disk or saving the state.") +
-            (!(document.fullscreenElement || document.webkitFullscreenElement) ? " Fullscreen is available in the toolbar." : ""));
+            (!screenView.expanded ? " Fullscreen is available in the toolbar." : ""));
         fitScreen();
         // action() still owns the pending state until it returns.
         setTimeout(focusScreen, 0);
     }
     catch(error)
     {
+        touch.release();
         if(emulator) { await emulator.destroy(); emulator = undefined; }
-        if(document.fullscreenElement) await document.exitFullscreen();
-        else if(document.webkitFullscreenElement) document.webkitExitFullscreen();
+        await screenView.exit();
         $("session").hidden = true;
         $("welcome").hidden = false;
         throw error;
@@ -391,12 +385,20 @@ for(const drive of Object.keys(media))
     });
     if(drive !== "cdrom") bind("download-" + drive, "Preparing download…", () => exportDisk(drive));
 }
-$("display").addEventListener("pointerdown", () => { focusScreen(); captureMouse(); });
+const touch = setupTouch({
+    display: $("display"), view: $("vm-view"), drag: $("touch-drag"), right: $("touch-right"),
+    getMachine: () => busy || fatal || diskBlocked ? null : emulator, focus: focusScreen,
+});
+const screenView = setupFullscreen({
+    view: $("vm-view"), exitButton: $("exit-fullscreen"), fit: fitScreen, focus: focusScreen,
+    status, release: () => touch.release(),
+});
+$("display").addEventListener("pointerdown", event => {
+    if(event.pointerType === "mouse") { focusScreen(); captureMouse(); }
+});
 document.addEventListener("focusin", event => {
     if(emulator) emulator.keyboard_set_enabled($("display").contains(event.target));
 });
-for(const event of ["fullscreenchange", "webkitfullscreenchange"])
-    document.addEventListener(event, () => { fitScreen(); focusScreen(); });
 document.addEventListener("pointerlockchange", () => {
     updateControls();
     focusScreen();
@@ -423,11 +425,14 @@ diskController = setupDisk({
     setBusy(value) { busy = value; updateControls(); },
     async stop() { if(emulator) await emulator.stop(); },
     async boot(adapter, name) {
+        touch.release();
         if(emulator) { await emulator.destroy(); emulator = undefined; }
         fatal = false; diskBlocked = false;
         await start({ name }, null, {}, adapter);
     },
     async close() {
+        touch.release();
+        if(encryptedSession) await screenView.exit();
         if(encryptedSession && emulator) { await emulator.destroy(); emulator = undefined; }
         if(encryptedSession) {
             encryptedSession = false; fatal = false; diskBlocked = false;

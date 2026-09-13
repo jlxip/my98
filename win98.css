@@ -35,9 +35,7 @@ legend { color: #929ba8; font-size: 11px; padding: 0 0 4px; }
 #screen_container { position: absolute; top: 50%; left: 50%; transform-origin: 0 0; }
 #screen { white-space: pre; font: 16px/16px monospace; }
 #screen_container canvas { display: block; }
-#display:fullscreen { width: 100vw; height: 100vh; }
-#display:-webkit-full-screen { width: 100vw; height: 100vh; }
-@media (max-width: 640px) { header { padding: 8px; } #controls { gap: 8px; } #session { min-height: 650px; } }
+@media (max-width: 640px) { header { padding: 8px; } #controls { gap: 8px; } #session { height: auto; min-height: 100dvh; } #vm-view { min-height: 60dvh; } }
 
 @media (max-width: 640px) { .session-title { flex-wrap: wrap; gap: 8px; } #fullscreen { width: 100%; } }
 
@@ -49,3 +47,30 @@ legend { color: #929ba8; font-size: 11px; padding: 0 0 4px; }
 #disk-panel button { margin: .25rem; }
 #disk-identity { overflow-wrap: anywhere; }
 #disk-status { min-height: 1.5em; }
+
+#vm-view { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; background: #000; }
+#display { touch-action: none; overscroll-behavior: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+#view-controls { display: none; align-items: center; justify-content: center; flex: 0 0 auto; gap: 8px; padding: 6px; background: #15171b; }
+#view-controls button { min-height: 44px; touch-action: manipulation; }
+#touch-hint { font-size: 12px; color: #b1b8c3; }
+#touch-drag[aria-pressed=true] { color: #14243b; background: #b8d2f9; }
+.touch-control { display: none; }
+#vm-view.touch-input .touch-control { display: inline-block; }
+#vm-view.touch-input #view-controls, #vm-view.expanded #view-controls { display: flex; }
+html.vm-expanded, html.vm-expanded body { overflow: hidden; overscroll-behavior: none; }
+#vm-view.expanded {
+    position: fixed; z-index: 1000; top: var(--view-top, 0px); left: var(--view-left, 0px);
+    width: var(--view-width, 100vw); height: var(--view-height, 100dvh); min-height: 0;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+#vm-view.expanded #display { min-height: 0; }
+#vm-view:fullscreen { top: 0; left: 0; width: 100%; height: 100%; }
+#vm-view:-webkit-full-screen { top: 0; left: 0; width: 100%; height: 100%; }
+@media (any-pointer: coarse) {
+    #vm-view .touch-control { display: inline-block; }
+    #vm-view #view-controls { display: flex; }
+    #mouse { display: none; }
+}
+@media (max-width: 540px) { #touch-hint { display: none !important; } }
+
+@media (max-width: 640px) { #vm-view:not(.expanded) { min-height: 60dvh; } }
