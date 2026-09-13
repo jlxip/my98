@@ -1,6 +1,8 @@
 name: GitHub Pages
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       deploy:
@@ -53,7 +55,7 @@ jobs:
           path: build/site
 
   deploy:
-    if: inputs.deploy && github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.deploy)
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 10
