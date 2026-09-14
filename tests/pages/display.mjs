@@ -11,31 +11,31 @@ const results = [];
 for(const [name, type] of Object.entries({ chromium, webkit })) {
     const server = await serveSite({ headers: true }), browser = await type.launch();
     try {
-        const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
-        await context.routeWebSocket("**/*", socket => socket.close());
-        await context.addInitScript(quietAudio);
-        const page = await context.newPage(), errors = [];
-        page.on("pageerror", error => errors.push(String(error)));
-        await page.goto(server.url);
-        await page.waitForFunction(() => !document.body.inert);
-        await page.evaluate(async () => {
-            const { V86 } = await import("./build/libv86.mjs"), run = V86.prototype.run;
-            V86.prototype.run = function(...args) { window.vm = this; return run.apply(this, args); };
-        });
-        const chooser = page.waitForEvent("filechooser");
-        await page.locator("#choose-disk").click();
-        await (await chooser).setFiles({ name: "display.img", mimeType: "application/octet-stream", buffer: disk });
-        await page.waitForFunction(() => window.vm?.is_running() && !document.querySelector("#pause").disabled);
-        await page.evaluate(() => window.vm.stop());
-        await page.waitForFunction(() => !window.vm.is_running());
+        // Keep each viewport in a fresh context. Resizing after native fullscreen
+        // can leave headless Chromium's pointer coordinates stale on Linux.
         for(const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
-            // The CSS class clears before the asynchronous native exit completes.
-            // Resizing during that transition can leave Chromium's click coordinates stale.
+            const context = await browser.newContext({ viewport });
+            await context.routeWebSocket("**/*", socket => socket.close());
+            await context.addInitScript(quietAudio);
+            const page = await context.newPage(), errors = [];
+            page.on("pageerror", error => errors.push(String(error)));
+            await page.goto(server.url);
+            await page.waitForFunction(() => !document.body.inert);
+            await page.evaluate(async () => {
+                const { V86 } = await import("./build/libv86.mjs"), run = V86.prototype.run;
+                V86.prototype.run = function(...args) { window.vm = this; return run.apply(this, args); };
+            });
+            const chooser = page.waitForEvent("filechooser");
+            await page.locator("#choose-disk").click();
+            await (await chooser).setFiles({ name: "display.img", mimeType: "application/octet-stream", buffer: disk });
+            await page.waitForFunction(() => window.vm?.is_running() && !document.querySelector("#pause").disabled);
+            await page.evaluate(() => window.vm.stop());
+            await page.waitForFunction(() => !window.vm.is_running());
+            // Wait for the native exit as well as the application's layout change.
             await page.evaluate(() => document.querySelector("#exit-fullscreen").click());
             await page.waitForFunction(() =>
                 !document.querySelector("#vm-view").classList.contains("expanded") &&
                 !document.fullscreenElement && !document.webkitFullscreenElement);
-            await page.setViewportSize(viewport);
             for(const expanded of [false, true]) {
                 if(expanded) await page.locator("#fullscreen").click();
                 for(const [width, height, bpp, aspect] of [
@@ -75,9 +75,10 @@ for(const [name, type] of Object.entries({ chromium, webkit })) {
                     results.push({ browser: name, viewport, expanded, mode: [width, height, bpp], layout });
                 }
             }
+            assert.deepEqual(errors, []);
+            await context.close();
         }
-        assert.deepEqual(errors, []);
-        console.log(`${name}: VGA/text/desktop transitions, viewport resize and fullscreen PASS`);
+        console.log(`${name}: VGA/text transitions, desktop/mobile layouts and fullscreen PASS`);
     } finally { await browser.close(); await server.close(); }
 }
 await writeFile(`${output}/results.json`, JSON.stringify(results, null, 2));
