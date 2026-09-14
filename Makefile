@@ -43,6 +43,7 @@ remote-test: disk
 
 prefetch-test: disk
 	node --test disk/scripts/range-profile.test.mjs
+	node --test disk/scripts/boot-analysis.test.mjs
 	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo run --manifest-path disk/Cargo.toml --locked --release --example compat
 	node disk/browser-tests/prefetch-run.mjs
 
@@ -54,4 +55,7 @@ site-test: site
 	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo build --manifest-path disk/Cargo.toml --locked --release --example compat
 	node tests/pages/run.mjs
 	node tests/pages/integration.mjs
+	node tests/pages/boot-analysis.mjs
+	node tests/pages/media.mjs
 	node tests/pages/mobile.mjs
+	node tests/pages/display.mjs

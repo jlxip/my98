@@ -1,6 +1,5 @@
 import {AdaptivePrefetchOrder, adaptivePolicies} from './prefetch-order.js';
 import {matchingRanges, RangePrefetchOrder} from './range-prefetch.js';
-import bootProfiles from './boot-range-profiles.json';
 import {CID} from 'multiformats/cid';
 import {sha256} from 'multiformats/hashes/sha2';
 import {publicKeyFromRaw} from '@libp2p/crypto/keys';
@@ -73,7 +72,7 @@ export class RemoteDisk {
             this.coveredBytes = this.headerCovered ? HEADER : 0;
             this.cursor = 0;
             this.lastDemand = 0;
-            const profile=this.bootProfile || bootProfiles.find(p=>p.cid===this.remote?.cid);
+            const profile=this.bootProfile;
             const ranges=['auto','ranges'].includes(this.requestedPolicy) ? matchingRanges(profile,this.remote?.cid,this.coverage.length) : undefined;
             this.policy=this.requestedPolicy==='auto' ? (ranges?.length?'ranges':'demand') : this.requestedPolicy;
             this.rangeOrder=this.policy==='ranges' && ranges ? new RangePrefetchOrder(ranges,this.coverage) : undefined;

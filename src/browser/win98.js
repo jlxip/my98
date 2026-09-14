@@ -79,6 +79,26 @@ async function readDisk(file, drive)
 {
     if(!file?.size) throw new Error("The file is empty. Choose a disk image.");
     const alignment = drive === "cdrom" ? 2048 : 512;
+    if(drive === "cdrom" && file.size % alignment)
+    {
+        // Some ISO exports include an unaligned trailer (e.g. Nero metadata).
+        // Discard only the partial final sector, and only outside a complete
+        // ISO9660 volume. Never pad a truncated image or guess a raw CD layout.
+        const end = file.size - file.size % alignment;
+        const header = new Uint8Array(await file.slice(16 * alignment, 17 * alignment).arrayBuffer());
+        if(header.length === alignment && header[0] === 1 && header[6] === 1 &&
+            String.fromCharCode(...header.subarray(1, 6)) === "CD001")
+        {
+            const view = new DataView(header.buffer);
+            const sectors = view.getUint32(80, true);
+            if(sectors >= 17 && sectors === view.getUint32(84, false) &&
+                view.getUint16(128, true) === alignment && view.getUint16(130, false) === alignment &&
+                sectors * alignment <= end)
+            {
+                file = new File([file.slice(0, end)], file.name, { type: file.type, lastModified: file.lastModified });
+            }
+        }
+    }
     if(file.size % alignment) throw new Error("The image size is invalid for this drive.");
     if(drive === "fda" || drive === "fdb")
     {
@@ -117,16 +137,25 @@ function fitScreen()
     const height = graphical ? canvas.height : text.offsetHeight;
     if(!width || !height) return;
     const area = display.getBoundingClientRect();
-    const scale = Math.min(area.width / width, area.height / height);
-    // V86 measures its canvas when modes change. Scaling its parent feeds
-    // that scale back into those measurements, so size the canvas directly.
+    // The emulator owns pixel aspect correction; this page only fits its output.
+    const aspect = emulator?.screen_get_aspect_ratio() || width / height;
+    const visibleWidth = Math.min(area.width, area.height * aspect);
+    const visibleHeight = visibleWidth / aspect;
+    const scaleX = visibleWidth / width, scaleY = visibleHeight / height;
     if(graphical)
     {
-        canvas.style.width = width * scale + "px";
-        canvas.style.height = height * scale + "px";
-        canvas.style.imageRendering = Number.isInteger(scale) ? "pixelated" : "";
+        canvas.style.width = visibleWidth + "px";
+        canvas.style.height = visibleHeight + "px";
+        canvas.style.imageRendering = Number.isInteger(scaleX) && Number.isInteger(scaleY) ? "pixelated" : "";
     }
-    screen.style.transform = `translate(-50%, -50%) scale(${graphical ? 1 : scale})`;
+    // Replace the adapter's default text scale instead of applying it twice.
+    if(!graphical)
+    {
+        text.style.transform = "";
+        text.style.marginRight = "";
+        text.style.marginBottom = "";
+    }
+    screen.style.transform = `translate(-50%, -50%) scale(${graphical ? 1 : scaleX}, ${graphical ? 1 : scaleY})`;
     // Center relative to the displayed screen dimensions.
     screen.style.transformOrigin = "center center";
 }
@@ -202,12 +231,12 @@ async function exportDisk(drive)
     status("Disk download prepared.");
 }
 
-async function start(disk, state, attached = {}, diskAdapter = null)
+async function start(disk, state, attached = {}, diskAdapter = null, autoFullscreen = true)
 {
     // Invoke fullscreen before the first asynchronous read loses user activation.
     $("welcome").hidden = true;
     $("session").hidden = false;
-    const fullscreenAttempt = fullscreen();
+    const fullscreenAttempt = autoFullscreen ? fullscreen() : screenView.exit();
     try
     {
         status(state ? "Preparing state…" : "Preparing Windows…");
@@ -229,7 +258,7 @@ async function start(disk, state, attached = {}, diskAdapter = null)
                 try { return (await WebAssembly.instantiate(module, imports)).exports; }
                 catch(error) { initializationError = error; return new Promise(() => {}); }
             },
-            memory_size: 128 * 1024 * 1024,
+            memory_size: 256 * 1024 * 1024,
             vga_memory_size: 8 * 1024 * 1024,
             bios: { buffer: bios }, vga_bios: { buffer: vgaBios },
             hda, ...disks, boot_order: 0x312, acpi: false,
@@ -424,11 +453,11 @@ diskController = setupDisk({
     hasSession: () => !!emulator,
     setBusy(value) { busy = value; updateControls(); },
     async stop() { if(emulator) await emulator.stop(); },
-    async boot(adapter, name) {
+    async boot(adapter, name, {autoFullscreen = true} = {}) {
         touch.release();
         if(emulator) { await emulator.destroy(); emulator = undefined; }
         fatal = false; diskBlocked = false;
-        await start({ name }, null, {}, adapter);
+        await start({ name }, null, {}, adapter, autoFullscreen);
     },
     async close() {
         touch.release();

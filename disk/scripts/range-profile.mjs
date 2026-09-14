@@ -11,7 +11,7 @@ const better=(hits,size,rank,otherHits,otherSize,otherRank)=>
 // At most 32 disjoint ranges, each above the utilization floor. Maximize distinct
 // observed units covered, then minimize downloaded units, then prefer earlier reads.
 // Exact dynamic programming with prefix maxima: O(32*n*log(n)), O(32*n) memory.
-export function selectBootRanges(firstTouchUnits, {minUtilization=0.75}={}) {
+export function selectBootRanges(firstTouchUnits, {minUtilization=0.5}={}) {
     const percent=Math.round(minUtilization*100);
     if(!Number.isFinite(minUtilization) || percent<1 || percent>100 || Math.abs(percent/100-minUtilization)>1e-9)throw Error('Utilization must be a whole percentage from 1 to 100');
     const ranks=new Map();

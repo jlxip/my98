@@ -2,6 +2,7 @@
 export function setupDisk(host) {
     const $ = id => document.getElementById("disk-" + id);
     let client, BufferClass, state, adapter, active = false, working = false, capturing = false, prepared = false;
+    let analyzing = false, analysisError;
     const message = (text,error=false) => { $("status").textContent=text;$("status").classList.toggle("error",error); };
     function syncControls(busy) {
         $("workspace").hidden=!client;$("login").hidden=!!client;
@@ -11,6 +12,9 @@ export function setupDisk(host) {
         $("boot").disabled ||= active || !!adapter?.failed;
         $("save").disabled ||= !active || !!adapter?.failed;
         $("download").disabled ||= !!state?.dirty_bytes;
+        $("analyze").textContent = analyzing ? "Stop analyzing" : "Analyze boot";
+        $("analyze").disabled ||= !analyzing && (!state?.remote || !!state.dirty_bytes || active || !!adapter?.failed);
+        if(analyzing) for(const id of ["save", "download", "verify", "discard", "retry"]) $(id).disabled = true;
         $("retry").disabled ||= !prepared;
         $("resume").hidden=!adapter?.failed;$("resume").disabled=busy||working||!adapter?.failed;
         $("cancel").hidden=!capturing;$("cancel").disabled=!capturing;
@@ -31,7 +35,11 @@ export function setupDisk(host) {
         event.preventDefault();let username=$("user").value,password=$("password").value,machine=$("machine").value;$("password").value="";
         run("Unlocking identity…",async()=>{
             const module=await import("../../build/disk/web/client.js");BufferClass=module.DiskBuffer;
-            const candidate=await module.Slop86Disk.create({onProgress:p=>{
+            const candidate=await module.Slop86Disk.create({onAnalysis:event=>{
+                analysisError = event.error;
+                message(analysisError, true);
+                void client.cancelBootAnalysis().then(() => { analyzing = false; syncControls(host.busy()); }).catch(error => message(error.message, true));
+            },onProgress:p=>{
                 if(capturing && p.phase==="resolve") message("Finding remote disk…");
                 else if(capturing) message(`${({verify:"Verifying",encrypt:"Encrypting",download:"Downloading",resolve:"Finding remote disk"})[p.phase]||"Working"}: ${(p.completed/1048576).toFixed(1)} MiB…`);
             }});
@@ -53,12 +61,28 @@ export function setupDisk(host) {
         state=await client.openRemote({gateway:$("gateway").value});prepared=false;
         message("Remote disk authenticated. The full disk downloads in the background while you use it. Changes are saved locally.");
     });
-    $("boot").onclick=()=>run("Booting encrypted disk…",async()=>{
+    async function boot(analyze = false) {
         if(state.size%512)throw new Error("The image is preserved exactly, but its length does not allow booting it as an HDD.");
         if(host.hasSession()&&!window.confirm("Close the current Windows session and boot this disk? Save its disk or state first."))return;
-        await client.read(0,512);
-        adapter?.dispose();adapter=new BufferClass(client,state.size,async error=>{await host.fail(error);message("Disk stopped: "+error.message+". You can retry the operation.",true);syncControls(host.busy());});
-        await host.boot(adapter,"Encrypted disk");active=true;message("Windows is using the encrypted disk. Shut it down before saving.");
+        try {
+            if(analyze) { await client.startBootAnalysis(); analyzing = true; analysisError = undefined; }
+            await client.read(0,512);
+            adapter?.dispose();adapter=new BufferClass(client,state.size,async error=>{await host.fail(error);message("Disk stopped: "+error.message+". You can retry the operation.",true);syncControls(host.busy());});
+            await host.boot(adapter,"Encrypted disk",{autoFullscreen:!analyze});active=true;
+            message(analysisError || (analyzing ? "Recording disk reads. When startup is complete, select Stop analyzing to download the ranges." : "Windows is using the encrypted disk. Shut it down before saving."), !!analysisError);
+        } catch(error) {
+            if(analyze) { await client.cancelBootAnalysis().catch(()=>{}); analyzing = false; }
+            throw error;
+        }
+    }
+    $("boot").onclick=()=>run("Booting encrypted disk…",()=>boot());
+    $("analyze").onclick=()=>run(analyzing ? "Generating boot ranges…" : "Starting boot analysis…",async()=>{
+        if(!analyzing) { await boot(true); return; }
+        const profile = await client.finishBootAnalysis();
+        analyzing = false;
+        const id = state.disk_id.slice(0,4).map(n=>n.toString(16).padStart(2,"0")).join("");
+        host.download(new Blob([JSON.stringify(profile, null, 2) + "\n"], {type:"application/json"}), `${id}-boot-ranges.json`);
+        message("Boot ranges prepared. Check that the JSON was saved. Windows can continue running.");
     });
     $("save").onclick=()=>run("Preparing save…",async()=>{
         if(!window.confirm("Has Windows finished shutting down? Confirm to stop the VM and save the full disk.")){message("Save cancelled.");return;}
@@ -81,7 +105,7 @@ export function setupDisk(host) {
     $("close").onclick=()=>run("Closing identity…",async()=>{
         if(!window.confirm("Close the identity? Pending changes and the prepared download for this session will be lost."))return;
         if(active)await host.stop();adapter?.dispose();adapter=undefined;await host.close();active=false;
-        await client.close();client=state=undefined;prepared=false;$("identity").textContent="";message("Identity closed.");
+        await client.close();client=state=undefined;prepared=false;analyzing=false;analysisError=undefined;$("identity").textContent="";message("Identity closed.");
     });
     return {syncControls};
 }

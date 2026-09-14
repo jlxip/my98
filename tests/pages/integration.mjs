@@ -4,6 +4,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { serveSite, quietAudio } from "./server.mjs";
 import { diskFixture } from "./fixture.mjs";
+import { selectBootRanges } from "../../disk/scripts/range-profile.mjs";
 const results = [], f = await diskFixture();
 const ready = page => page.waitForFunction(() => document.body && !document.body.inert && !document.querySelector("#choose-disk").disabled);
 async function pick(page, selector, file) {
@@ -51,8 +52,10 @@ try {
             await page.goto(server.url); await ready(page); await login(page);
             await pick(page, "#disk-open", f.file);
             await page.waitForFunction(() => !document.querySelector("#disk-boot").disabled);
+            assert.equal(await page.locator("#disk-analyze").isDisabled(), true);
             await page.locator("#disk-boot").click();
             await page.waitForFunction(() => !document.querySelector("#disk-save").disabled);
+            assert.equal(await page.locator('#vm-view').evaluate(e=>e.classList.contains('expanded')), true);
             await exitFullscreen(page);
             await page.locator("#disk-save").click();
             await page.waitForFunction(() => document.querySelector("#disk-status").textContent.includes("No changes"));
@@ -64,7 +67,57 @@ try {
             await page.locator("#disk-remote").click();
             await page.waitForFunction(() => !document.querySelector("#disk-boot").disabled);
             const remote = await download(page, "#disk-download", `build/pages-tests/${name}-remote.my98`); f.verify(remote);
-            await page.locator("#disk-boot").click(); await page.waitForFunction(() => !document.querySelector("#disk-save").disabled);
+            // Worker API records cached demand, not background reads or writes.
+            const analysis = await page.evaluate(async gateway => {
+                const {Slop86Disk} = await import("./build/disk/web/client.js");
+                const c = await Slop86Disk.create();
+                const reject = async fn => { try { await fn(); } catch { return; } throw Error('Expected rejection'); };
+                try {
+                    await c.unlock('disk fixtures', 'public compatibility password', 'main');
+                    const state = await c.openRemote({gateway});
+                    await c.read(5 * 65536, 512); // Warm the plaintext cache before recording.
+                    await c.startBootAnalysis();
+                    await reject(() => c.startBootAnalysis());
+                    await c.read(5 * 65536, 512);
+                    await c.read(65536, 65537);
+                    await c.read(5 * 65536, 512);
+                    await c.write(7 * 65536, new Uint8Array([42]));
+                    for(const op of ['verifyImage', 'downloadCurrent', 'save', 'discardWrites']) await reject(() => c[op]());
+                    const profile = await c.finishBootAnalysis();
+                    const dirty = (await c.describe()).dirty_bytes;
+                    await c.read(6 * 65536, 512);
+                    await reject(() => c.startBootAnalysis()); // Writes still present.
+                    await c.discardWrites();
+                    await c.startBootAnalysis(); await c.read(4 * 65536, 512); await c.cancelBootAnalysis();
+                    await c.startBootAnalysis(); await c.read(3 * 65536, 512);
+                    const fresh = await c.finishBootAnalysis();
+                    return {profile, fresh, cid:state.remote.cid, dirty};
+                } finally { await c.close(); }
+            }, f.gateway);
+            const {details, rankSum, ...expectedProfile} = selectBootRanges([5, 1, 2]);
+            assert.deepEqual(analysis.profile, [{version:1, cid:analysis.cid, unitBytes:65536, ...expectedProfile}]);
+            assert.ok(analysis.dirty > 0);
+            assert.deepEqual(analysis.fresh[0].ranges.filter(Boolean), [[3, 3]]);
+            assert.equal(await page.locator('#disk-analyze').isEnabled(), true);
+            await page.locator('#disk-analyze').click();
+            await page.waitForFunction(() => document.querySelector('#disk-analyze').textContent === 'Stop analyzing' && !document.querySelector('#disk-analyze').disabled);
+            assert.equal(await page.locator('#vm-view').evaluate(e=>e.classList.contains('expanded')), false);
+            assert.equal(await page.evaluate(()=>!!(document.fullscreenElement || document.webkitFullscreenElement)), false);
+            for(const id of ['save', 'download', 'verify', 'discard', 'retry']) assert.equal(await page.locator('#disk-' + id).isDisabled(), true);
+            const jsonPath = `build/pages-tests/${name}-boot-ranges.json`;
+            const [jsonDownload] = await Promise.all([page.waitForEvent('download'), page.locator('#disk-analyze').click()]);
+            assert.match(jsonDownload.suggestedFilename(), /^[0-9a-f]{8}-boot-ranges\.json$/);
+            await jsonDownload.saveAs(jsonPath);
+            const [profile] = JSON.parse(await readFile(jsonPath, 'utf8'));
+            assert.equal(profile.cid, analysis.cid); assert.equal(profile.ranges.length, 32);
+            assert.ok(profile.observedUnits > 0); assert.equal(profile.minUtilization, 0.5);
+            assert.equal(await page.locator('#pause').textContent(), 'Pause');
+            assert.equal(await page.locator('#disk-analyze').textContent(), 'Analyze boot');
+            assert.equal(await page.locator('#disk-analyze').isDisabled(), true);
+            // Pause/resume still operates on the same live VM after analysis.
+            await page.locator('#pause').click(); await page.waitForFunction(() => document.querySelector('#pause').textContent === 'Resume');
+            await page.locator('#pause').click(); await page.waitForFunction(() => document.querySelector('#pause').textContent === 'Pause');
+            await page.screenshot({path:`build/pages-tests/${name}-boot-analysis.png`});
             // Exercise dirty remote save through the shipped Worker and native reconstruction.
             const saved = await page.evaluate(async gateway => {
                 const { Slop86Disk } = await import("./build/disk/web/client.js");
@@ -80,7 +133,7 @@ try {
             await writeFile(savedPath, Buffer.from(saved)); await writeFile(expectedPath, expected); f.verify(savedPath, expectedPath);
             await page.screenshot({ path: `build/pages-tests/${name}-vm.png` });
             assert.deepEqual(errors, []);
-            results.push({ browser: name, version: browser.version(), rawDisk: true, localEncrypted: true, remoteEncrypted: true, nativeSavedExact: true, stateRestored: true, isoInserted: true, requests: f.requests.length, errors });
+            results.push({ browser: name, version: browser.version(), rawDisk: true, localEncrypted: true, remoteEncrypted: true, bootAnalysis: true, nativeSavedExact: true, stateRestored: true, isoInserted: true, requests: f.requests.length, errors });
             console.log(name + ": packaged UI local/remote VM, saves, state restore and ISO PASS");
         } finally { await browser.close(); await server.close(); }
     }

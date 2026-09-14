@@ -1,10 +1,10 @@
 export class Slop86Disk {
-    static async create({ workerUrl = new URL("./worker.js", import.meta.url), onProgress } = {}) {
-        const client = new Slop86Disk(workerUrl, onProgress);
+    static async create({ workerUrl = new URL("./worker.js", import.meta.url), onProgress, onAnalysis } = {}) {
+        const client = new Slop86Disk(workerUrl, onProgress, onAnalysis);
         try { await client.ready; return client; }
         catch(error) { client.terminate(); throw error; }
     }
-    constructor(url, onProgress) {
+    constructor(url, onProgress, onAnalysis) {
         this.worker = new Worker(url, { type: "module" });
         this.pending = new Map(); this.next = 0; this.closed = false; this.cancelEpoch = 0;
         if(globalThis.crossOriginIsolated && typeof SharedArrayBuffer !== "undefined") {
@@ -16,6 +16,7 @@ export class Slop86Disk {
         this.worker.onmessage = ({data}) => {
             if(data.type === "ready") { clearTimeout(this.timer); this.readyResolve(); return; }
             if(data.type === "progress") { onProgress?.(data); return; }
+            if(data.type === "analysis") { onAnalysis?.(data); return; }
             if(data.type === "fatal") { this.fail(new Error(data.error)); return; }
             const item = this.pending.get(data.id);
             if(item) { this.pending.delete(data.id); data.ok ? item.resolve(data.result) : item.reject(Object.assign(new Error(data.error.message || data.error), data.error)); }
@@ -57,6 +58,9 @@ export class Slop86Disk {
     discardWrites() {return this.call("discard");}
     readStats() {return this.call("readStats");}
     readTrace() {return this.call("readTrace");}
+    startBootAnalysis() {return this.call("startBootAnalysis");}
+    finishBootAnalysis() {return this.call("finishBootAnalysis");}
+    cancelBootAnalysis() {return this.call("cancelBootAnalysis");}
     resumePrefetch() {return this.call("resumePrefetch");}
     clearCaches() {return this.call("clearCaches");}
     cancel() {

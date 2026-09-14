@@ -1,6 +1,6 @@
-// Usage: node disk/scripts/generate-boot-ranges.mjs profile.json [minimum-utilization=0.75]
+// Usage: node disk/scripts/generate-boot-ranges.mjs profile.json [minimum-utilization=0.5]
 // Input: a prefetch-boot trace, {cid,trace}, or {diskRootCID,firstTouchUnits}.
-// Output is a registry suitable for disk/web/boot-range-profiles.json; no downloads.
+// Output is a JSON array of profiles for explicit prefetch.bootProfile injection; no downloads.
 import {readFile} from 'node:fs/promises';
 import {CID} from 'multiformats/cid';
 import {selectBootRanges} from './range-profile.mjs';
@@ -15,7 +15,7 @@ if(!units) {
         for(let unit=Math.floor(e.offset/65536);unit<=Math.floor((e.offset+e.length-1)/65536);unit++)units.push(unit);
     }
 }
-const result=selectBootRanges(units,{minUtilization:Number(process.argv[3] || 0.75)});
+const result=selectBootRanges(units,{minUtilization:Number(process.argv[3] || 0.5)});
 const {details,rankSum,...profile}=result;
 console.log(JSON.stringify([{version:1,cid,unitBytes:65536,...profile}],null,2));
 console.error(JSON.stringify({rangeCount:details.length,...result}));

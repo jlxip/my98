@@ -1,9 +1,11 @@
 import init, {Vault} from "../pkg/slop86_disk.js";
 import {RemoteDisk} from "./remote.js";
+import {BootAnalysis} from "./boot-analysis.js";
 const sources = new Map();
 let identity, activeRequest;
 let networkBytes = 0, networkRequests = 0;
 let vault, sourceId = 0, current, prepared, nextDownload = 0;
+let bootAnalysis;
 let sequence = Promise.resolve(), cancelEpoch = 0, activeEpoch = 0, cancelView;
 let readBytes = 0, readCalls = 0, progressAt = 0, initError;
 const fail = (code, message) => Object.assign(new Error(message), {code});
@@ -52,7 +54,21 @@ async function execute(op,a) {
         vault = new Vault(a.username,a.password,a.machine); identity = JSON.parse(vault.identity()); return identity;
     }
     if(!vault) throw fail("OPERATION_FAILED", "Identity is closed");
+    if(bootAnalysis && ["create", "open", "openRemote", "save", "download", "retry", "discard", "verify"].includes(op)) throw fail("OPERATION_FAILED", "Finish or cancel the boot analysis first");
     switch(op) {
+    case "startBootAnalysis": {
+        const state = describe();
+        if(bootAnalysis || !state.remote?.cid || state.dirty_bytes) throw fail("OPERATION_FAILED", "Boot analysis requires a clean remote disk and no existing analysis");
+        bootAnalysis = new BootAnalysis(state.remote.cid, state.size);
+        return null;
+    }
+    case "finishBootAnalysis": {
+        if(!bootAnalysis) throw fail("OPERATION_FAILED", "No boot analysis is available");
+        const profile = bootAnalysis.finish();
+        bootAnalysis = undefined;
+        return profile;
+    }
+    case "cancelBootAnalysis": bootAnalysis = undefined; return null;
     case "create": {
         const id = source(a.file);
         try {vault.begin_create(id,a.file.size);return await build();}
@@ -78,6 +94,7 @@ async function execute(op,a) {
     case "read": {
         if(!Number.isSafeInteger(a.length) || a.length < 0 || a.length > 0xffffffff) throw fail("IO_ERROR","Invalid read length");
         const start=performance.now(), input=sources.get(current), before=readCalls;
+        if(bootAnalysis?.observe(a.offset, a.length)) self.postMessage({type:"analysis", error:"Analysis exceeded 200,000 distinct blocks. No partial profile was exported. Windows can continue running."});
         input?.noteDemand?.(a.offset,a.length);
         try {return await vault.read(a.offset,a.length);}
         finally {input?.traceEvent?.('guest-read',{offset:a.offset,length:a.length,ms:performance.now()-start,hit:before===readCalls});}
@@ -116,7 +133,7 @@ async function execute(op,a) {
     case "readTrace": return sources.get(current)?.trace || [];
     case "resumePrefetch": sources.get(current)?.startPrefetch?.();return null;
     case "clearCaches": vault.clear_cache();sources.get(current)?.clearCache?.();return null;
-    case "close": vault.free();vault=undefined;for(const id of sources.keys())remove(id);identity=current=prepared=undefined;return null;
+    case "close": bootAnalysis=undefined;vault.free();vault=undefined;for(const id of sources.keys())remove(id);identity=current=prepared=undefined;return null;
     default: throw fail("OPERATION_FAILED","Unknown disk operation");
     }
 }

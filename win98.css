@@ -56,7 +56,7 @@ legend { color: #929ba8; font-size: 11px; padding: 0 0 4px; }
 #touch-drag[aria-pressed=true] { color: #14243b; background: #b8d2f9; }
 .touch-control { display: none; }
 #vm-view.touch-input .touch-control { display: inline-block; }
-#vm-view.touch-input #view-controls, #vm-view.expanded #view-controls { display: flex; }
+#vm-view.touch-input #view-controls { display: flex; }
 html.vm-expanded, html.vm-expanded body { overflow: hidden; overscroll-behavior: none; }
 #vm-view.expanded {
     position: fixed; z-index: 1000; top: var(--view-top, 0px); left: var(--view-left, 0px);

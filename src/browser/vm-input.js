@@ -139,7 +139,10 @@ export function setupFullscreen({ view, exitButton, fit, focus, status, release 
         catch
         {
             if(current === revision && expanded)
-                status("Windows fills the browser. Use Controls to leave this view.");
+            {
+                const touch = matchMedia("(any-pointer: coarse)").matches || view.classList.contains("touch-input");
+                status("Windows fills the browser. " + (touch ? "Use Controls" : "Press Esc") + " to leave this view.");
+            }
         }
         resize();
     }
