@@ -9,12 +9,23 @@ button:disabled { opacity: .4; cursor: default; }
 :focus-visible { outline: 2px solid #a7c6f9; outline-offset: 3px; }
 .primary { color: #14243b; background: #b8d2f9; border-color: #b8d2f9; font-weight: 600; }
 .primary:hover:not(:disabled) { background: #d0e2ff; }
-#welcome { width: min(100% - 48px, 530px); margin: clamp(40px, 17vh, 180px) auto; }
-.eyebrow { color: #929ba8; letter-spacing: .13em; }
-h1 { margin: 0; font-size: 42px; font-weight: 600; letter-spacing: -.04em; }
-.intro { color: #b1b8c3; font-size: 18px; margin: 10px 0 30px; }
+#welcome { min-height: 100dvh; display: flex; padding: 32px 24px; }
+#disk-panel { width: min(100%, 360px); margin: auto; }
+#disk-brand { margin: 0 0 28px; text-align: center; color: #929ba8; font-size: 20px; font-weight: 500; letter-spacing: .13em; }
+#disk-login input:not([type=checkbox]), #disk-gateway { display: block; width: 100%; margin-top: 6px; padding: .65rem .75rem; color: inherit; background: #1d2026; border: 1px solid #414751; border-radius: 6px; }
+#disk-login input { font-size: 16px; }
+#disk-login .boot-option { display: flex; align-items: center; gap: 8px; min-height: 44px; margin: 0 0 12px; cursor: pointer; }
+#disk-autoboot { width: 16px; height: 16px; margin: 0; accent-color: #b8d2f9; }
+#disk-login button { width: 100%; min-height: 44px; }
+#disk-settings { margin-top: 20px; }
+#disk-settings summary { color: #969fac; cursor: pointer; padding: 8px 0; }
+#disk-settings label { margin-top: 8px; }
+#welcome.authenticated { min-height: 0; padding: 16px 24px; }
+#welcome.authenticated #disk-panel { width: min(100%, 64rem); }
+#disk-workspace button { margin: .25rem; }
+#disk-identity, #disk-status { overflow-wrap: anywhere; }
+#disk-panel [role=status]:empty { display: none; }
 .hint { color: #969fac; font-size: 13px; margin: 20px 0; }
-#resume-form { margin-top: 24px; padding-top: 20px; border-top: 1px solid #363b44; }
 label { display: block; margin-bottom: 16px; }
 input[type=file] { display: block; width: 100%; margin-top: 6px; color: #abb4c0; }
 #session { height: 100dvh; display: flex; flex-direction: column; }
@@ -38,15 +49,6 @@ legend { color: #929ba8; font-size: 11px; padding: 0 0 4px; }
 @media (max-width: 640px) { header { padding: 8px; } #controls { gap: 8px; } #session { height: auto; min-height: 100dvh; } #vm-view { min-height: 60dvh; } }
 
 @media (max-width: 640px) { .session-title { flex-wrap: wrap; gap: 8px; } #fullscreen { width: 100%; } }
-
-/* Local encrypted disk stays outside the guest fullscreen surface. */
-#disk-panel { margin: 1rem auto; padding: 1rem; max-width: 64rem; border: 1px solid #687b89; border-radius: .5rem; }
-#disk-panel summary { cursor: pointer; font-weight: 600; }
-#disk-panel label { display: block; margin: .6rem 0; }
-#disk-panel input, #disk-panel select { max-width: 100%; padding: .4rem; }
-#disk-panel button { margin: .25rem; }
-#disk-identity { overflow-wrap: anywhere; }
-#disk-status { min-height: 1.5em; }
 
 #vm-view { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; background: #000; }
 #display { touch-action: none; overscroll-behavior: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }

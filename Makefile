@@ -56,6 +56,7 @@ site-test: site
 	node --test scripts/run-browser-test.test.mjs
 	node scripts/run-browser-test.mjs tests/pages/audio.mjs
 	node scripts/run-browser-test.mjs tests/pages/run.mjs
+	node scripts/run-browser-test.mjs tests/pages/login.mjs
 	node scripts/run-browser-test.mjs tests/pages/integration.mjs
 	node scripts/run-browser-test.mjs tests/pages/boot-analysis.mjs
 	node scripts/run-browser-test.mjs tests/pages/media.mjs

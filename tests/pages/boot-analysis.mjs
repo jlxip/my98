@@ -5,7 +5,7 @@ import {chromium, webkit} from 'playwright';
 import {serveSite} from './server.mjs';
 
 const html = await readFile('build/site/index.html', 'utf8');
-const panel = html.slice(html.indexOf('<details id="disk-panel">'), html.indexOf('<main id="welcome">'));
+const panel = html.slice(html.indexOf('<main id="welcome">'), html.indexOf('<main id="session"'));
 const results = [];
 for(const [name, type] of Object.entries({chromium, webkit})) {
     const server = await serveSite({prefix:'/my98/'}), browser = await type.launch();
@@ -41,7 +41,7 @@ for(const [name, type] of Object.entries({chromium, webkit})) {
             });
             const idle = async () => {for(let i=0;busy;i++){if(i>1000)throw Error('UI stuck');await new Promise(r=>setTimeout(r,1));}};
             const click = async id => {$(id).onclick();await idle();};
-            $('login').dispatchEvent(new Event('submit', {cancelable:true}));await idle();await click('remote');
+            $('autoboot').checked=false;$('login').dispatchEvent(new Event('submit', {cancelable:true}));await idle();await click('remote');
             await click('analyze');check('declining replacement starts no analysis', started===0);
             approved=true;await click('analyze');
             check('failed boot cancels recording and allows retry', started===1 && cancelled===1 && !$('analyze').disabled && $('analyze').textContent==='Analyze boot');
@@ -58,12 +58,12 @@ for(const [name, type] of Object.entries({chromium, webkit})) {
             check('download is JSON', downloaded.blob.type==='application/json' && JSON.parse(await downloaded.blob.text())[0].cid==='snapshot');
             check('finished session cannot be analyzed again', $('analyze').disabled);
             await click('close');check('closing identity resets controls', closed===1 && $('workspace').hidden);
-            $('login').dispatchEvent(new Event('submit', {cancelable:true}));await idle();await click('remote');await click('analyze');
+            $('autoboot').checked=false;$('login').dispatchEvent(new Event('submit', {cancelable:true}));await idle();await click('remote');await click('analyze');
             options.onAnalysis({error:'Analysis exceeded 200,000 distinct blocks. No partial profile was exported.'});
             await new Promise(r=>setTimeout(r,0));
             check('overflow reports failure and releases analysis controls', $('status').textContent.includes('200,000') && $('analyze').textContent==='Analyze boot' && cancelled===2 && !$('save').disabled);
             await click('close');
-            $('login').dispatchEvent(new Event('submit', {cancelable:true}));await idle();await click('remote');await click('analyze');await click('close');
+            $('autoboot').checked=false;$('login').dispatchEvent(new Event('submit', {cancelable:true}));await idle();await click('remote');await click('analyze');await click('close');
             check('identity can close during analysis', closed===3 && $('workspace').hidden);
             return checks;
         });

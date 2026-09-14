@@ -6,7 +6,7 @@ import { serveSite, clockResolution, quietAudio } from "./server.mjs";
 const output = "build/pages-tests";
 await mkdir(output, { recursive: true });
 const results = [];
-const ready = page => page.waitForFunction(() => document.body && !document.body.inert && !document.querySelector("#choose-disk").disabled, null, { timeout: 20000 });
+const ready = page => page.waitForFunction(() => document.body && !document.body.inert && !document.querySelector("#disk-user").disabled, null, { timeout: 20000 });
 async function inventory(dir, base = "") {
     const names = [];
     for(const entry of await readdir(dir)) {
@@ -70,7 +70,6 @@ for(const [name, type] of Object.entries({ chromium, webkit })) {
                 assert.equal(disk.value, 42);
                 // A return visit is already controlled and must not navigate again.
                 await page.reload(); await ready(page); assert.equal(navigations, 3);
-                await page.locator("#disk-panel > summary").click();
                 await page.locator("#disk-user").fill("unsaved identity");
                 await page.locator("#disk-password").fill("unsaved password");
                 const second = await context.newPage(); await second.goto(server.url); await ready(second);
@@ -103,7 +102,7 @@ for(const [name, type] of Object.entries({ chromium, webkit })) {
                 page.on("framenavigated", f => { if(f === page.mainFrame()) navigations++; });
                 const before = Date.now(); await page.goto(server.url);
                 if(scenario === "late-worker") {
-                    assert(await page.evaluate(() => document.body.inert && document.querySelector("#disk-password").disabled && document.querySelector("#choose-disk").disabled), "Inputs enabled before isolation completes");
+                    assert(await page.evaluate(() => document.body.inert && document.querySelector("#disk-password").disabled && document.querySelector("#disk-user").disabled), "Inputs enabled before isolation completes");
                 }
                 await ready(page);
                 const elapsedMs = Date.now() - before;
@@ -112,7 +111,7 @@ for(const [name, type] of Object.entries({ chromium, webkit })) {
                 assert.equal(navigations, scenario === "isolation-failed" ? 2 : 1);
                 if(scenario === "late-worker") {
                     assert(elapsedMs >= 9900 && elapsedMs < 15000);
-                    await page.locator("#disk-panel > summary").click(); await page.locator("#disk-password").fill("kept after timeout");
+                    await page.locator("#disk-password").fill("kept after timeout");
                     await page.waitForFunction(() => navigator.serviceWorker.controller, null, { timeout: 10000 });
                     assert.equal(navigations, 1); assert.equal(await page.locator("#disk-password").inputValue(), "kept after timeout");
                 }

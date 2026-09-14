@@ -27,7 +27,7 @@ for(const mode of ["none", "worker", "headers"]) {
         await page.waitForFunction(() => document.body && !document.body.inert);
         const clock = await clockResolution(page);
         assert.equal(clock.isolated, mode !== "none");
-        await page.locator("#disk-panel > summary").click();
+        await page.locator("#disk-autoboot").uncheck();
         await page.locator("#disk-user").fill("disk fixtures"); await page.locator("#disk-password").fill("public compatibility password");
         await page.locator("#disk-login button").click(); await page.locator("#disk-workspace").waitFor({ state: "visible" });
         const chooser = page.waitForEvent("filechooser"); await page.locator("#disk-open").click(); await (await chooser).setFiles(encrypted);

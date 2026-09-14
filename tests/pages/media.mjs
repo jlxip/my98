@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { mkdir, open, stat, writeFile } from "node:fs/promises";
 import { chromium, webkit } from "playwright";
 import { serveSite, quietAudio } from "./server.mjs";
+import { diskFixture } from "./fixture.mjs";
+import { bootEncrypted } from "./encrypted.mjs";
 
 const output = "build/pages-tests";
 await mkdir(output, { recursive: true });
-const results = [];
+const results = [], fixture = await diskFixture();
 async function pick(page, selector, file) {
     const chooser = page.waitForEvent("filechooser");
     await page.locator(selector).click();
@@ -23,7 +25,7 @@ for(const [name, type] of Object.entries({ chromium, webkit })) {
         const page = await context.newPage(), errors = [];
         page.on("pageerror", e => errors.push(String(e)));
         await page.goto(server.url);
-        await page.waitForFunction(() => !document.body.inert && !document.querySelector("#choose-disk").disabled);
+        await page.waitForFunction(() => !document.body.inert && !document.querySelector("#disk-user").disabled);
         await page.evaluate(async () => {
             const { V86 } = await import("./build/libv86.mjs");
             const insert = V86.prototype.set_cdrom;
@@ -33,9 +35,7 @@ for(const [name, type] of Object.entries({ chromium, webkit })) {
                 window.testCDAsync = disk.async === true;
             };
         });
-        const boot = Buffer.alloc(512 * 1024);
-        boot.set([0xfa, 0xf4, 0xeb, 0xfd]); boot[510] = 85; boot[511] = 170;
-        await pick(page, "#choose-disk", upload("boot.img", boot));
+        await bootEncrypted(page, fixture.file);
         await page.evaluate(() => document.querySelector("#exit-fullscreen").click());
         await page.waitForFunction(() => !document.querySelector("#vm-view").classList.contains("expanded"));
         const iso = Buffer.from(await page.evaluate(async () => {
@@ -97,3 +97,5 @@ for(const [name, type] of Object.entries({ chromium, webkit })) {
     } finally { await browser.close(); await server.close(); }
 }
 await writeFile(output + "/media.json", JSON.stringify(results, null, 2));
+
+await fixture.close();

@@ -5,8 +5,8 @@ import { setupTouch, setupFullscreen } from "./vm-input.js";
 const $ = id => document.getElementById(id);
 const media = { cdrom: null, fda: null, fdb: null };
 let emulator, diskName = "windows98.img", busy = false, muted = false;
-let fatal = false, diskBlocked = false;
-let diskController, encryptedSession = false;
+let diskBlocked = false;
+let diskController;
 
 function status(message, error = false)
 {
@@ -21,7 +21,7 @@ function syncMediaNames()
     {
         const present = drive === "cdrom" ? emulator.v86.cpu.devices.cdrom.has_disk() : emulator["get_disk_" + drive]();
         if(!present) media[drive] = null;
-        else if(!media[drive]) media[drive] = drive === "cdrom" ? "CD from saved state" : "Floppy from saved state";
+        else if(!media[drive]) media[drive] = drive === "cdrom" ? "CD" : "Floppy";
     }
 }
 
@@ -30,9 +30,8 @@ function updateControls()
     document.querySelectorAll("button, input, select").forEach(element => element.disabled = busy);
     diskController?.syncControls(busy);
     $("exit-fullscreen").disabled = false;
-    for(const id of ["touch-drag", "touch-right"]) $(id).disabled = busy || fatal || diskBlocked || !emulator?.is_running();
-    if(busy || fatal || diskBlocked || !emulator?.is_running()) touch.release();
-    for(const id of ["download-disk", "save-state", "load-state"]) $(id).disabled = busy || encryptedSession;
+    for(const id of ["touch-drag", "touch-right"]) $(id).disabled = busy || diskBlocked || !emulator?.is_running();
+    if(busy || diskBlocked || !emulator?.is_running()) touch.release();
     if(!emulator) return;
     $("pause").textContent = emulator.is_running() ? "Pause" : "Resume";
     $("mute").textContent = muted ? "Unmute" : "Mute";
@@ -44,18 +43,18 @@ function updateControls()
         $("eject-" + drive).disabled = busy || !media[drive];
         if(drive !== "cdrom") $("download-" + drive).disabled = busy || !media[drive];
     }
-    if(fatal || diskBlocked) document.querySelectorAll("#controls button").forEach(button => button.disabled = true);
+    if(diskBlocked) document.querySelectorAll("#controls button").forEach(button => button.disabled = true);
 }
 
 async function action(message, work)
 {
-    if(busy || fatal || diskBlocked) return;
+    if(busy || diskBlocked) return;
     busy = true;
     updateControls();
     status(message);
     try { await work(); }
     catch(error) { status(message.replace(/…$/, "") + ": " + (error.message || error), true); }
-    finally { busy = false; updateControls(); if(emulator && !fatal) focusScreen(); }
+    finally { busy = false; updateControls(); if(emulator) focusScreen(); }
 }
 
 // Keep a strong DOM reference while the native panel is open, including in WebKit.
@@ -162,7 +161,7 @@ function fitScreen()
 
 function captureMouse()
 {
-    if(document.pointerLockElement || busy || fatal || !emulator ||
+    if(document.pointerLockElement || busy || !emulator ||
         !$("display").requestPointerLock || matchMedia("(pointer: coarse)").matches) return;
     emulator.mouse_set_enabled(true);
     try
@@ -186,7 +185,7 @@ async function paused(work)
     const running = emulator.is_running();
     await emulator.stop();
     try { return await work(); }
-    finally { if(running && !fatal) emulator.run(); }
+    finally { if(running) emulator.run(); }
 }
 
 function datedName(name, extension)
@@ -213,9 +212,7 @@ function download(blob, name)
 
 function diskBuffer(drive)
 {
-    const devices = emulator.v86.cpu.devices;
-    if(drive === "hda") return devices.ide.primary.master.buffer;
-    return devices.fdc.drives[drive === "fda" ? 0 : 1].buffer;
+    return emulator.v86.cpu.devices.fdc.drives[drive === "fda" ? 0 : 1].buffer;
 }
 
 async function exportDisk(drive)
@@ -223,7 +220,7 @@ async function exportDisk(drive)
     await paused(async () => {
         const buffer = diskBuffer(drive);
         if(!buffer) throw new Error("The drive is empty.");
-        const name = datedName(drive === "hda" ? diskName : media[drive], "img");
+        const name = datedName(media[drive], "img");
         const blob = buffer.get_as_file ? buffer.get_as_file(name) :
             new Blob([await new Promise(resolve => buffer.get_buffer(resolve))]);
         download(blob, name);
@@ -231,23 +228,17 @@ async function exportDisk(drive)
     status("Disk download prepared.");
 }
 
-async function start(disk, state, attached = {}, diskAdapter = null, autoFullscreen = true)
+async function start(diskAdapter, name, autoFullscreen = true)
 {
     // Invoke fullscreen before the first asynchronous read loses user activation.
-    $("welcome").hidden = true;
     $("session").hidden = false;
     const fullscreenAttempt = autoFullscreen ? fullscreen() : screenView.exit();
     try
     {
-        status(state ? "Preparing state…" : "Preparing Windows…");
-        const hda = diskAdapter ? { disk_adapter: diskAdapter } : await readDisk(disk, "hda");
-        encryptedSession = !!diskAdapter;
-        const stateBytes = state ? await state.arrayBuffer() : null;
-        const disks = {};
-        for(const drive of Object.keys(media))
-            if(attached[drive]) disks[drive] = await readDisk(attached[drive], drive);
-        // The existing baseline build avoids the WebKit optimized-WASM JIT panic.
-        const wasmPath = diskAdapter ? "build/v86-fallback.wasm" : "build/v86.wasm";
+        status("Preparing Windows…");
+        const hda = { disk_adapter: diskAdapter };
+        // Encrypted disks use the baseline build to avoid the WebKit optimized-WASM JIT panic.
+        const wasmPath = "build/v86-fallback.wasm";
         const [bios, vgaBios, wasm] = await Promise.all([
             readAsset("bios/seabios.bin"), readAsset("bios/bochs-vgabios.bin"), readAsset(wasmPath),
         ]);
@@ -261,7 +252,7 @@ async function start(disk, state, attached = {}, diskAdapter = null, autoFullscr
             memory_size: 256 * 1024 * 1024,
             vga_memory_size: 8 * 1024 * 1024,
             bios: { buffer: bios }, vga_bios: { buffer: vgaBios },
-            hda, ...disks, boot_order: 0x312, acpi: false,
+            hda, boot_order: 0x312, acpi: false,
             net_device: { type: "ne2k", relay_url: "wss://relay.widgetry.org/", mtu: 1500 },
             screen: { container: $("screen_container"), use_graphical_text: false },
             disable_speaker: false, autostart: false,
@@ -280,19 +271,17 @@ async function start(disk, state, attached = {}, diskAdapter = null, autoFullscr
             emulator.add_listener("emulator-loaded", loaded);
             emulator.add_listener("download-error", failed);
         });
-        emulator.wasm_source = wasm;
-        if(stateBytes) await emulator.restore_state(stateBytes);
-        diskName = disk.name;
+        diskName = name;
         $("disk-name").textContent = diskName;
         $("disk-name").title = diskName;
-        for(const drive of Object.keys(media)) media[drive] = attached[drive]?.name || null;
+        for(const drive of Object.keys(media)) media[drive] = null;
         syncMediaNames();
         emulator.add_listener("screen-set-size", fitScreen);
         emulator.add_listener("emulator-started", updateControls);
         emulator.add_listener("emulator-stopped", updateControls);
         emulator.run();
         await fullscreenAttempt;
-        status((encryptedSession ? "Encrypted disk: shut down Windows and save the full disk when you finish." : "Preserve your changes by downloading the disk or saving the state.") +
+        status("Encrypted disk: shut down Windows and save the full disk when you finish." +
             (!screenView.expanded ? " Fullscreen is available in the toolbar." : ""));
         fitScreen();
         // action() still owns the pending state until it returns.
@@ -304,7 +293,6 @@ async function start(disk, state, attached = {}, diskAdapter = null, autoFullscr
         if(emulator) { await emulator.destroy(); emulator = undefined; }
         await screenView.exit();
         $("session").hidden = true;
-        $("welcome").hidden = false;
         throw error;
     }
 }
@@ -314,20 +302,6 @@ function bind(id, message, work)
     $(id).addEventListener("click", () => action(message, work));
 }
 
-bind("choose-disk", "Choosing disk…", async () => {
-    const [disk] = await pickFiles();
-    if(disk) await start(disk);
-    else status("");
-});
-$("show-resume").onclick = () => {
-    $("resume-form").hidden = !$("resume-form").hidden;
-    if(!$("resume-form").hidden) $("resume-disk").focus();
-};
-$("resume-form").onsubmit = event => {
-    event.preventDefault();
-    const attached = Object.fromEntries(Object.keys(media).map(drive => [drive, $("resume-" + drive).files[0]]));
-    action("Resuming state…", () => start($("resume-disk").files[0], $("resume-state").files[0], attached));
-};
 bind("pause", "", async () => {
     if(emulator.is_running()) await emulator.stop(); else emulator.run();
     status(emulator.is_running() ? "Windows is running." : "Machine paused.");
@@ -362,33 +336,6 @@ bind("screenshot", "Taking screenshot…", async () => {
     download(await response.blob(), datedName(diskName, "png"));
     status("Screenshot prepared.");
 });
-bind("download-disk", "Preparing disk download…", () => exportDisk("hda"));
-bind("save-state", "Saving state…", async () => {
-    await paused(async () => download(new Blob([await emulator.save_state()]), datedName(diskName, "bin")));
-    status("State prepared. Keep the same base disk and inserted media to resume it.");
-});
-bind("load-state", "Loading state…", async () => {
-    const [file] = await pickFiles();
-    if(!file) { status(""); return; }
-    const bytes = await file.arrayBuffer();
-    await paused(async () => {
-        const previous = await emulator.save_state();
-        try { await emulator.restore_state(bytes); }
-        catch(error)
-        {
-            try { await emulator.restore_state(previous); }
-            catch
-            {
-                fatal = true;
-                throw new Error("Could not recover the previous session. The machine remains stopped; reload and resume a saved state.");
-            }
-            throw new Error("Could not restore the state. Check the base disk and media; the previous session has been recovered. " + error.message);
-        }
-    });
-    fitScreen();
-    syncMediaNames();
-    status("State restored with the selected media.");
-});
 for(const drive of Object.keys(media))
 {
     bind("insert-" + drive, "Inserting media…", async () => {
@@ -416,7 +363,7 @@ for(const drive of Object.keys(media))
 }
 const touch = setupTouch({
     display: $("display"), view: $("vm-view"), drag: $("touch-drag"), right: $("touch-right"),
-    getMachine: () => busy || fatal || diskBlocked ? null : emulator, focus: focusScreen,
+    getMachine: () => busy || diskBlocked ? null : emulator, focus: focusScreen,
 });
 const screenView = setupFullscreen({
     view: $("vm-view"), exitButton: $("exit-fullscreen"), fit: fitScreen, focus: focusScreen,
@@ -456,17 +403,15 @@ diskController = setupDisk({
     async boot(adapter, name, {autoFullscreen = true} = {}) {
         touch.release();
         if(emulator) { await emulator.destroy(); emulator = undefined; }
-        fatal = false; diskBlocked = false;
-        await start({ name }, null, {}, adapter, autoFullscreen);
+        diskBlocked = false;
+        await start(adapter, name, autoFullscreen);
     },
     async close() {
         touch.release();
-        if(encryptedSession) await screenView.exit();
-        if(encryptedSession && emulator) { await emulator.destroy(); emulator = undefined; }
-        if(encryptedSession) {
-            encryptedSession = false; fatal = false; diskBlocked = false;
-            $("session").hidden = true; $("welcome").hidden = false;
-        }
+        await screenView.exit();
+        if(emulator) { await emulator.destroy(); emulator = undefined; }
+        diskBlocked = false;
+        $("session").hidden = true;
         updateControls();
     },
     async resume() { diskBlocked = false; if(emulator) emulator.run(); updateControls(); },

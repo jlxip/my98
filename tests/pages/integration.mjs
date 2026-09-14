@@ -4,9 +4,10 @@ import { readFile, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { serveSite, quietAudio } from "./server.mjs";
 import { diskFixture } from "./fixture.mjs";
+import { unlockIdentity as login } from "./encrypted.mjs";
 import { selectBootRanges } from "../../disk/scripts/range-profile.mjs";
 const results = [], f = await diskFixture();
-const ready = page => page.waitForFunction(() => document.body && !document.body.inert && !document.querySelector("#choose-disk").disabled);
+const ready = page => page.waitForFunction(() => document.body && !document.body.inert && !document.querySelector("#disk-user").disabled);
 async function pick(page, selector, file) {
     const chooser = page.waitForEvent("filechooser");
     await page.locator(selector).click(); await (await chooser).setFiles(file);
@@ -19,13 +20,6 @@ async function exitFullscreen(page) {
     await page.evaluate(() => document.querySelector("#exit-fullscreen").click());
     await page.waitForFunction(() => !document.querySelector("#vm-view").classList.contains("expanded"));
 }
-async function login(page) {
-    await page.locator("#disk-panel > summary").click();
-    await page.locator("#disk-user").fill("disk fixtures");
-    await page.locator("#disk-password").fill("public compatibility password");
-    await page.locator("#disk-login button").click();
-    await page.locator("#disk-workspace").waitFor({ state: "visible" });
-}
 try {
     for(const [name, type] of Object.entries({ chromium, webkit })) {
         console.log(name + ": launching browser");
@@ -37,20 +31,28 @@ try {
             page.on("pageerror", e => errors.push(String(e)));
             page.on("dialog", dialog => dialog.accept());
             await page.goto(server.url); await ready(page);
-            // Actual local file chooser, VM boot, media insertion and VM state round-trip.
-            console.log(name + ": local VM boot");
-            await pick(page, "#choose-disk", f.source);
-            await page.waitForFunction(() => !document.querySelector("#save-state").disabled && !document.querySelector("#session").hidden);
+            // An unused invalid gateway must not block identity-only login.
+            await page.locator("#disk-settings summary").click();
+            await page.locator("#disk-gateway").fill("not a URL");
+            await page.locator("#disk-settings summary").click();
+            // Convert a raw image only after login, then boot the encrypted disk.
+            await login(page);
+            const created = page.waitForEvent("download");
+            await pick(page, "#disk-create", f.source);
+            const createdPath = `build/pages-tests/${name}-created.my98`;
+            await (await created).saveAs(createdPath); f.verify(createdPath);
+            await page.locator("#disk-boot").click();
+            await page.waitForFunction(() => !document.querySelector("#session").hidden && !document.querySelector("#pause").disabled);
             await exitFullscreen(page);
-            console.log(name + ": state save and restore");
-            const statePath = `build/pages-tests/${name}-state.bin`;
-            await download(page, "#save-state", statePath);
-            await pick(page, "#load-state", statePath);
-            await page.waitForFunction(() => document.querySelector("#session-status").textContent.startsWith("State restored"));
             await pick(page, "#insert-cdrom", { name: "hello.txt", mimeType: "text/plain", buffer: Buffer.from("Pages ISO fixture") });
             await page.waitForFunction(() => document.querySelector("#cdrom-name").textContent === "hello.txt");
-            const local = await download(page, "#download-disk", `build/pages-tests/${name}-local.img`);
-            assert.deepEqual(await readFile(local), await readFile(f.source));
+            const floppy = Buffer.alloc(1440 * 1024); floppy[0] = 42;
+            await pick(page, "#insert-fda", {name:"floppy.img", mimeType:"application/octet-stream", buffer:floppy});
+            await page.waitForFunction(() => document.querySelector("#fda-name").textContent === "floppy.img");
+            const floppyPath = await download(page, "#download-fda", `build/pages-tests/${name}-floppy.img`);
+            assert.deepEqual(await readFile(floppyPath), floppy);
+            await page.locator("#eject-fda").click();
+            await page.waitForFunction(() => document.querySelector("#fda-name").textContent === "Empty");
             // Navigate only this disposable test context; this also checks a controlled return visit.
             console.log(name + ": encrypted disk and remote login");
             await page.goto(server.url); await ready(page); await login(page);
@@ -65,9 +67,18 @@ try {
             await page.waitForFunction(() => document.querySelector("#disk-status").textContent.includes("No changes"));
             await page.locator("#disk-close").click();
             await page.waitForFunction(() => !document.querySelector("#disk-login").hidden);
-            await page.locator("#disk-user").fill("disk fixtures"); await page.locator("#disk-password").fill("public compatibility password");
-            await page.locator("#disk-login button").click(); await page.locator("#disk-workspace").waitFor({ state: "visible" });
-            await page.locator("#disk-workspace details summary").click(); await page.locator("#disk-gateway").fill(f.gateway);
+            // Checked by default after logout: one login opens and boots remotely.
+            assert.equal(await page.locator("#disk-autoboot").isChecked(), true);
+            await page.locator("#disk-settings summary").click();
+            await page.locator("#disk-gateway").fill(f.gateway);
+            await page.locator("#disk-user").fill("disk fixtures");
+            await page.locator("#disk-password").fill("public compatibility password");
+            await page.locator("#disk-login button").click();
+            await page.waitForFunction(() => !document.querySelector("#session").hidden && !document.querySelector("#pause").disabled);
+            await exitFullscreen(page);
+            await page.locator("#disk-close").click();
+            await page.waitForFunction(() => !document.querySelector("#disk-login").hidden);
+            await login(page);
             await page.locator("#disk-remote").click();
             await page.waitForFunction(() => !document.querySelector("#disk-boot").disabled);
             const remote = await download(page, "#disk-download", `build/pages-tests/${name}-remote.my98`); f.verify(remote);
@@ -139,8 +150,8 @@ try {
             await writeFile(savedPath, Buffer.from(saved)); await writeFile(expectedPath, expected); f.verify(savedPath, expectedPath);
             await page.screenshot({ path: `build/pages-tests/${name}-vm.png` });
             assert.deepEqual(errors, []);
-            results.push({ browser: name, version: browser.version(), rawDisk: true, localEncrypted: true, remoteEncrypted: true, bootAnalysis: true, nativeSavedExact: true, stateRestored: true, isoInserted: true, requests: f.requests.length, errors });
-            console.log(name + ": packaged UI local/remote VM, saves, state restore and ISO PASS");
+            results.push({ browser: name, version: browser.version(), createdEncrypted: true, autoBoot: true, localEncrypted: true, remoteEncrypted: true, bootAnalysis: true, nativeSavedExact: true, floppyRoundTrip: true, isoInserted: true, requests: f.requests.length, errors });
+            console.log(name + ": packaged UI encrypted local/remote VM, create, auto-boot, saves and media PASS");
         } finally { await browser.close(); await server.close(); }
     }
     const hash = createHash("sha256").update(await readFile(f.source)).digest("hex"); assert.equal(hash, f.sha256);

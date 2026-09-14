@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { chromium, webkit } from "playwright";
 import { serveSite, quietAudio } from "./server.mjs";
+import { diskFixture } from "./fixture.mjs";
+import { bootEncrypted } from "./encrypted.mjs";
 
 const output = "build/pages-tests/display";
 await mkdir(output, { recursive: true });
-const disk = Buffer.alloc(512 * 1024);
-disk.set([0xfa, 0xf4, 0xeb, 0xfd]); disk[510] = 85; disk[511] = 170;
+const fixture = await diskFixture();
 const results = [];
 for(const [name, type] of Object.entries({ chromium, webkit })) {
     const server = await serveSite({ headers: true }), browser = await type.launch();
@@ -25,9 +26,7 @@ for(const [name, type] of Object.entries({ chromium, webkit })) {
                 const { V86 } = await import("./build/libv86.mjs"), run = V86.prototype.run;
                 V86.prototype.run = function(...args) { window.vm = this; return run.apply(this, args); };
             });
-            const chooser = page.waitForEvent("filechooser");
-            await page.locator("#choose-disk").click();
-            await (await chooser).setFiles({ name: "display.img", mimeType: "application/octet-stream", buffer: disk });
+            await bootEncrypted(page, fixture.file);
             await page.waitForFunction(() => window.vm?.is_running() && !document.querySelector("#pause").disabled);
             await page.evaluate(() => window.vm.stop());
             await page.waitForFunction(() => !window.vm.is_running());
@@ -82,3 +81,5 @@ for(const [name, type] of Object.entries({ chromium, webkit })) {
     } finally { await browser.close(); await server.close(); }
 }
 await writeFile(`${output}/results.json`, JSON.stringify(results, null, 2));
+
+await fixture.close();

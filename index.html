@@ -16,13 +16,15 @@
     </script>
 </head>
 <body inert>
-    <details id="disk-panel">
-        <summary>Encrypted disk</summary>
+    <main id="welcome">
+      <section id="disk-panel" aria-label="Disk identity">
+        <h1 id="disk-brand">my98</h1>
         <form id="disk-login" autocomplete="off">
-            <label>Username <input id="disk-user" autocomplete="off" required></label>
+            <label>Username <input id="disk-user" autocomplete="off" autocapitalize="none" spellcheck="false" required></label>
             <label>Password <input id="disk-password" type="password" autocomplete="off" required></label>
-            <label>Machine <input id="disk-machine" value="main" autocomplete="off" required></label>
-            <button type="submit">Unlock identity</button>
+            <label>Machine <input id="disk-machine" value="main" autocomplete="off" autocapitalize="none" spellcheck="false" required></label>
+            <label class="boot-option"><input id="disk-autoboot" type="checkbox" checked> Boot</label>
+            <button class="primary" type="submit">Log in</button>
         </form>
         <div id="disk-workspace" hidden>
             <p id="disk-identity" class="hint"></p>
@@ -30,7 +32,6 @@
             <button id="disk-open">Open encrypted disk</button>
             <button id="disk-remote">Open remote disk</button>
             <p class="hint">A remote disk must already be published for this identity. Local saves are not uploaded.</p>
-            <details><summary>Remote disk settings</summary><label>IPFS gateway <input id="disk-gateway" type="url" value="https://trustless-gateway.net" spellcheck="false"></label></details>
             <button id="disk-boot">Boot disk</button>
             <button id="disk-save">Save full disk after Windows shutdown</button>
             <button id="disk-discard">Discard pending writes</button>
@@ -40,30 +41,18 @@
             <button id="disk-verify">Verify full disk</button>
             <button id="disk-close">Close identity</button>
         </div>
+        <details id="disk-settings">
+            <summary>Advanced options</summary>
+            <label>IPFS gateway <input id="disk-gateway" type="url" value="https://trustless-gateway.net" spellcheck="false" autocapitalize="none"></label>
+        </details>
         <button id="disk-resume" hidden>Retry and resume</button>
         <button id="disk-cancel" hidden>Cancel operation</button>
         <p id="disk-status" role="status" aria-live="polite"></p>
-        <p class="hint">Each save downloads a complete disk. Your password, pending changes and prepared download are lost when you close this page.</p>
-    </details>
-    <main id="welcome">
-        <p class="eyebrow">my98</p>
-        <h1>Windows 98</h1>
-        <p class="intro">Your disk, ready to boot.</p>
-        <button id="choose-disk" class="primary">Choose Windows 98 disk</button>
-        <button id="show-resume">Resume state</button>
-        <p class="hint">Save your changes by downloading the disk or machine state.</p>
-        <form id="resume-form" hidden>
-            <label>Base disk <input id="resume-disk" type="file" required></label>
-            <label>Machine state <input id="resume-state" type="file" required></label>
-            <p class="hint">Use the same base disk used when saving the state. Also attach any media that were inserted.</p>
-            <label>CD (optional) <input id="resume-cdrom" type="file"></label>
-            <label>Floppy A (optional) <input id="resume-fda" type="file"></label>
-            <label>Floppy B (optional) <input id="resume-fdb" type="file"></label>
-            <button class="primary" type="submit">Resume Windows</button>
-        </form>
+        <p id="disk-notice" class="hint" hidden>Each save downloads a complete disk. Your password, pending changes and prepared download are lost when you close this page.</p>
         <p id="acceleration-status" class="hint" role="status" aria-live="polite"></p>
         <p id="welcome-status" role="status" aria-live="polite"></p>
         <noscript>Enable JavaScript to boot Windows.</noscript>
+      </section>
     </main>
     <main id="session" hidden>
         <header>
@@ -72,9 +61,6 @@
                 <fieldset><legend>Machine</legend>
                     <button id="pause">Pause</button><button id="reset">Reset</button>
                     <button id="ctrlaltdel">Ctrl+Alt+Del</button>
-                </fieldset>
-                <fieldset><legend>Saving</legend>
-                    <button id="download-disk">Download disk</button><button id="save-state">Save state</button><button id="load-state">Load state</button>
                 </fieldset>
                 <fieldset><legend>Input and output</legend>
                     <button id="mute">Mute</button><button id="mouse">Capture mouse</button><button id="screenshot">Take screenshot</button>

@@ -6,6 +6,8 @@ export function setupDisk(host) {
     const message = (text,error=false) => { $("status").textContent=text;$("status").classList.toggle("error",error); };
     function syncControls(busy) {
         $("workspace").hidden=!client;$("login").hidden=!!client;
+        $("brand").hidden=!!client;$("notice").hidden=!client;
+        document.getElementById("welcome").classList.toggle("authenticated", !!client);
         $("panel").querySelectorAll("button,input").forEach(e=>e.disabled=busy||working);
         $("create").disabled ||= !!state;$("open").disabled ||= !!state;$("remote").disabled ||= !!state;$("gateway").disabled ||= !!state;
         for(const id of ["boot","save","download","discard","verify"]) $(id).disabled ||= !state;
@@ -32,7 +34,10 @@ export function setupDisk(host) {
         message(`Full download prepared (${(result.size/1048576).toFixed(2)} MiB). Check that the file was saved.`);
     }
     $("login").onsubmit=event=>{
-        event.preventDefault();let username=$("user").value,password=$("password").value,machine=$("machine").value;$("password").value="";
+        event.preventDefault();
+        if(working || host.busy() || client)return;
+        const autoBoot=$("autoboot").checked;
+        let username=$("user").value,password=$("password").value,machine=$("machine").value;$("password").value="";
         run("Unlocking identity…",async()=>{
             const module=await import("../../build/disk/web/client.js");BufferClass=module.DiskBuffer;
             const candidate=await module.Slop86Disk.create({onAnalysis:event=>{
@@ -46,6 +51,7 @@ export function setupDisk(host) {
             try {const identity=await candidate.unlock(username,password,machine);client=candidate;$("identity").textContent=identity.ipnsName;message("Identity unlocked. Create a disk, open a .my98 file, or find your remote disk.");}
             catch(error){await candidate.close().catch(()=>{});throw error;}
             finally {username=password=machine="";}
+            if(autoBoot) { await openRemote(); await boot(); }
         });
     };
     $("create").onclick=()=>run("Choosing image…",async()=>{
@@ -56,14 +62,18 @@ export function setupDisk(host) {
         const [file]=await host.pickFiles();if(!file)return;
         state=await client.open(file);prepared=false;message("Header authenticated. Disk data will be read and verified on demand.");
     });
-    $("remote").onclick=()=>run("Finding remote disk…",async()=>{
-        capturing=true;syncControls(true);
-        state=await client.openRemote({gateway:$("gateway").value});prepared=false;
-        message("Remote disk authenticated. The full disk downloads in the background while you use it. Changes are saved locally.");
-    });
+    async function openRemote() {
+        message("Finding remote disk…");capturing=true;syncControls(true);
+        try {
+            state=await client.openRemote({gateway:$("gateway").value});prepared=false;
+            message("Remote disk authenticated. The full disk downloads in the background while you use it. Changes are saved locally.");
+        } finally {capturing=false;syncControls(true);}
+    }
+    $("remote").onclick=()=>run("Finding remote disk…",openRemote);
     async function boot(analyze = false) {
+        message("Booting encrypted disk…");
         if(state.size%512)throw new Error("The image is preserved exactly, but its length does not allow booting it as an HDD.");
-        if(host.hasSession()&&!window.confirm("Close the current Windows session and boot this disk? Save its disk or state first."))return;
+        if(host.hasSession()&&!window.confirm("Close the current Windows session and boot this disk? Save its disk first."))return;
         try {
             if(analyze) { await client.startBootAnalysis(); analyzing = true; analysisError = undefined; }
             await client.read(0,512);
@@ -105,7 +115,9 @@ export function setupDisk(host) {
     $("close").onclick=()=>run("Closing identity…",async()=>{
         if(!window.confirm("Close the identity? Pending changes and the prepared download for this session will be lost."))return;
         if(active)await host.stop();adapter?.dispose();adapter=undefined;await host.close();active=false;
-        await client.close();client=state=undefined;prepared=false;analyzing=false;analysisError=undefined;$("identity").textContent="";message("Identity closed.");
+        await client.close();client=state=undefined;prepared=false;analyzing=false;analysisError=undefined;$("identity").textContent="";
+        $("password").value="";$("autoboot").checked=true;$("settings").open=false;
+        message("");
     });
     return {syncControls};
 }
