@@ -41,6 +41,7 @@ for(const [name, type] of Object.entries({chromium, webkit})) {
             if(viewport.height > 500) assert(Math.abs(box.y + box.height/2 - viewport.height/2) < 1);
             await page.locator("#disk-settings summary").click();
             await page.locator("#disk-gateway").fill("https://example.invalid");
+            assert.equal(await page.locator("#disk-gateway").inputValue(), "https://example.invalid");
             await page.locator("#disk-login button").scrollIntoViewIfNeeded();
             assert(await page.locator("#disk-login button").evaluate(e => {const r=e.getBoundingClientRect();return r.top>=0 && r.bottom<=innerHeight;}));
             await page.locator("#disk-settings summary").click();

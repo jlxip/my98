@@ -1,47 +1,54 @@
-:root { color-scheme: dark; font: 14px/1.45 system-ui, sans-serif; color: #e8ebef; background: #15171b; }
-* { box-sizing: border-box; }
-body { margin: 0; }
+/* Basecoat 1.0.2 Vega; local overrides define identity and emulator layout. */
+:root {
+    scroll-behavior: auto;
+    color-scheme: dark; font: 14px/1.45 system-ui, sans-serif;
+    --background: #15171b; --foreground: #e8ebef;
+    --card: #1d2026; --card-foreground: #e8ebef;
+    --popover: #1d2026; --popover-foreground: #e8ebef;
+    --primary: #b8d2f9; --primary-foreground: #14243b;
+    --secondary: #282c33; --secondary-foreground: #e8ebef;
+    --muted: #282c33; --muted-foreground: #aeb7c5;
+    --accent: #363d47; --accent-foreground: #e8ebef;
+    --border: #414751; --input: #414751; --ring: #a7c6f9;
+    --destructive: #ffb7b0; --radius: 8px;
+    color: var(--foreground); background: var(--background);
+}
 [hidden] { display: none !important; }
-button, input { font: inherit; }
-button { padding: .48rem .78rem; color: inherit; background: #282c33; border: 1px solid #414751; border-radius: 6px; cursor: pointer; }
-button:hover:not(:disabled) { background: #363d47; border-color: #677282; }
-button:disabled { opacity: .4; cursor: default; }
-:focus-visible { outline: 2px solid #a7c6f9; outline-offset: 3px; }
-.primary { color: #14243b; background: #b8d2f9; border-color: #b8d2f9; font-weight: 600; }
-.primary:hover:not(:disabled) { background: #d0e2ff; }
+body { margin: 0; }
+:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
 #welcome { min-height: 100dvh; display: flex; padding: 32px 24px; }
 #disk-panel { width: min(100%, 360px); margin: auto; }
 #disk-brand { margin: 0 0 28px; text-align: center; color: #929ba8; font-size: 20px; font-weight: 500; letter-spacing: .13em; }
-#disk-login input:not([type=checkbox]), #disk-gateway { display: block; width: 100%; margin-top: 6px; padding: .65rem .75rem; color: inherit; background: #1d2026; border: 1px solid #414751; border-radius: 6px; }
-#disk-login input { font-size: 16px; }
+#disk-login .input:not([type=checkbox]), #disk-gateway { display: block; width: 100%; height: 44px; margin-top: 6px; font-size: 16px; }
 #disk-login .boot-option { display: flex; align-items: center; gap: 8px; min-height: 44px; margin: 0 0 12px; cursor: pointer; }
-#disk-autoboot { width: 16px; height: 16px; margin: 0; accent-color: #b8d2f9; }
-#disk-login button { width: 100%; min-height: 44px; }
+#disk-autoboot { width: 16px; height: 16px; margin: 0; }
+#disk-login .btn { width: 100%; min-height: 44px; font-size: 14px; }
 #disk-settings { margin-top: 20px; }
-#disk-settings summary { color: #969fac; cursor: pointer; padding: 8px 0; }
+#disk-settings:not([open]) > :not(summary) { display: none; }
+#disk-settings summary { display: list-item; list-style: disclosure-closed inside; color: var(--muted-foreground); cursor: pointer; padding: 8px 0; }
 #disk-settings label { margin-top: 8px; }
 #welcome.authenticated { min-height: 0; padding: 16px 24px; }
 #welcome.authenticated #disk-panel { width: min(100%, 64rem); }
-#disk-workspace button { margin: .25rem; }
+#disk-workspace .btn { margin: .25rem; max-width: 100%; height: auto; min-height: 36px; white-space: normal; }
 #disk-identity, #disk-status { overflow-wrap: anywhere; }
-#disk-panel [role=status]:empty { display: none; }
-.hint { color: #969fac; font-size: 13px; margin: 20px 0; }
+.alert:empty { display: none; }
+#disk-panel .alert:not(:empty) { margin-top: 16px; }
+.hint { color: var(--muted-foreground); font-size: 13px; margin: 20px 0; }
 label { display: block; margin-bottom: 16px; }
-input[type=file] { display: block; width: 100%; margin-top: 6px; color: #abb4c0; }
 #session { height: 100dvh; display: flex; flex-direction: column; }
 header { flex: 0 0 auto; padding: 12px 18px 6px; border-bottom: 1px solid #343941; }
 .session-title { display: flex; align-items: center; gap: 16px; }
 #disk-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #aeb7c5; }
 #ips { margin-left: auto; color: #929ba8; white-space: nowrap; font-size: 12px; font-variant-numeric: tabular-nums; }
-#fullscreen { flex-shrink: 0; padding: .8rem 1.3rem; font-size: 16px; }
+#fullscreen { flex-shrink: 0; min-height: 44px; padding-inline: 1.3rem; font-size: 16px; }
 #controls { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 8px; }
 fieldset { border: 0; padding: 0; margin: 0; display: flex; gap: 5px; flex-wrap: wrap; align-items: center; }
 legend { color: #929ba8; font-size: 11px; padding: 0 0 4px; }
 .media span { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: #b1bac7; }
-#controls button { padding: .3rem .55rem; font-size: 12px; }
+#controls .btn { height: 30px; font-size: 12px; }
 [role=status] { min-height: 1.45em; color: #b8c6d9; }
 #session-status { margin: 6px 0 0; font-size: 12px; }
-[role=status].error { color: #ffb7b0; }
+[role=status].error { color: var(--destructive); border-color: var(--destructive); }
 #display { flex: 1 1 auto; min-height: 120px; overflow: hidden; position: relative; background: #000; outline: none; }
 #screen_container { position: absolute; top: 50%; left: 50%; transform-origin: 0 0; }
 #screen { white-space: pre; font: 16px/16px monospace; }
@@ -55,7 +62,7 @@ legend { color: #929ba8; font-size: 11px; padding: 0 0 4px; }
 #view-controls { display: none; align-items: center; justify-content: center; flex: 0 0 auto; gap: 8px; padding: 6px; background: #15171b; }
 #view-controls button { min-height: 44px; touch-action: manipulation; }
 #touch-hint { font-size: 12px; color: #b1b8c3; }
-#touch-drag[aria-pressed=true] { color: #14243b; background: #b8d2f9; }
+#touch-drag[aria-pressed=true] { color: var(--primary-foreground); background: var(--primary); }
 .touch-control { display: none; }
 #vm-view.touch-input .touch-control { display: inline-block; }
 #vm-view.touch-input #view-controls { display: flex; }
@@ -76,3 +83,11 @@ html.vm-expanded, html.vm-expanded body { overflow: hidden; overscroll-behavior:
 @media (max-width: 540px) { #touch-hint { display: none !important; } }
 
 @media (max-width: 640px) { #vm-view:not(.expanded) { min-height: 60dvh; } }
+
+#disk-settings[open] summary { list-style-type: disclosure-open; }
+
+/* Keep native details focus/editing in WebKit; Basecoat's discrete animation
+   can leave open contents inert and retain their old width after resizing. */
+#disk-settings::details-content { block-size: auto; opacity: 1; transition: none; }
+#disk-settings:not([open])::details-content { display: none; }
+#disk-settings[open]::details-content { display: block; content-visibility: visible; }

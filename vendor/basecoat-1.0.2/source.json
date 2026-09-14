@@ -1,0 +1,8 @@
+{
+  "package": "basecoat-css",
+  "version": "1.0.2",
+  "style": "vega",
+  "source": "https://registry.npmjs.org/basecoat-css/-/basecoat-css-1.0.2.tgz",
+  "file": "dist/basecoat-vega.cdn.min.css",
+  "sha256": "8123677adb9bba43be3298e1543bcc5fc763e8cda3d32dc74c806046a3537ca0"
+}

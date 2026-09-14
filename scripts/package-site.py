@@ -9,6 +9,8 @@ SITE = ROOT / "build/site"
 # An explicit file list excludes fixtures and stale build outputs by construction.
 FILES = [
     "LICENSE", "index.html", "win98.css", "coi-serviceworker.js",
+    "vendor/basecoat-1.0.2/basecoat.min.css", "vendor/basecoat-1.0.2/LICENSE.md",
+    "vendor/basecoat-1.0.2/source.json", "vendor/basecoat-1.0.2/THIRD-PARTY-LICENSES.txt",
     "src/browser/vm-input.js", "src/browser/bootstrap.js", "src/browser/win98.js", "src/browser/disk-ui.js",
     "build/libv86.mjs", "build/v86.wasm", "build/v86-fallback.wasm",
     "build/disk/web/client.js", "build/disk/web/worker.js",
