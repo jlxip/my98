@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SITE = ROOT / "build/site"
 # An explicit file list excludes fixtures and stale build outputs by construction.
 FILES = [
-    "index.html", "win98.css", "coi-serviceworker.js",
+    "LICENSE", "index.html", "win98.css", "coi-serviceworker.js",
     "src/browser/vm-input.js", "src/browser/bootstrap.js", "src/browser/win98.js", "src/browser/disk-ui.js",
     "build/libv86.mjs", "build/v86.wasm", "build/v86-fallback.wasm",
     "build/disk/web/client.js", "build/disk/web/worker.js",
