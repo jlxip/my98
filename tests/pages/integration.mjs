@@ -28,6 +28,7 @@ async function login(page) {
 }
 try {
     for(const [name, type] of Object.entries({ chromium, webkit })) {
+        console.log(name + ": launching browser");
         const server = await serveSite({ prefix: "/my98/" }), browser = await type.launch();
         try {
             const context = await browser.newContext(); await context.routeWebSocket("**/*", socket => socket.close());
@@ -37,9 +38,11 @@ try {
             page.on("dialog", dialog => dialog.accept());
             await page.goto(server.url); await ready(page);
             // Actual local file chooser, VM boot, media insertion and VM state round-trip.
+            console.log(name + ": local VM boot");
             await pick(page, "#choose-disk", f.source);
             await page.waitForFunction(() => !document.querySelector("#save-state").disabled && !document.querySelector("#session").hidden);
             await exitFullscreen(page);
+            console.log(name + ": state save and restore");
             const statePath = `build/pages-tests/${name}-state.bin`;
             await download(page, "#save-state", statePath);
             await pick(page, "#load-state", statePath);
@@ -49,6 +52,7 @@ try {
             const local = await download(page, "#download-disk", `build/pages-tests/${name}-local.img`);
             assert.deepEqual(await readFile(local), await readFile(f.source));
             // Navigate only this disposable test context; this also checks a controlled return visit.
+            console.log(name + ": encrypted disk and remote login");
             await page.goto(server.url); await ready(page); await login(page);
             await pick(page, "#disk-open", f.file);
             await page.waitForFunction(() => !document.querySelector("#disk-boot").disabled);
@@ -68,6 +72,7 @@ try {
             await page.waitForFunction(() => !document.querySelector("#disk-boot").disabled);
             const remote = await download(page, "#disk-download", `build/pages-tests/${name}-remote.my98`); f.verify(remote);
             // Worker API records cached demand, not background reads or writes.
+            console.log(name + ": boot analysis");
             const analysis = await page.evaluate(async gateway => {
                 const {Slop86Disk} = await import("./build/disk/web/client.js");
                 const c = await Slop86Disk.create();
@@ -119,6 +124,7 @@ try {
             await page.locator('#pause').click(); await page.waitForFunction(() => document.querySelector('#pause').textContent === 'Pause');
             await page.screenshot({path:`build/pages-tests/${name}-boot-analysis.png`});
             // Exercise dirty remote save through the shipped Worker and native reconstruction.
+            console.log(name + ": remote save and native verification");
             const saved = await page.evaluate(async gateway => {
                 const { Slop86Disk } = await import("./build/disk/web/client.js");
                 const c = await Slop86Disk.create();

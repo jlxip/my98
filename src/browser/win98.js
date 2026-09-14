@@ -125,7 +125,7 @@ function focusScreen()
     if(!emulator || busy) return;
     $("display").focus({ preventScroll: true });
     emulator.keyboard_set_enabled(true);
-    emulator.speaker_adapter?.audio_context?.resume().catch(() => {});
+    emulator.speaker_adapter?.resume().catch(() => {});
 }
 
 function fitScreen()
@@ -352,7 +352,7 @@ bind("ctrlaltdel", "", async () => { emulator.keyboard_send_scancodes([0x1D, 0x3
 bind("mute", "", async () => {
     muted = !muted;
     emulator.speaker_adapter?.mixer.set_volume(muted ? 0 : 1, undefined);
-    if(!muted) await emulator.speaker_adapter?.audio_context?.resume();
+    if(!muted) await emulator.speaker_adapter?.resume();
     status(muted ? "Sound muted." : "Sound enabled.");
 });
 bind("screenshot", "Taking screenshot…", async () => {
