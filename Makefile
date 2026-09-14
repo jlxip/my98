@@ -1,5 +1,12 @@
 # my98 application; the emulator remains a pinned, unmodified submodule.
 .DEFAULT_GOAL := all
+.PHONY: seedbox-test seedbox-integration
+seedbox-test:
+	PYTHONDONTWRITEBYTECODE=1 python3 scripts/seedbox_test.py
+
+seedbox-integration:
+	PYTHONDONTWRITEBYTECODE=1 python3 scripts/seedbox_integration.py
+
 .PHONY: prefetch-test remote-test all emulator prepare-emulator run crypto crypto-test crypto-test-browser disk disk-test disk-test-browser test-stop
 all: emulator crypto disk
 
