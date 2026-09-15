@@ -2,6 +2,11 @@
 """Publish and follow IPNS disk roots using a local Kubo daemon. See --help."""
 
 import argparse
+import base64
+import getpass
+import hmac
+import unicodedata
+import warnings
 import concurrent.futures
 import contextlib
 import datetime
@@ -11,6 +16,8 @@ import json
 import os
 from pathlib import Path
 import re
+import pwd
+import shlex
 import sqlite3
 import shutil
 import stat
@@ -68,54 +75,216 @@ def validate_disk(path):
         raise Failure("Invalid .my98 logical or physical size")
 
 
+def find_ipfs(explicit=None):
+    if explicit:
+        return os.path.expanduser(explicit)
+    candidates = [shutil.which("ipfs")]
+    if sys.platform == "darwin":
+        bundled = "IPFS Desktop.app/Contents/Resources/app.asar.unpacked/node_modules/kubo/kubo/ipfs"
+        candidates += [str(Path("/Applications") / bundled),
+                       str(Path.home() / "Applications" / bundled)]
+    candidates += ["/opt/homebrew/bin/ipfs", "/usr/local/bin/ipfs", "/usr/bin/ipfs"]
+    seen = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            result = subprocess.run([candidate, "version"], capture_output=True,
+                                    text=True, timeout=5)
+            if result.returncode == 0 and result.stdout.strip().startswith("ipfs version "):
+                return candidate
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+    raise Failure("Kubo executable not found. Install Kubo/IPFS Desktop or use --ipfs PATH.")
+
+
+def derive_private_key(username, password, machine):
+    """Identity v2, identical to crypto/src/lib.rs; PKCS8 Ed25519 seed."""
+    from argon2.low_level import Type, hash_secret_raw
+    fields = [username, password, machine]
+    if any(not field or len(field.encode("utf-8")) > 4096 for field in fields):
+        raise Failure("Credentials must contain between 1 and 4096 UTF-8 bytes")
+    username = unicodedata.normalize("NFC", username).encode("utf-8")
+    machine = unicodedata.normalize("NFC", machine).encode("utf-8")
+    if len(username) > 4096 or len(machine) > 4096:
+        raise Failure("Normalized credential exceeds 4096 UTF-8 bytes")
+    framed = b"slop86/identity/v2\0"
+    for field in (username, machine):
+        framed += struct.pack("<I", len(field)) + field
+    salt = hashlib.sha256(framed).digest()[:16]
+    master = hash_secret_raw(password.encode("utf-8"), salt, time_cost=3,
+                             memory_cost=65536, parallelism=4, hash_len=32,
+                             type=Type.ID, version=19)
+    prk = hmac.new(b"slop86/keys/v1", master, hashlib.sha256).digest()
+    seed = hmac.new(prk, b"slop86/signing/v1\x01", hashlib.sha256).digest()
+    encoded = base64.b64encode(bytes.fromhex("302e020100300506032b657004220420") + seed)
+    return b"-----BEGIN PRIVATE KEY-----\n" + encoded + b"\n-----END PRIVATE KEY-----\n"
+
+
+def login_python(store):
+    # Only login needs Argon2. Keep its dependencies out of the system Python.
+    runtime = store.directory / "login-python"
+    python = runtime / "bin" / "python"
+    with store.lock("login-runtime"):
+        if not python.exists():
+            print("Preparing login dependencies...", flush=True)
+            try:
+                subprocess.run([sys.executable, "-m", "venv", str(runtime)], check=True)
+            except subprocess.CalledProcessError as exc:
+                raise Failure("Cannot create the login environment; install Python's venv support and retry") from exc
+        try:
+            probe = subprocess.run([str(python), "-c", "from argon2.low_level import hash_secret_raw"],
+                                   capture_output=True, timeout=15)
+        except subprocess.TimeoutExpired as exc:
+            raise Failure("Login dependency check timed out; retry login") from exc
+        if probe.returncode:
+            print("Installing Argon2 for login...", flush=True)
+            try:
+                subprocess.run([str(python), "-m", "pip", "install", "--disable-pip-version-check",
+                                "argon2-cffi==25.1.0"], check=True, timeout=300)
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+                raise Failure("Cannot install Argon2 for login; check network access and retry") from exc
+    return str(python)
+
+
+def login(store, kubo, key, names_path):
+    if key == "self":
+        raise Failure("Use a publication key name such as my98, not the daemon's self key")
+    python = login_python(store)
+    with store.lock("key:" + key) as key_fd:
+        username = input("Username: ")
+        # Refuse getpass's echoing fallback rather than exposing a password.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", getpass.GetPassWarning)
+            try:
+                password = getpass.getpass("Password: ")
+            except getpass.GetPassWarning as exc:
+                raise Failure("A terminal with hidden password input is required for login") from exc
+        machine = input("Machine: ")
+        credentials = {"username": username, "password": password, "machine": machine}
+        if any(not value or len(value.encode("utf-8")) > 4096 for value in credentials.values()):
+            raise Failure("Credentials must contain between 1 and 4096 UTF-8 bytes")
+        helper = ("import json,runpy,sys; "
+                  "module=runpy.run_path(sys.argv[1]); "
+                  "sys.stdout.buffer.write(module['derive_private_key'](**json.load(sys.stdin)))")
+        print("Deriving identity...", flush=True)
+        try:
+            result = subprocess.run([python, "-c", helper, str(Path(__file__).resolve())],
+                                    input=json.dumps(credentials).encode("utf-8"),
+                                    capture_output=True, timeout=120, pass_fds=(key_fd,))
+        except subprocess.TimeoutExpired as exc:
+            raise Failure("Identity derivation timed out") from exc
+        finally:
+            password = None
+            credentials.clear()
+        if result.returncode or not result.stdout.startswith(b"-----BEGIN PRIVATE KEY-----"):
+            # Never echo helper output: it handles credentials and private material.
+            raise Failure("Identity derivation failed; check credentials and the login environment")
+        temporary_key = "my98-login-" + uuid.uuid4().hex
+        try:
+            # A private temporary file is required by Kubo's key import command.
+            # It is removed immediately after import, including on ordinary errors.
+            with tempfile.TemporaryDirectory(prefix=".login-", dir=store.directory) as temp:
+                pem = Path(temp) / "key.pem"
+                fd = os.open(pem, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(result.stdout)
+                del result
+                imported = kubo.call("key", "import", "--format=pem-pkcs8-cleartext", "--",
+                                     temporary_key, str(pem), fds=(key_fd,))
+            name = kubo.name(imported)
+            existing = {}
+            for line in kubo.call("key", "list", "-l", fds=(key_fd,)).splitlines():
+                identity, alias = line.strip().split(None, 1)
+                existing[alias] = identity
+            if key in existing:
+                if kubo.name(existing[key]) != name:
+                    raise Failure(f"Key '{key}' already belongs to another identity. Use login --key ANOTHER_NAME")
+            else:
+                kubo.call("key", "rename", "--", temporary_key, key, fds=(key_fd,))
+            Follower(store, kubo).add_name(name, names_path)
+            print(f"Logged in: {name} (key: {key})")
+            print("Ready to publish" + ("." if key == "my98" else f" with --key {key}."))
+        finally:
+            # Remove only our temporary alias; never replace/remove an existing key.
+            try:
+                kubo.call("key", "rm", "--", temporary_key, fds=(key_fd,))
+            except Failure:
+                pass  # Already renamed, or daemon unavailable; the durable key is preserved.
+
+
 class Kubo:
     def __init__(self, binary="ipfs", api="/ip4/127.0.0.1/tcp/5001"):
         self.binary, self.api = binary, api
 
-    def call(self, *args, timeout=45, fds=()):
+    def call(self, *args, timeout=45, fds=(), binary=False, input_data=None):
         command = [self.binary, "--api", self.api, "--timeout", f"{timeout}s", *args]
         try:
             result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                    text=True, timeout=timeout + 5, pass_fds=tuple(fds))
+                                    text=not binary, input=input_data, timeout=timeout + 5, pass_fds=tuple(fds))
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise Failure(f"Kubo {args[0]}: {exc}") from exc
         if result.returncode:
-            raise Failure(f"Kubo {' '.join(args[:2])}: {result.stderr.strip()[:2000]}")
-        return result.stdout.strip()
+            error = result.stderr.decode("utf-8", errors="replace") if binary else result.stderr
+            raise Failure(f"Kubo {' '.join(args[:2])}: {error.strip()[:2000]}")
+        return result.stdout if binary else result.stdout.strip()
 
-    def canonical(self, cid, fds=()):
-        value = self.call("cid", "format", "-v", "1", "-b", "base32", "--", cid, fds=fds)
+    def canonical(self, cid, fds=(), timeout=45):
+        value = self.call("cid", "format", "-v", "1", "-b", "base32", "--", cid, fds=fds, timeout=timeout)
         if not re.fullmatch(r"b[a-z2-7]+", value):
             raise Failure("Kubo returned an invalid CID")
         return value
 
+    def name(self, value):
+        name = value.strip()
+        if name.startswith("/ipns/"):
+            name = name[6:]
+        if not re.fullmatch(r"(?:k[0-9a-z]+|Qm[1-9A-HJ-NP-Za-km-z]+)", name):
+            raise Failure("Invalid public IPNS key; use k51... or /ipns/k51...")
+        name = self.call("cid", "format", "-v", "1", "-b", "base36",
+                         "--mc", "libp2p-key", "--", name)
+        if not re.fullmatch(r"k[0-9a-z]+", name):
+            raise Failure("Invalid canonical IPNS key")
+        return name
+
     def names(self, path):
-        # Normalize aliases before taking locks or recording references.
         result = set()
         for number, line in enumerate(Path(path).read_text().splitlines(), 1):
-            name = line.strip()
-            if not name or name.startswith("#"):
+            value = line.strip()
+            if not value or value.startswith("#"):
                 continue
-            if name.startswith("/ipns/"):
-                name = name[6:]
-            if not re.fullmatch(r"(?:k[0-9a-z]+|Qm[1-9A-HJ-NP-Za-km-z]+)", name):
-                raise Failure(f"Invalid IPNS key on line {number}; use a bare key or /ipns/key")
-            name = self.call("cid", "format", "-v", "1", "-b", "base36",
-                             "--mc", "libp2p-key", "--", name)
-            if not re.fullmatch(r"k[0-9a-z]+", name):
-                raise Failure(f"Invalid canonical IPNS key on line {number}")
-            result.add(name)
+            try:
+                result.add(self.name(value))
+            except Failure as exc:
+                raise Failure(f"Line {number}: {exc}") from exc
         return sorted(result)
 
     def identity(self):
         return self.call("id", "--format=<id>")
 
     def resolve(self, name, fds=()):
-        target = self.call("name", "resolve", "--nocache", "--", "/ipns/" + name, fds=fds)
-        match = re.fullmatch(r"/ipfs/([A-Za-z0-9]+)", target)
+        # name resolve --nocache can still return this daemon's own publication
+        # instead of the newer network record when it holds the same signing key.
+        record = self.call("routing", "get", "--", "/ipns/" + name,
+                           timeout=24, fds=fds, binary=True)
+        raw = self.call("name", "inspect", "--dump=false", "--enc=json", "--verify=" + name,
+                        timeout=3, fds=fds, binary=True, input_data=record)
+        try:
+            info = json.loads(raw)
+            if info["Validation"]["Valid"] is not True:
+                raise Failure("Invalid or expired IPNS record")
+            entry = info["Entry"]
+            expires = datetime.datetime.fromisoformat(entry["Validity"].replace("Z", "+00:00"))
+            if entry["ValidityType"] != 0 or expires.tzinfo is None or expires <= datetime.datetime.now(datetime.timezone.utc):
+                raise Failure("Invalid or expired IPNS record")
+            target = entry["Value"]
+            match = re.fullmatch(r"/ipfs/([A-Za-z0-9]+)", target)
+        except (ValueError, KeyError, TypeError) as exc:
+            raise Failure("Invalid IPNS record inspection") from exc
         if not match:
             raise Failure("IPNS must resolve to a single /ipfs/CID disk root")
-        return self.canonical(match[1], fds)
+        return self.canonical(match[1], fds, timeout=3)
 
     def pin_records(self, kind, fds=()):
         # Listing roots distinguishes 'not pinned' from daemon/network failure.
@@ -163,7 +332,7 @@ class Kubo:
 
     def key_name(self, key, fds=()):
         for line in self.call("key", "list", "-l", fds=fds).splitlines():
-            identity, alias = line.split(None, 1)
+            identity, alias = line.strip().split(None, 1)
             if alias == key:
                 return self.call("cid", "format", "-v", "1", "-b", "base36",
                                  "--mc", "libp2p-key", "--", identity, fds=fds)
@@ -181,8 +350,9 @@ class Kubo:
         return self.canonical(self.call(*args, "--", str(path), timeout=1800, fds=fds), fds)
 
     def publish(self, key, cid, fds=()):
-        self.call("name", "publish", "--key=" + key, "--", "/ipfs/" + cid,
-                  timeout=120, fds=fds)
+        sequence = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H%M%S")
+        self.call("name", "publish", "--key=" + key, "--sequence=" + sequence,
+                  "--", "/ipfs/" + cid, timeout=120, fds=fds)
 
 
 class Store:
@@ -414,19 +584,24 @@ class Follower:
         return ok
 
 
+    def add_name(self, name, names_path):
+        with self.store.lock("config"):
+            path = Path(names_path)
+            names = self.kubo.names(path)
+            added = name not in names
+            if added:
+                original = path.read_bytes()
+                atomic_write(path, original + (b"\n" if original and not original.endswith(b"\n") else b"")
+                             + name.encode() + b"\n")
+                names.append(name)
+            self.store.configure(names)
+            return added
+
     def publish(self, source, key, names_path):
         validate_disk(source)
         name = self.kubo.key_name(key)
         with self.store.lock("name:" + name) as name_fd:
-            with self.store.lock("config"):
-                path = Path(names_path)
-                names = self.kubo.names(path)
-                if name not in names:
-                    original = path.read_bytes()
-                    atomic_write(path, original + (b"\n" if original and not original.endswith(b"\n") else b"")
-                                 + name.encode() + b"\n")
-                    names.append(name)
-                self.store.configure(names)
+            self.add_name(name, names_path)
             snapshot = self.store.snapshot(name)
             if Path(source).resolve() == snapshot.resolve():
                 raise Failure("Source uses the reserved snapshot path")
@@ -462,6 +637,7 @@ class Follower:
                     if self.kubo.resolve(name, fds) != cid:
                         raise Failure("Publication awaiting IPNS confirmation; retry the same disk")
                     self.store.commit_publication(name, cid)
+                    print("Published: " + cid, flush=True)
             except (Failure, OSError, sqlite3.Error, Busy) as exc:
                 with self.store.db() as db:
                     db.execute("UPDATE publications SET error=? WHERE name=?", (str(exc), name))
@@ -562,35 +738,226 @@ class Follower:
             atomic_write(manifest, (json.dumps(data, indent=2) + "\n").encode())
 
 
+CRON_MARKER = "# my98-seedbox setup-cron "
+
+
+def cron_call(binary, *args, data=None):
+    try:
+        return subprocess.run([binary, *args], input=data, capture_output=True,
+                              timeout=15, env={**os.environ, "LC_ALL": "C"})
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Failure(f"crontab {' '.join(args)} failed: {exc}") from exc
+
+
+def read_crontab(binary):
+    result = cron_call(binary, "-l")
+    if result.returncode == 0:
+        return result.stdout
+    user = pwd.getpwuid(os.getuid()).pw_name
+    # Vixie/Cronie, macOS and OpenBSD use these C-locale diagnostics.
+    absent = {f"no crontab for {user}", f"crontab: no crontab for {user}"}
+    if result.returncode == 1 and not result.stdout and result.stderr.decode(
+            "utf-8", "replace").strip() in absent:
+        return None
+    raise Failure("Cannot read crontab: " + result.stderr.decode("utf-8", "replace").strip())
+
+
+def cron_block(store, kubo, names_path):
+    # Preserve the Python executable's symlink: resolving a venv interpreter
+    # would silently select the base interpreter instead.
+    python = os.path.abspath(sys.executable)
+    script = str(Path(__file__).resolve())
+    binary = shutil.which(kubo.binary)
+    if not binary:
+        raise Failure("Kubo executable not found: " + kubo.binary)
+    binary = os.path.abspath(binary)
+    for path in (python, binary):
+        if not Path(path).is_file() or not os.access(path, os.X_OK):
+            raise Failure("Executable unavailable: " + path)
+    if not Path(script).is_file() or not os.access(script, os.R_OK):
+        raise Failure("Script is not readable: " + script)
+    state = str(store.directory.resolve())
+    names = str(Path(names_path).resolve())
+    if not Path(names).is_file() or not os.access(names, os.R_OK):
+        raise Failure("Names file is not readable: " + names)
+    # This also validates an explicit --ipfs, which find_ipfs does not probe.
+    if not kubo.call("version").startswith("ipfs version "):
+        raise Failure("The selected executable is not Kubo")
+    arguments = [python, script, "sync", "--state", state, "--names", names,
+                 "--api", kubo.api, "--ipfs", binary]
+    log = str(Path(state) / "sync.log")
+    if any(any(char in value for char in ("\n", "\r", "%", "\0")) for value in [*arguments, log]):
+        raise Failure("setup-cron cannot use paths/options containing newlines, NUL or % (cron syntax)")
+    key = hashlib.sha256(os.fsencode(state)).hexdigest()
+    command = shlex.join(arguments) + " >> " + shlex.quote(log) + " 2>&1"
+    # Use a known shell for redirection, independent of interactive shell setup.
+    line = "* * * * * /bin/sh -c " + shlex.quote(command) + "\n"
+    return key, (CRON_MARKER + key + " BEGIN\n" + line +
+                 CRON_MARKER + key + " END\n").encode("utf-8", "surrogateescape")
+
+
+def merge_crontab(original, key, block):
+    lines = (original or b"").splitlines(keepends=True)
+    blocks, opened = {}, None
+    for number, raw in enumerate(lines):
+        line = raw.decode("utf-8", "surrogateescape").rstrip("\r\n")
+        if "my98-seedbox setup-cron" in line:
+            match = re.fullmatch(re.escape(CRON_MARKER) + r"([0-9a-f]{64}) (BEGIN|END)", line)
+            if not match:
+                raise Failure(f"Damaged setup-cron marker on line {number + 1}; crontab unchanged")
+            found, kind = match.groups()
+            if kind == "BEGIN":
+                if opened or found in blocks:
+                    raise Failure("Duplicate or nested setup-cron blocks; crontab unchanged")
+                opened = (found, number)
+            else:
+                if not opened or opened[0] != found:
+                    raise Failure("Unmatched setup-cron marker; crontab unchanged")
+                blocks[found] = (opened[1], number + 1)
+                opened = None
+        elif opened is None and line.strip() and not line.lstrip().startswith("#"):
+            # Conservative detection, not a shell/wrapper interpreter.
+            if re.search(r"seedbox|my98[^\s]*\s+(?:sync|follow)", line, re.I):
+                raise Failure(f"Manual seedbox entry on line {number + 1}: {line}\n"
+                              "Remove or resolve it manually; crontab unchanged. Arbitrary wrappers cannot be detected.")
+    if opened:
+        raise Failure("Unclosed setup-cron block; crontab unchanged")
+    # Do not let a damaged block accidentally turn unrelated entries into ours.
+    for start, end in blocks.values():
+        if end - start != 3 or not lines[start + 1].startswith(b"* * * * * /bin/sh -c "):
+            raise Failure("Damaged setup-cron block body; crontab unchanged")
+    if key in blocks:
+        start, end = blocks[key]
+        return b"".join(lines[:start]) + block + b"".join(lines[end:])
+    prefix = original or b""
+    if prefix and not prefix.endswith(b"\n"):
+        # Avoid changing the final bytes of an unrelated entry.
+        raise Failure("Existing crontab has no final newline; fix it manually before setup-cron")
+    return prefix + block
+
+
+@contextlib.contextmanager
+def cron_setup_lock():
+    # One inode per account, independent of --state. Never unlink a flock file.
+    home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    path = home / ".my98-setup-cron.lock"
+    fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise Failure("Unsafe setup-cron lock file: " + str(path))
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise Busy("another setup-cron is running for this user") from exc
+        yield
+    finally:
+        os.close(fd)
+
+
+def cron_service_status():
+    probes = []
+    if sys.platform.startswith("linux") and shutil.which("systemctl"):
+        probes = [[shutil.which("systemctl"), "is-active", name] for name in ("cron", "crond")]
+    elif sys.platform.startswith("openbsd") and Path("/usr/sbin/rcctl").exists():
+        probes = [["/usr/sbin/rcctl", "check", "cron"]]
+    for command in probes:
+        try:
+            result = subprocess.run(command, capture_output=True, timeout=5)
+            if result.returncode == 0:
+                return "Cron service confirmed active."
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    return "Cron service activity could not be confirmed; check it before relying on scheduled sync."
+
+
+def setup_cron(store, kubo, names_path):
+    binary = shutil.which("crontab")
+    if not binary:
+        raise Failure("crontab is not installed or not in PATH; install/enable cron manually and retry")
+    key, block = cron_block(store, kubo, names_path)
+    with cron_setup_lock():
+        original = read_crontab(binary)
+        updated = merge_crontab(original, key, block)
+        if original == updated:
+            print("Cron entry already up to date (sync every minute).")
+        else:
+            fd, backup = tempfile.mkstemp(prefix="crontab-before-", suffix=".txt", dir=store.directory)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(original or b"")
+                handle.flush()
+                os.fsync(handle.fileno())
+            print("Previous crontab backup: " + backup +
+                  (" (no previous crontab)" if original is None else ""), flush=True)
+            try:
+                if read_crontab(binary) != original:
+                    raise Failure("Crontab changed concurrently; installation cancelled")
+                result = cron_call(binary, "-", data=updated)
+                if result.returncode:
+                    raise Failure("Crontab installation failed: " + result.stderr.decode("utf-8", "replace").strip())
+                if read_crontab(binary) != updated:
+                    raise Failure("Installed crontab differs from expected content")
+            except Failure as exc:
+                raise Failure(f"{exc}. Inspect crontab; backup: {backup}. No automatic rollback was attempted.") from exc
+            print("Cron entry installed and verified (sync every minute).")
+    print(cron_service_status())
+    print("Log: " + str(store.directory.resolve() / "sync.log"))
+    print("Keep this script and Python/Kubo at their installed paths. Arbitrary manual wrappers cannot be detected.")
+
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__, epilog="Run sync from cron every minute. "
-        "Use one configuration and state directory per Kubo node. This tool never runs GC.")
-    parser.add_argument("command", choices=("sync", "status", "publish"))
-    parser.add_argument("file", nargs="?", help="Disk to publish (structural validation only)")
+    parser = argparse.ArgumentParser(description=__doc__, epilog="Examples: seedbox.py login; seedbox.py add k51...; "
+        "seedbox.py sync; seedbox.py publish disk.my98. Run sync from cron every minute. "
+        "Use one state directory per Kubo node. This tool never runs GC. "
+        "setup-cron installs sync every minute for the current user, preserves unrelated entries, "
+        "and refuses manual seedbox entries. It cannot detect arbitrary wrappers or atomically "
+        "exclude other crontab editors. Paths/options cannot contain newlines or %. "
+        "It does not install/start cron or Kubo; keep the script and executables at their current paths.")
+    parser.add_argument("command", choices=("login", "add", "sync", "status", "publish", "setup-cron"))
+    parser.add_argument("target", nargs="?", help="Public IPNS key for add; disk file for publish")
     parser.add_argument("--key", default="my98", help="Existing Kubo publication key (default: my98)")
-    parser.add_argument("--names", help="UTF-8 file: one IPNS key per line; # comments allowed")
-    parser.add_argument("--state", required=True, help="Persistent private state directory")
+    parser.add_argument("--names", help="Names file (default: STATE/names.txt)")
+    parser.add_argument("--state", default="~/.local/my98", help="State directory (default: ~/.local/my98)")
     parser.add_argument("--api", default="/ip4/127.0.0.1/tcp/5001", help="Kubo API multiaddress")
-    parser.add_argument("--ipfs", default="ipfs", help="Kubo executable (absolute path for cron)")
+    parser.add_argument("--ipfs", help="Kubo executable (default: automatic, including IPFS Desktop)")
     args = parser.parse_args(argv)
+    if args.command in ("add", "publish") and not args.target:
+        parser.error(args.command + " requires " + ("a public IPNS key" if args.command == "add" else "a disk file"))
+    if args.command in ("login", "sync", "status", "setup-cron") and args.target:
+        parser.error(args.command + " does not accept a target")
     os.umask(0o077)
     try:
-        store = Store(args.state)
+        store = Store(Path(args.state).expanduser())
+        store.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         if args.command == "status":
             print(json.dumps(store.status(), indent=2))
             return 0
-        if not args.names:
-            parser.error(args.command + " requires --names")
-        kubo = Kubo(args.ipfs, args.api)
+        kubo = Kubo(find_ipfs(args.ipfs), args.api)
+        name = kubo.name(args.target) if args.command == "add" else None
         store.initialize(kubo.identity())
+        names_path = str(Path(args.names).expanduser()) if args.names else str(store.directory / "names.txt")
+        if not args.names:
+            with store.lock("config"):
+                if not Path(names_path).exists():
+                    atomic_write(names_path, b"")
+        if args.command == "setup-cron":
+            setup_cron(store, kubo, names_path)
+            return 0
         follower = Follower(store, kubo)
+        if args.command == "login":
+            login(store, kubo, args.key, names_path)
+            return 0
+        if args.command == "add":
+            added = follower.add_name(name, names_path)
+            print(("Added: " if added else "Already following: ") + name)
+            print("Run sync to replicate now; otherwise the next scheduled sync will pick it up.")
+            return 0
         if args.command == "publish":
-            if not args.file:
-                parser.error("publish requires a disk file")
-            return 0 if follower.publish(args.file, args.key, args.names) else 1
-        if args.file:
-            parser.error("Only publish accepts a disk file")
-        return 0 if follower.sync(lambda: kubo.names(args.names)) else 1
+            return 0 if follower.publish(args.target, args.key, names_path) else 1
+        return 0 if follower.sync(lambda: kubo.names(names_path)) else 1
+    except (EOFError, KeyboardInterrupt):
+        print("Cancelled.", file=sys.stderr)
+        return 1
     except Busy as exc:
         print("Operation busy; retry later: " + str(exc), file=sys.stderr)
         return 1
