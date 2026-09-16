@@ -46,6 +46,7 @@ export class Slop86Disk {
         return this.call("unlock", {username,password:bytes,machine}, [bytes.buffer]);
     }
     createFromImage(file) {return this.call("create", {file});}
+    createEmpty(sizeBytes) {return this.call("createEmpty", {sizeBytes});}
     open(file) {return this.call("open", {file});}
     openRemote({gateway, prefetch} = {}) {return this.call("openRemote", {gateway,prefetch});}
     describe() {return this.call("describe");}

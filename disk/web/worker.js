@@ -54,7 +54,7 @@ async function execute(op,a) {
         vault = new Vault(a.username,a.password,a.machine); identity = JSON.parse(vault.identity()); return identity;
     }
     if(!vault) throw fail("OPERATION_FAILED", "Identity is closed");
-    if(bootAnalysis && ["create", "open", "openRemote", "save", "download", "retry", "discard", "verify"].includes(op)) throw fail("OPERATION_FAILED", "Finish or cancel the boot analysis first");
+    if(bootAnalysis && ["create", "createEmpty", "open", "openRemote", "save", "download", "retry", "discard", "verify"].includes(op)) throw fail("OPERATION_FAILED", "Finish or cancel the boot analysis first");
     switch(op) {
     case "startBootAnalysis": {
         const state = describe();
@@ -69,6 +69,17 @@ async function execute(op,a) {
         return profile;
     }
     case "cancelBootAnalysis": bootAnalysis = undefined; return null;
+    case "createEmpty": {
+        const size = a.sizeBytes;
+        if(!Number.isSafeInteger(size) || size <= 0 || size > 2 ** 40 || size % 512) {
+            throw fail("INVALID_SIZE", "Size must be a positive whole number of 512-byte sectors, up to 1 TiB.");
+        }
+        // Supply only the requested block; never allocate a full plaintext image.
+        const id = `source:${++sourceId}`;
+        sources.set(id, {size, read:async(offset, length) => new Uint8Array(length)});
+        try {vault.begin_create(id, size);return await build();}
+        finally {remove(id);}
+    }
     case "create": {
         const id = source(a.file);
         try {vault.begin_create(id,a.file.size);return await build();}

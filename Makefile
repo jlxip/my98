@@ -1,5 +1,9 @@
 # my98 application; the emulator remains a pinned, unmodified submodule.
 .DEFAULT_GOAL := all
+.PHONY: hooks
+hooks:
+	git config --local core.hooksPath .githooks
+
 .PHONY: seedbox-test seedbox-integration
 seedbox-test:
 	PYTHONDONTWRITEBYTECODE=1 python3 scripts/seedbox_test.py
@@ -64,6 +68,7 @@ site-test: site
 	node scripts/run-browser-test.mjs tests/pages/audio.mjs
 	node scripts/run-browser-test.mjs tests/pages/run.mjs
 	node scripts/run-browser-test.mjs tests/pages/login.mjs
+	node scripts/run-browser-test.mjs tests/pages/empty-disk.mjs
 	node scripts/run-browser-test.mjs tests/pages/integration.mjs
 	node scripts/run-browser-test.mjs tests/pages/boot-analysis.mjs
 	node scripts/run-browser-test.mjs tests/pages/media.mjs

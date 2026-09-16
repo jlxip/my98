@@ -1,0 +1,17 @@
+#!/bin/sh
+set -eu
+
+cd "$(git rev-parse --show-toplevel)"
+
+# The tests read the working tree, so tracked files must match the index.
+if ! git diff --quiet --ignore-submodules=none; then
+    printf '%s\n' 'Commit blocked: stage or stash unstaged changes before running the tests.' >&2
+    exit 1
+fi
+
+# Keep the commit's index for the check above, but do not leak repository-local
+# Git variables into build commands that inspect the slop86 submodule.
+unset $(git rev-parse --local-env-vars)
+
+printf '%s\n' 'Running the GitHub Pages test suite before commit...'
+exec make site-test

@@ -102,6 +102,9 @@ for(const [name, type] of Object.entries({ chromium, webkit })) {
                 page.on("framenavigated", f => { if(f === page.mainFrame()) navigations++; });
                 const before = Date.now(); await page.goto(server.url);
                 if(scenario === "late-worker") {
+                    // The entrypoint uses import(), which can finish after load.
+                    // Wait for bootstrap to start before checking its disabled controls.
+                    await page.waitForFunction(() => document.querySelector("#acceleration-status").textContent === "Preparing Windows…");
                     assert(await page.evaluate(() => document.body.inert && document.querySelector("#disk-password").disabled && document.querySelector("#disk-user").disabled), "Inputs enabled before isolation completes");
                 }
                 await ready(page);

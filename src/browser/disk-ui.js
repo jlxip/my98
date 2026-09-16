@@ -9,6 +9,8 @@ export function setupDisk(host) {
         $("brand").hidden=!!client;$("notice").hidden=!client;
         document.getElementById("welcome").classList.toggle("authenticated", !!client);
         $("panel").querySelectorAll("button,input").forEach(e=>e.disabled=busy||working);
+        if(!client || state) {$("empty-form").hidden=true;$("empty").setAttribute("aria-expanded","false");}
+        for(const id of ["empty", "empty-size", "empty-submit", "empty-cancel"]) $(id).disabled ||= !!state;
         $("create").disabled ||= !!state;$("open").disabled ||= !!state;$("remote").disabled ||= !!state;$("gateway").disabled ||= !!state;
         for(const id of ["boot","save","download","discard","verify"]) $(id).disabled ||= !state;
         $("boot").disabled ||= active || !!adapter?.failed;
@@ -58,6 +60,27 @@ export function setupDisk(host) {
         const [file]=await host.pickFiles();if(!file)return;
         capturing=true;syncControls(true);state=await client.createFromImage(file);download(state.download);
     });
+    $("empty").onclick=()=>{
+        if(!client || state || working || host.busy())return;
+        $("empty-form").hidden=false;$("empty").setAttribute("aria-expanded","true");$("empty-size").focus();
+    };
+    $("empty-cancel").onclick=()=>{
+        if(working || host.busy())return;
+        $("empty-form").hidden=true;$("empty").setAttribute("aria-expanded","false");$("empty").focus();
+    };
+    $("empty-form").onsubmit=event=>{
+        event.preventDefault();
+        if(!client || state || working || host.busy())return;
+        const sizeMiB=$("empty-size").valueAsNumber;
+        if(!$("empty-form").reportValidity())return;
+        if(!Number.isSafeInteger(sizeMiB) || sizeMiB < 1 || sizeMiB > 1048576) {
+            message("Enter a whole number from 1 to 1048576 MiB.",true);return;
+        }
+        run("Creating empty disk…",async()=>{
+            capturing=true;syncControls(true);
+            state=await client.createEmpty(sizeMiB*1048576);download(state.download);
+        });
+    };
     $("open").onclick=()=>run("Opening encrypted disk…",async()=>{
         const [file]=await host.pickFiles();if(!file)return;
         state=await client.open(file);prepared=false;message("Header authenticated. Disk data will be read and verified on demand.");
@@ -116,7 +139,7 @@ export function setupDisk(host) {
         if(!window.confirm("Close the identity? Pending changes and the prepared download for this session will be lost."))return;
         if(active)await host.stop();adapter?.dispose();adapter=undefined;await host.close();active=false;
         await client.close();client=state=undefined;prepared=false;analyzing=false;analysisError=undefined;$("identity").textContent="";
-        $("password").value="";$("autoboot").checked=true;$("settings").open=false;
+        $("password").value="";$("autoboot").checked=true;$("settings").open=false;$("empty-size").value="1024";
         message("");
     });
     return {syncControls};

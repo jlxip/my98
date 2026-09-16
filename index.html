@@ -30,6 +30,14 @@
         <div id="disk-workspace" hidden>
             <p id="disk-identity" class="hint"></p>
             <button id="disk-create" class="btn" data-variant="secondary">Create disk from image</button>
+            <button id="disk-empty" class="btn" data-variant="secondary" aria-expanded="false" aria-controls="disk-empty-form">Create empty disk</button>
+            <form id="disk-empty-form" hidden>
+                <label for="disk-empty-size">Size (MiB)</label>
+                <input class="input" id="disk-empty-size" type="number" min="1" max="1048576" step="1" value="1024" required aria-describedby="disk-empty-hint">
+                <p id="disk-empty-hint" class="hint">The disk is unformatted and has no operating system. The download contains the full capacity plus encryption overhead.</p>
+                <button id="disk-empty-submit" class="btn" type="submit" data-variant="primary">Create</button>
+                <button id="disk-empty-cancel" class="btn" type="button" data-variant="secondary">Cancel</button>
+            </form>
             <button id="disk-open" class="btn" data-variant="secondary">Open encrypted disk</button>
             <button id="disk-remote" class="btn" data-variant="secondary">Open remote disk</button>
             <p class="hint">A remote disk must already be published for this identity. Local saves are not uploaded.</p>

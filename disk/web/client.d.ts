@@ -10,6 +10,7 @@ export class Slop86Disk {
  static create(options?:{workerUrl?:URL|string;onProgress?:(progress:{phase:string;completed:number;total:number;readBytes:number;readCalls:number})=>void;onAnalysis?:(event:{type:'analysis';error:string})=>void}):Promise<Slop86Disk>;
  unlock(username:string,password:string,machine:string):Promise<{ipnsName:string;publicKey:number[]}>;
  createFromImage(file:File|Blob):Promise<SavedDisk>;
+ createEmpty(sizeBytes:number):Promise<SavedDisk>;
  open(file:File|Blob):Promise<DiskState>;
  openRemote(options?:{gateway?:string;prefetch?:PrefetchOptions}):Promise<DiskState>;
  describe():Promise<DiskState>;
