@@ -1,4 +1,4 @@
-// Usage: node disk/scripts/generate-boot-ranges.mjs profile.json [minimum-utilization=0.5]
+// Usage: node src/disk/scripts/generate-boot-ranges.mjs profile.json [minimum-utilization=0.5]
 // Input: a prefetch-boot trace, {cid,trace}, or {diskRootCID,firstTouchUnits}.
 // Output is a JSON array of profiles for explicit prefetch.bootProfile injection; no downloads.
 import {readFile} from 'node:fs/promises';

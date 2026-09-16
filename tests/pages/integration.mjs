@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { serveSite, quietAudio } from "./server.mjs";
 import { diskFixture } from "./fixture.mjs";
 import { unlockIdentity as login } from "./encrypted.mjs";
-import { selectBootRanges } from "../../disk/scripts/range-profile.mjs";
+import { selectBootRanges } from "../../src/disk/scripts/range-profile.mjs";
 const results = [], f = await diskFixture();
 const ready = page => page.waitForFunction(() => document.body && !document.body.inert && !document.querySelector("#disk-user").disabled);
 async function pick(page, selector, file) {

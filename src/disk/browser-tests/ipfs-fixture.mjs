@@ -6,7 +6,7 @@ import {resolve,basename} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createIPNSRecord, marshalIPNSRecord} from 'ipns';
 import {generateKeyPair} from '@libp2p/crypto/keys';
-export const repo=fileURLToPath(new URL('../../',import.meta.url));
+export const repo=fileURLToPath(new URL('../../../',import.meta.url));
 const compat=resolve(repo,'build/disk-target/release/examples/compat');
 export async function fixture({small:customSmall} = {}) {
     const out=resolve(repo,'build/ipfs');await mkdir(out,{recursive:true});

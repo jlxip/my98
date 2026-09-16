@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 crypto_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-repo_dir=$(CDPATH= cd -- "$crypto_dir/.." && pwd)
+repo_dir=$(CDPATH= cd -- "$crypto_dir/../.." && pwd)
 output_dir="$repo_dir/build/crypto"
 export CARGO_TARGET_DIR="$repo_dir/build/crypto-target"
 mkdir -p "$output_dir/pkg" "$output_dir/web"

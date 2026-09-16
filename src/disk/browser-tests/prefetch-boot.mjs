@@ -1,5 +1,5 @@
 // Disposable Win98 boots against a local, verified IPFS fixture. No guest network or audio.
-// Usage: node disk/browser-tests/prefetch-boot.mjs fixture.json [all|baseline|matrix|local|policy:concurrency,...] [runs=3] [output-directory]
+// Usage: node src/disk/browser-tests/prefetch-boot.mjs fixture.json [all|baseline|matrix|local|policy:concurrency,...] [runs=3] [output-directory]
 // Baseline uses a separately preserved, instrumented build/disk/web/baseline-worker.js.
 import {fixture,repo} from './ipfs-fixture.mjs';
 import {makeServer} from './server.mjs';
@@ -56,7 +56,7 @@ try {
                 else await c.openRemote({gateway:options.gateway,prefetch:{policy:options.policy,concurrency:options.concurrency,trace:true}});
                 const adapter=new DiskBuffer(c,options.size,e=>{window.bootError=String(e);void window.vm?.stop();});
                 document.body.innerHTML='<div id="screen"><div style="white-space:pre;font:14px monospace;line-height:14px"></div><canvas></canvas></div>';
-                const vm=new V86({wasm_path:'/build/v86-fallback.wasm',memory_size:128*1048576,vga_memory_size:8*1048576,bios,vga_bios:vga,hda:{disk_adapter:adapter},acpi:false,boot_order:0x312,disable_speaker:true,disable_keyboard:true,disable_mouse:true,screen_container:document.getElementById('screen'),autostart:false});
+                const vm=new V86({wasm_path:'/build/v86.wasm',memory_size:128*1048576,vga_memory_size:8*1048576,bios,vga_bios:vga,hda:{disk_adapter:adapter},acpi:false,boot_order:0x312,disable_speaker:true,disable_keyboard:true,disable_mouse:true,screen_container:document.getElementById('screen'),autostart:false});
                 await new Promise(r=>vm.add_listener('emulator-loaded',r));
                 window.vm=vm;window.client=c;vm.run();
             },{name,policy:name==='baseline'?'sequential':policy,concurrency:Number(concurrency)||1,size:original.size,gateway:f?`http://127.0.0.1:${proxy.address().port}`:undefined});

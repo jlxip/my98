@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 disk_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-repo_dir=$(CDPATH= cd -- "$disk_dir/.." && pwd)
+repo_dir=$(CDPATH= cd -- "$disk_dir/../.." && pwd)
 export CARGO_TARGET_DIR="$repo_dir/build/disk-target"
 bindgen="${WASM_BINDGEN:-$repo_dir/build/crypto-tools/bin/wasm-bindgen}"
 if [ ! -x "$bindgen" ]; then

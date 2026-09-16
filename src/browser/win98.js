@@ -237,8 +237,7 @@ async function start(diskAdapter, name, autoFullscreen = true)
     {
         status("Preparing Windows…");
         const hda = { disk_adapter: diskAdapter };
-        // Encrypted disks use the baseline build to avoid the WebKit optimized-WASM JIT panic.
-        const wasmPath = "build/v86-fallback.wasm";
+        const wasmPath = "build/v86.wasm";
         const [bios, vgaBios, wasm] = await Promise.all([
             readAsset("bios/seabios.bin"), readAsset("bios/bochs-vgabios.bin"), readAsset(wasmPath),
         ]);

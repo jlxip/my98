@@ -3,7 +3,7 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-const repo = process.env.CRYPTO_REPO_ROOT || fileURLToPath(new URL("../../", import.meta.url));
+const repo = process.env.CRYPTO_REPO_ROOT || fileURLToPath(new URL("../../../", import.meta.url));
 const require = createRequire(import.meta.url);
 const { chromium, webkit } = process.env.PLAYWRIGHT_MODULE ? require(process.env.PLAYWRIGHT_MODULE) : require("playwright");
 const fixture = JSON.parse(await readFile(path.join(repo, "build/crypto/native.json"), "utf8"));

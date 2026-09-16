@@ -6,33 +6,22 @@ import shutil
 
 ROOT = Path(__file__).resolve().parent.parent
 SITE = ROOT / "build/site"
-# An explicit file list excludes fixtures and stale build outputs by construction.
-FILES = [
-    "LICENSE", "index.html", "win98.css", "coi-serviceworker.js",
-    "vendor/basecoat-1.0.2/basecoat.min.css", "vendor/basecoat-1.0.2/LICENSE.md",
-    "vendor/basecoat-1.0.2/source.json", "vendor/basecoat-1.0.2/THIRD-PARTY-LICENSES.txt",
-    "src/browser/vm-input.js", "src/browser/bootstrap.js", "src/browser/win98.js", "src/browser/disk-ui.js",
-    "build/libv86.mjs", "build/v86.wasm", "build/v86-fallback.wasm",
-    "build/disk/web/client.js", "build/disk/web/worker.js",
-    "build/disk/pkg/slop86_disk.js", "build/disk/pkg/slop86_disk_bg.wasm",
-    "bios/seabios.bin", "bios/bochs-vgabios.bin", "bios/COPYING.LESSER",
-    "slop86/src/iso9660.js", "slop86/src/log.js", "slop86/src/const.js", "slop86/src/lib.js", "slop86/LICENSE", "slop86/LICENSE.MIT",
-    "licenses/coi-serviceworker.txt",
-]
+# Public URLs are independent of the source layout.
+FILES = json.loads((ROOT / "scripts/site-assets.json").read_text())
 
 
 def package():
-    for name in FILES:
-        if not (ROOT / name).is_file():
+    for name, source in FILES.items():
+        if not (ROOT / source).is_file():
             raise SystemExit("Missing site asset: " + name + "; run make all first")
     if SITE.is_symlink():
         raise SystemExit("Refusing to replace a symlink at build/site")
     if SITE.exists():
         shutil.rmtree(SITE)
-    for name in FILES:
+    for name, source in FILES.items():
         destination = SITE / name
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(ROOT / name, destination, follow_symlinks=True)
+        shutil.copyfile(ROOT / source, destination, follow_symlinks=True)
     (SITE / ".nojekyll").write_text("")
     # Evidence belongs outside the deployable tree.
     manifest = [{"path": str(p.relative_to(SITE)), "bytes": p.stat().st_size}

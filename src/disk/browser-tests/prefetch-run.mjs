@@ -4,7 +4,7 @@ import {writeFile} from 'node:fs/promises';
 import {fixture,repo} from './ipfs-fixture.mjs';
 import {makeServer} from './server.mjs';
 
-await build({entryPoints:[repo+'disk/browser-tests/prefetch.mjs'],bundle:true,format:'esm',platform:'browser',target:'es2022',outfile:repo+'build/disk/web/prefetch-test.js'});
+await build({entryPoints:[repo+'src/disk/browser-tests/prefetch.mjs'],bundle:true,format:'esm',platform:'browser',target:'es2022',outfile:repo+'build/disk/web/prefetch-test.js'});
 const f=await fixture(),server=makeServer(repo),results=[];
 await new Promise(r=>server.listen(0,'127.0.0.1',r));
 try {for(const [name,type] of Object.entries({chromium,webkit})) {

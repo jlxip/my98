@@ -6,9 +6,9 @@ import {createHash} from 'node:crypto';
 import {createRequire} from 'node:module';
 import {fileURLToPath} from 'node:url';
 import {resolve} from 'node:path';
-const repo=fileURLToPath(new URL('../../',import.meta.url)),require=createRequire(import.meta.url);
+const repo=fileURLToPath(new URL('../../../',import.meta.url)),require=createRequire(import.meta.url);
 if(process.argv.length!==3) {
- console.error('Usage: node disk/browser-tests/boot.mjs <fixture.json> (relative paths use the repository root)');
+ console.error('Usage: node src/disk/browser-tests/boot.mjs <fixture.json> (relative paths use the repository root)');
  process.exit(2);
 }
 const fixture=JSON.parse(await readFile(resolve(repo,process.argv[2]),'utf8'));
@@ -34,7 +34,7 @@ try {for(const [name,type] of Object.entries({chromium,webkit})) {
   const adapter=new DiskBuffer(c,fixture.size,async e=>{window.diskFailure=e;await window.vm.stop();blockedResolve();});
   document.body.innerHTML='<div id="screen"><div style="white-space:pre;font:14px monospace;line-height:14px"></div><canvas></canvas></div>';
   const asset=async path=>({buffer:await(await fetch(path)).arrayBuffer()});
-  const vm=new V86({wasm_path:'/build/v86-fallback.wasm',memory_size:128*1048576,vga_memory_size:8*1048576,bios:await asset('/bios/seabios.bin'),vga_bios:await asset('/bios/bochs-vgabios.bin'),hda:{disk_adapter:adapter},acpi:false,boot_order:0x312,disable_speaker:true,disable_keyboard:true,disable_mouse:true,screen_container:document.getElementById('screen'),autostart:false});
+  const vm=new V86({wasm_path:'/build/v86.wasm',memory_size:128*1048576,vga_memory_size:8*1048576,bios:await asset('/bios/seabios.bin'),vga_bios:await asset('/bios/bochs-vgabios.bin'),hda:{disk_adapter:adapter},acpi:false,boot_order:0x312,disable_speaker:true,disable_keyboard:true,disable_mouse:true,screen_container:document.getElementById('screen'),autostart:false});
   await new Promise((resolve,reject)=>{const timeout=setTimeout(()=>reject(Error('VM load timeout')),30000);vm.add_listener('emulator-loaded',()=>{clearTimeout(timeout);resolve();});});window.vm=vm;window.client=c;window.adapter=adapter;vm.run();
   await Promise.race([blocked,new Promise((_,reject)=>setTimeout(()=>reject(Error('I/O interruption not exercised')),30000))]);
   const instructions=vm.get_instruction_counter(),ram=vm.v86.cpu.mem8.slice(0,65536),state=await c.describe();await new Promise(r=>setTimeout(r,100));

@@ -100,7 +100,7 @@ def find_ipfs(explicit=None):
 
 
 def derive_private_key(username, password, machine):
-    """Identity v2, identical to crypto/src/lib.rs; PKCS8 Ed25519 seed."""
+    """Identity v2, identical to src/crypto/src/lib.rs; PKCS8 Ed25519 seed."""
     from argon2.low_level import Type, hash_secret_raw
     fields = [username, password, machine]
     if any(not field or len(field.encode("utf-8")) > 4096 for field in fields):

@@ -3,7 +3,7 @@ import {readFile,writeFile,copyFile,open} from 'node:fs/promises';
 import {createRequire} from 'node:module';
 import {fileURLToPath} from 'node:url';
 import {execFileSync} from 'node:child_process';
-const repo=fileURLToPath(new URL('../../',import.meta.url)),require=createRequire(import.meta.url);
+const repo=fileURLToPath(new URL('../../../',import.meta.url)),require=createRequire(import.meta.url);
 const {chromium,webkit}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 const fixtures=JSON.parse(await readFile(repo+'build/disk/native.json','utf8'));
 const server=makeServer(repo),results=[];await new Promise(r=>server.listen(0,'127.0.0.1',r));

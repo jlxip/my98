@@ -5,12 +5,12 @@ import {writeFile,mkdir} from 'node:fs/promises';
 import {fileURLToPath} from 'node:url';
 import {makeServer} from './server.mjs';
 import {gatewayURL,DEFAULT_GATEWAY} from '../web/remote.js';
-const repo=fileURLToPath(new URL('../../',import.meta.url));
+const repo=fileURLToPath(new URL('../../../',import.meta.url));
 assert.equal(DEFAULT_GATEWAY,'https://trustless-gateway.net');
 assert.equal(gatewayURL('https://trustless-gateway.link/'),DEFAULT_GATEWAY);
 assert.equal(gatewayURL('https://example.com/prefix'),'https://example.com/prefix');
 assert.throws(()=>gatewayURL('http://example.com'));
-await build({entryPoints:[repo+'disk/web/remote.js'],bundle:true,format:'esm',platform:'browser',target:'es2022',outfile:repo+'build/disk/web/remote-test.js'});
+await build({entryPoints:[repo+'src/disk/web/remote.js'],bundle:true,format:'esm',platform:'browser',target:'es2022',outfile:repo+'build/disk/web/remote-test.js'});
 const server=makeServer(repo),results=[];
 await new Promise(r=>server.listen(0,'127.0.0.1',r));
 try {for(const [name,type] of Object.entries({chromium,webkit})) {

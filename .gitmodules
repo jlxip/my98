@@ -1,3 +1,3 @@
 [submodule "slop86"]
-	path = slop86
+	path = vendor/slop86
 	url = git@github.com:jlxip/slop86.git

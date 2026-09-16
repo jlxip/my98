@@ -18,52 +18,53 @@ prepare-emulator:
 	python3 scripts/prepare-emulator.py
 
 emulator: prepare-emulator
-	$(MAKE) -C build/slop86 all build/v86-fallback.wasm
+	$(MAKE) -C build/slop86 all
 
 run:
-	python3 slop86/tools/serve.py
+	python3 scripts/serve.py
 
 crypto:
-	sh crypto/scripts/build.sh
+	sh src/crypto/scripts/build.sh
 
 crypto-test:
-	CARGO_TARGET_DIR="$(CURDIR)/build/crypto-target" cargo test --manifest-path crypto/Cargo.toml --locked --release -- --test-threads=2
+	CARGO_TARGET_DIR="$(CURDIR)/build/crypto-target" cargo test --manifest-path src/crypto/Cargo.toml --locked --release -- --test-threads=2
 
 crypto-test-browser: crypto
-	sh crypto/scripts/test-browser.sh
+	sh src/crypto/scripts/test-browser.sh
 
 node_modules/.package-lock.json: package.json package-lock.json
 	npm ci
 
 disk: node_modules/.package-lock.json
-	sh disk/scripts/build.sh
+	sh src/disk/scripts/build.sh
 
 disk-test:
-	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo test --manifest-path disk/Cargo.toml --locked --release
+	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo test --manifest-path src/disk/Cargo.toml --locked --release
 
 disk-test-browser: emulator disk
-	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo run --manifest-path disk/Cargo.toml --locked --release --example compat
-	node disk/browser-tests/run.mjs
+	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo run --manifest-path src/disk/Cargo.toml --locked --release --example compat
+	node src/disk/browser-tests/run.mjs
 
 test-stop: prepare-emulator
 	node tests/api/stop.js
 
 remote-test: disk
-	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo run --manifest-path disk/Cargo.toml --locked --release --example compat
-	node disk/browser-tests/remote-run.mjs
+	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo run --manifest-path src/disk/Cargo.toml --locked --release --example compat
+	node src/disk/browser-tests/remote-run.mjs
 
 prefetch-test: disk
-	node --test disk/scripts/range-profile.test.mjs
-	node --test disk/scripts/boot-analysis.test.mjs
-	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo run --manifest-path disk/Cargo.toml --locked --release --example compat
-	node disk/browser-tests/prefetch-run.mjs
+	node --test src/disk/scripts/range-profile.test.mjs
+	node --test src/disk/scripts/boot-analysis.test.mjs
+	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo run --manifest-path src/disk/Cargo.toml --locked --release --example compat
+	node src/disk/browser-tests/prefetch-run.mjs
 
 .PHONY: site site-test
 site: all
 	python3 scripts/package-site.py
 
 site-test: site
-	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo build --manifest-path disk/Cargo.toml --locked --release --example compat
+	PYTHONDONTWRITEBYTECODE=1 python3 tests/server_test.py
+	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo build --manifest-path src/disk/Cargo.toml --locked --release --example compat
 	node --test scripts/run-browser-test.test.mjs
 	node scripts/run-browser-test.mjs tests/pages/audio.mjs
 	node scripts/run-browser-test.mjs tests/pages/run.mjs
