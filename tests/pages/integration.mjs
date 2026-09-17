@@ -148,9 +148,39 @@ try {
             const savedPath = `build/pages-tests/${name}-remote-saved.my98`, expectedPath = `build/pages-tests/${name}-expected.img`;
             const expected = await readFile(f.source); expected[100] = 99;
             await writeFile(savedPath, Buffer.from(saved)); await writeFile(expectedPath, expected); f.verify(savedPath, expectedPath);
+            // Keep capability opening covered by site-test/CI, using the packaged
+            // API and a raw CID fixture without requiring Kubo or nasm in CI.
+            const ipnsBefore = f.requests.filter(path=>path.startsWith('/ipns/')).length;
+            const readOnly = await page.evaluate(async ({gateway, expectedHash}) => {
+                const {Slop86Disk} = await import("./build/disk/web/client.js");
+                let c = await Slop86Disk.create();
+                try {
+                    await c.unlock('disk fixtures','public compatibility password','main');
+                    const ownerState = await c.openRemote({gateway,prefetch:{enabled:false}});
+                    const readKey = await c.exportReadOnlyKey();
+                    await c.close(); c = await Slop86Disk.create();
+                    const options = {cid:ownerState.remote.cid,readKey,gateway,prefetch:{enabled:false}};
+                    const state = await c.openReadOnly(options);
+                    if(!state.readOnly || state.remote.ipnsName || state.remote.sequence) throw Error('Read-only identity metadata');
+                    const hash = Array.from(await c.verifyImage(),b=>b.toString(16).padStart(2,'0')).join('');
+                    if(hash !== expectedHash) throw Error('Read-only plaintext mismatch');
+                    const original = (await c.read(100,1))[0];
+                    await c.write(100,new Uint8Array([original ^ 255]));
+                    if((await c.read(100,1))[0] !== (original ^ 255)) throw Error('Read-only overlay missing');
+                    for(const fn of [()=>c.save(),()=>c.exportReadOnlyKey(),()=>c.createEmpty(512),()=>c.downloadCurrent(),()=>c.retryDownload()]) {
+                        let code; try { await fn(); } catch(error) { code = error.code; }
+                        if(code !== 'READ_ONLY') throw Error('Read-only operation permitted');
+                    }
+                    await c.close(); c = await Slop86Disk.create(); await c.openReadOnly(options);
+                    if((await c.read(100,1))[0] !== original || (await c.describe()).dirty_bytes) throw Error('Read-only changes persisted');
+                    return true;
+                } finally { await c.close(); }
+            }, {gateway:f.gateway,expectedHash:f.sha256});
+            assert.equal(readOnly,true);
+            assert.equal(f.requests.filter(path=>path.startsWith('/ipns/')).length - ipnsBefore,1);
             await page.screenshot({ path: `build/pages-tests/${name}-vm.png` });
             assert.deepEqual(errors, []);
-            results.push({ browser: name, version: browser.version(), createdEncrypted: true, autoBoot: true, localEncrypted: true, remoteEncrypted: true, bootAnalysis: true, nativeSavedExact: true, floppyRoundTrip: true, isoInserted: true, requests: f.requests.length, errors });
+            results.push({ browser: name, version: browser.version(), createdEncrypted: true, autoBoot: true, localEncrypted: true, remoteEncrypted: true, bootAnalysis: true, nativeSavedExact: true, readOnly, floppyRoundTrip: true, isoInserted: true, requests: f.requests.length, errors });
             console.log(name + ": packaged UI encrypted local/remote VM, create, auto-boot, saves and media PASS");
         } finally { await browser.close(); await server.close(); }
     }

@@ -52,6 +52,17 @@ remote-test: disk
 	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo run --manifest-path src/disk/Cargo.toml --locked --release --example compat
 	node src/disk/browser-tests/remote-run.mjs
 
+# Uses only disposable fixtures and a local, offline Kubo gateway; requires nasm.
+.PHONY: read-only-test
+read-only-test: disk emulator
+	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo build --manifest-path src/disk/Cargo.toml --locked --release --example compat
+	node scripts/run-browser-test.mjs src/disk/browser-tests/read-only-run.mjs
+
+.PHONY: read-only-key-test
+read-only-key-test: disk
+	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo run --manifest-path src/disk/Cargo.toml --locked --release --example compat
+	node scripts/read-only-key-test.mjs
+
 prefetch-test: disk
 	node --test src/disk/scripts/range-profile.test.mjs
 	node --test src/disk/scripts/boot-analysis.test.mjs

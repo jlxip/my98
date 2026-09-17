@@ -1,4 +1,4 @@
-export interface DiskState {size:number;disk_id:number[];dirty_bytes:number;dirty_sectors:number;cache_bytes:number;revision:number;remote?:{ipnsName:string;path:string;cid:string;sequence:string;gateway:string};}
+export interface DiskState {readOnly:boolean;size:number;disk_id:number[];dirty_bytes:number;dirty_sectors:number;cache_bytes:number;revision:number;remote?:{ipnsName?:string;path:string;cid:string;sequence?:string;gateway:string};}
 export interface PreparedDownload {id:number;blob:Blob;size:number;}
 export interface SavedDisk extends DiskState {outcome:"created"|"unchanged";download?:PreparedDownload;}
 export interface BootRangeProfile {version:1;cid:string;unitBytes:65536;ranges:([number,number]|null)[];}
@@ -13,6 +13,10 @@ export class Slop86Disk {
  createEmpty(sizeBytes:number):Promise<SavedDisk>;
  open(file:File|Blob):Promise<DiskState>;
  openRemote(options?:{gateway?:string;prefetch?:PrefetchOptions}):Promise<DiskState>;
+ /** Export a capability for the current clean disk version. Treat the returned string as a secret. */
+ exportReadOnlyKey():Promise<string>;
+ /** Open a CID using a my98-ro-v1 capability, without unlocking an identity. Writes live only in RAM. */
+ openReadOnly(options:{cid:string;readKey:string;gateway?:string;prefetch?:PrefetchOptions}):Promise<DiskState>;
  describe():Promise<DiskState>;
  read(offset:number,length:number):Promise<Uint8Array>;
  write(offset:number,bytes:Uint8Array):Promise<DiskState>;

@@ -88,7 +88,7 @@ fn make_header(id: &Identity, disk: &Disk, size: u64) -> Result<Vec<u8>> {
     b.extend(id.sign(&signed(&b)).map_err(operation)?);
     Ok(b)
 }
-fn parse_header(id: &Identity, b: &[u8], total: u64) -> Result<(Disk, u64)> {
+fn header_size(b: &[u8], total: u64) -> Result<u64> {
     if b.len() < 8 {
         return Err(corrupt("Truncated disk header"));
     }
@@ -106,6 +106,14 @@ fn parse_header(id: &Identity, b: &[u8], total: u64) -> Result<(Disk, u64)> {
             "Unsupported linear disk format",
         ));
     }
+    let size = u64::from_le_bytes(b[16..24].try_into().unwrap());
+    if file_size(size)? != total {
+        return Err(corrupt("Encrypted file length mismatch"));
+    }
+    Ok(size)
+}
+fn parse_header(id: &Identity, b: &[u8], total: u64) -> Result<(Disk, u64)> {
+    let size = header_size(b, total)?;
     let disk = id.open_disk(&b[24..134]).map_err(|_| {
         error(
             "AUTHENTICATION_FAILED",
@@ -118,10 +126,6 @@ fn parse_header(id: &Identity, b: &[u8], total: u64) -> Result<(Disk, u64)> {
         &b[134..],
     ) {
         return Err(corrupt("Invalid disk header signature"));
-    }
-    let size = u64::from_le_bytes(b[16..24].try_into().unwrap());
-    if file_size(size)? != total {
-        return Err(corrupt("Encrypted file length mismatch"));
     }
     Ok((disk, size))
 }
@@ -248,6 +252,8 @@ struct Build {
 }
 #[derive(Serialize)]
 pub struct Description {
+    #[serde(rename = "readOnly")]
+    pub read_only: bool,
     pub size: u64,
     pub disk_id: Vec<u8>,
     pub dirty_bytes: usize,
@@ -256,7 +262,7 @@ pub struct Description {
     pub revision: u64,
 }
 pub struct Engine {
-    pub identity: Identity,
+    identity: Option<Identity>,
     image: Option<Image>,
     build: Option<Build>,
     revision: u64,
@@ -266,10 +272,59 @@ pub struct Engine {
 impl Engine {
     pub fn new(username: &str, password: Vec<u8>, machine: &str) -> Result<Self> {
         Ok(Self {
-            identity: derive_identity(username, password, machine).map_err(operation)?,
+            identity: Some(derive_identity(username, password, machine).map_err(operation)?),
             image: None,
             build: None,
             revision: 0,
+            hash: None,
+            unchanged: None,
+        })
+    }
+    pub fn identity(&self) -> Result<&Identity> {
+        self.identity
+            .as_ref()
+            .ok_or_else(|| error("READ_ONLY", "Read-only disk has no owner identity"))
+    }
+    pub fn export_read_key(&self) -> Result<Zeroizing<Vec<u8>>> {
+        self.identity()?;
+        let image = self
+            .image
+            .as_ref()
+            .ok_or_else(|| operation("No disk open".into()))?;
+        if !image.dirty.is_empty() || self.build.is_some() {
+            return Err(operation(
+                "Save or discard pending writes before exporting a read key".into(),
+            ));
+        }
+        image.disk.export_read_key().map_err(operation)
+    }
+    /// The caller must authenticate the entire source's content-addressed path.
+    /// Unlike owner opening, this does not verify the identity's header signature.
+    /// The candidate is committed only after its first data record authenticates.
+    pub async fn open_read_only(
+        io: &dyn Io,
+        source: String,
+        total: u64,
+        read_key: Vec<u8>,
+    ) -> Result<Self> {
+        let disk = Disk::from_read_key(read_key)
+            .map_err(|_| error("INVALID_READ_KEY", "Invalid read key"))?;
+        let b = exact(io, &source, 0, total.min(HEADER as u64) as usize).await?;
+        let size = header_size(&b, total)?;
+        let mut image = Image {
+            source,
+            size,
+            disk,
+            dirty: BTreeMap::new(),
+            cache: Cache::new(),
+        };
+        image.original(io, 0).await?;
+        check(io)?;
+        Ok(Self {
+            identity: None,
+            image: Some(image),
+            build: None,
+            revision: 1,
             hash: None,
             unchanged: None,
         })
@@ -280,6 +335,7 @@ impl Engine {
             .as_ref()
             .ok_or_else(|| operation("No disk open".into()))?;
         Ok(Description {
+            read_only: self.identity.is_none(),
             size: i.size,
             disk_id: i.disk.id().map_err(operation)?,
             dirty_bytes: i.dirty.values().map(|b| b.len()).sum(),
@@ -296,13 +352,14 @@ impl Engine {
             .source)
     }
     pub async fn open(&mut self, io: &dyn Io, source: String, total: u64) -> Result<()> {
+        self.identity()?;
         if self.image.is_some() || self.build.is_some() {
             return Err(operation(
                 "Close the current disk before opening another".into(),
             ));
         }
         let b = exact(io, &source, 0, total.min(HEADER as u64) as usize).await?;
-        let (disk, size) = parse_header(&self.identity, &b, total)?;
+        let (disk, size) = parse_header(self.identity()?, &b, total)?;
         check(io)?;
         self.image = Some(Image {
             source,
@@ -315,6 +372,7 @@ impl Engine {
         Ok(())
     }
     pub fn begin_create(&mut self, source: String, size: u64) -> Result<()> {
+        self.identity()?;
         if self.image.is_some() || self.build.is_some() {
             return Err(operation(
                 "Close the current disk before creating another".into(),
@@ -327,8 +385,8 @@ impl Engine {
         if self.build.is_some() {
             return Err(operation("A save is already being prepared".into()));
         }
-        let disk = self.identity.create_disk().map_err(operation)?;
-        let header = make_header(&self.identity, &disk, size)?;
+        let disk = self.identity()?.create_disk().map_err(operation)?;
+        let header = make_header(self.identity()?, &disk, size)?;
         self.build = Some(Build {
             disk,
             size,
@@ -341,6 +399,7 @@ impl Engine {
     }
     /// Returns false for unchanged; checked marks are cleared only after every comparison succeeds.
     pub async fn begin_save(&mut self, io: &dyn Io) -> Result<bool> {
+        self.identity()?;
         if self.build.is_some() {
             return Err(operation("A save is already being prepared".into()));
         }
@@ -375,6 +434,7 @@ impl Engine {
         Ok(true)
     }
     pub fn accept_unchanged(&mut self, io: &dyn Io) -> Result<()> {
+        self.identity()?;
         check(io)?;
         if self.unchanged != Some(self.revision) {
             return Err(operation("Stale unchanged result".into()));
@@ -384,6 +444,7 @@ impl Engine {
         Ok(())
     }
     pub fn header(&self) -> Result<Vec<u8>> {
+        self.identity()?;
         Ok(self
             .build
             .as_ref()
@@ -392,6 +453,7 @@ impl Engine {
             .clone())
     }
     pub async fn next(&mut self, io: &dyn Io) -> Result<Option<Vec<u8>>> {
+        self.identity()?;
         check(io)?;
         let b = self
             .build
@@ -423,6 +485,7 @@ impl Engine {
         Ok(Some(result))
     }
     pub fn accept(&mut self, io: &dyn Io, source: String, total: u64) -> Result<()> {
+        self.identity()?;
         check(io)?;
         let b = self
             .build

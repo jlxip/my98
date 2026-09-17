@@ -313,6 +313,27 @@ impl Disk {
         self.active = false;
     }
 }
+// Raw disk capability only: contains no identity or publishing material.
+impl Disk {
+    pub fn from_read_key(bytes: Vec<u8>) -> Result<Self> {
+        let bytes = Zeroizing::new(bytes);
+        if bytes.len() != 48 {
+            return Err("Read key must contain exactly 48 bytes".into());
+        }
+        Ok(Self {
+            id: bytes[..16].try_into().unwrap(),
+            key: Zeroizing::new(bytes[16..].try_into().unwrap()),
+            active: true,
+        })
+    }
+    pub fn export_read_key(&self) -> Result<Zeroizing<Vec<u8>>> {
+        self.check()?;
+        let mut bytes = Zeroizing::new(Vec::with_capacity(48));
+        bytes.extend_from_slice(&self.id);
+        bytes.extend_from_slice(self.key.as_ref());
+        Ok(bytes)
+    }
+}
 impl Drop for Disk {
     fn drop(&mut self) {
         self.close();

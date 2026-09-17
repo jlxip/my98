@@ -20,5 +20,6 @@ export function build(options) {
     }]});
 }
 if(process.argv[1] && import.meta.url===pathToFileURL(process.argv[1]).href) {
+    await build({entryPoints:[fileURLToPath(new URL('../web/remote.js',import.meta.url))],bundle:true,format:'esm',platform:'node',target:'node24',legalComments:'inline',outfile:fileURLToPath(new URL('../../../build/disk/remote.mjs',import.meta.url))});
     await build({entryPoints:[fileURLToPath(new URL('../web/worker.js',import.meta.url))],bundle:true,format:'esm',platform:'browser',target:'es2022',external:['../pkg/slop86_disk.js'],legalComments:'inline',outfile:fileURLToPath(new URL('../../../build/disk/web/worker.js',import.meta.url))});
 }

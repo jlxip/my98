@@ -85,7 +85,7 @@ fn main() {
             let e = engine();
             println!(
                 "{}",
-                serde_json::json!({"ipnsName":e.identity.ipns_name().unwrap(),"publicKey":e.identity.public_key().unwrap()})
+                serde_json::json!({"ipnsName":e.identity().unwrap().ipns_name().unwrap(),"publicKey":e.identity().unwrap().public_key().unwrap()})
             );
         }
         Some("sign") => {
@@ -94,7 +94,8 @@ fn main() {
                 "{}",
                 hex::encode(
                     engine()
-                        .identity
+                        .identity()
+                        .unwrap()
                         .sign(&hex::decode(&args[2]).unwrap())
                         .unwrap()
                 )

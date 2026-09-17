@@ -76,7 +76,7 @@ export async function fixture({small:customSmall} = {}) {
         });
         await new Promise(r=>proxy.listen(0,'127.0.0.1',r));
         const endpoint=`http://127.0.0.1:${proxy.address().port}`;
-        return {endpoint,gateway,identity,small,large,cid0,cid1,largeCid,requests,out,
+        return {endpoint,gateway,identity,small,large,cid0,cid1,largeCid,directoryCid,requests,out,
             setMode:value=>{mode=value;},
             close:async()=>{proxy.closeAllConnections();await new Promise(r=>proxy.close(r));daemon.kill('SIGTERM');await new Promise(r=>daemon.once('exit',r));await log.close();await rm(directory,{recursive:true,force:true});},
         };

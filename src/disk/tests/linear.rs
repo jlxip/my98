@@ -82,7 +82,7 @@ fn exact_lazy_ranges_and_header_only_authentication() {
     let mut signed = b"slop86/linear-disk/v1\0".to_vec();
     signed.extend_from_slice(&base[..134]);
     assert!(slop86_crypto::verify(
-        &e.identity.public_key().unwrap(),
+        &e.identity().unwrap().public_key().unwrap(),
         &signed,
         &base[134..198]
     ));
@@ -408,4 +408,231 @@ fn cancellation_after_async_read_never_commits() {
         futures::executor::block_on(e.read(&io, 512, 1)).unwrap(),
         [7]
     );
+}
+
+#[test]
+fn read_only_capability_overlay_and_owner_guards() {
+    let io = Memory::default();
+    let mut owner = engine();
+    assert!(owner.export_read_key().is_err());
+    let plain = support::bytes(CHUNK * 3 + 7);
+    create(&mut owner, &io, plain.clone());
+    futures::executor::block_on(async {
+        assert!(!owner.describe().unwrap().read_only);
+        let key = owner.export_read_key().unwrap();
+        let total = io.bytes("base").len() as u64;
+        io.reset();
+        let mut reader = Engine::open_read_only(&io, "base".into(), total, key.to_vec())
+            .await
+            .unwrap();
+        assert_eq!(io.count(), HEADER + CHUNK + OVERHEAD);
+        assert!(reader.describe().unwrap().read_only);
+        assert_eq!(reader.identity().err().unwrap().code, "READ_ONLY");
+        assert_eq!(reader.export_read_key().unwrap_err().code, "READ_ONLY");
+        assert_eq!(
+            reader
+                .open(&io, "base".into(), total)
+                .await
+                .unwrap_err()
+                .code,
+            "READ_ONLY"
+        );
+        assert_eq!(
+            reader.begin_create("raw".into(), 512).unwrap_err().code,
+            "READ_ONLY"
+        );
+        assert_eq!(reader.begin_save(&io).await.unwrap_err().code, "READ_ONLY");
+        assert_eq!(reader.accept_unchanged(&io).unwrap_err().code, "READ_ONLY");
+        assert_eq!(reader.header().unwrap_err().code, "READ_ONLY");
+        assert_eq!(reader.next(&io).await.unwrap_err().code, "READ_ONLY");
+        assert_eq!(
+            reader.accept(&io, "bad".into(), total).unwrap_err().code,
+            "READ_ONLY"
+        );
+        assert_eq!(
+            reader.verify_image(&io).await.unwrap(),
+            Sha256::digest(&plain).to_vec()
+        );
+        reader
+            .write(&io, (CHUNK - 1) as u64, &[42, 43, 44])
+            .await
+            .unwrap();
+        assert_eq!(
+            reader.read(&io, (CHUNK - 1) as u64, 3).await.unwrap(),
+            [42, 43, 44]
+        );
+        reader.clear_cache();
+        io.fail.set(Some(0));
+        assert!(reader.read(&io, (CHUNK * 2) as u64, 1).await.is_err());
+        assert!(reader
+            .write(&io, (CHUNK * 2 - 1) as u64, &[7, 8])
+            .await
+            .is_err());
+        assert_eq!(reader.describe().unwrap().dirty_sectors, 2);
+        io.fail.set(None);
+        assert_eq!(
+            reader.read(&io, (CHUNK - 1) as u64, 3).await.unwrap(),
+            [42, 43, 44]
+        );
+        reader.discard().unwrap();
+        assert_eq!(
+            reader.verify_image(&io).await.unwrap(),
+            Sha256::digest(&plain).to_vec()
+        );
+        reader.write(&io, 0, &[99]).await.unwrap();
+        drop(reader);
+        let mut reader = Engine::open_read_only(&io, "base".into(), total, key.to_vec())
+            .await
+            .unwrap();
+        assert_eq!(reader.read(&io, 0, 1).await.unwrap(), plain[..1]);
+        owner.write(&io, 0, &[99]).await.unwrap();
+        assert!(owner.export_read_key().is_err());
+        assert!(owner.begin_save(&io).await.unwrap());
+        let mut new = owner.header().unwrap();
+        while let Some(record) = owner.next(&io).await.unwrap() {
+            new.extend(record);
+        }
+        io.put("saved", new.clone());
+        owner.accept(&io, "saved".into(), new.len() as u64).unwrap();
+        let new_key = owner.export_read_key().unwrap();
+        assert_ne!(*key, *new_key);
+        assert!(
+            Engine::open_read_only(&io, "saved".into(), new.len() as u64, key.to_vec())
+                .await
+                .is_err()
+        );
+        let mut new_reader =
+            Engine::open_read_only(&io, "saved".into(), new.len() as u64, new_key.to_vec())
+                .await
+                .unwrap();
+        assert_eq!(new_reader.read(&io, 0, 1).await.unwrap(), [99]);
+        assert_eq!(reader.read(&io, 0, 1).await.unwrap(), plain[..1]);
+    });
+}
+
+#[test]
+fn read_only_rejects_bad_keys_headers_and_records() {
+    let io = Memory::default();
+    let mut owner = engine();
+    create(&mut owner, &io, support::bytes(CHUNK * 2 + 7));
+    futures::executor::block_on(async {
+        let base = io.bytes("base");
+        let key = owner.export_read_key().unwrap();
+        for length in [0, 16, 32, 47, 49] {
+            io.reset();
+            assert_eq!(
+                Engine::open_read_only(&io, "base".into(), base.len() as u64, vec![0; length])
+                    .await
+                    .err()
+                    .unwrap()
+                    .code,
+                "INVALID_READ_KEY"
+            );
+            assert_eq!(io.count(), 0);
+        }
+        for pos in [0, 16, 47] {
+            let mut bad = key.to_vec();
+            bad[pos] ^= 1;
+            assert_eq!(
+                Engine::open_read_only(&io, "base".into(), base.len() as u64, bad)
+                    .await
+                    .err()
+                    .unwrap()
+                    .code,
+                "CORRUPTION"
+            );
+        }
+        for pos in [
+            0,
+            8,
+            12,
+            16,
+            HEADER,
+            HEADER + 46,
+            HEADER + CHUNK + OVERHEAD - 1,
+        ] {
+            let mut bad = base.clone();
+            bad[pos] ^= 1;
+            io.put("bad", bad);
+            assert!(
+                Engine::open_read_only(&io, "bad".into(), base.len() as u64, key.to_vec())
+                    .await
+                    .is_err()
+            );
+        }
+        for length in [7, HEADER - 1, base.len() - 1, base.len() + 1] {
+            let mut bad = base.clone();
+            bad.resize(length, 0);
+            io.put("bad", bad);
+            assert!(
+                Engine::open_read_only(&io, "bad".into(), length as u64, key.to_vec())
+                    .await
+                    .is_err()
+            );
+        }
+        let mut bad = base.clone();
+        bad[HEADER + CHUNK + OVERHEAD + 46] ^= 1;
+        io.put("bad", bad);
+        let mut reader = Engine::open_read_only(&io, "bad".into(), base.len() as u64, key.to_vec())
+            .await
+            .unwrap();
+        assert_eq!(
+            reader.read(&io, CHUNK as u64, 1).await.unwrap_err().code,
+            "CORRUPTION"
+        );
+        // Header signatures are checked by owner opening. In this mode the caller
+        // supplies a CID-authenticated source, not an identity public key.
+        let mut changed_signature = base.clone();
+        changed_signature[197] ^= 1;
+        io.put("cid-verified", changed_signature);
+        assert!(Engine::open_read_only(
+            &io,
+            "cid-verified".into(),
+            base.len() as u64,
+            key.to_vec()
+        )
+        .await
+        .is_ok());
+    });
+}
+
+#[test]
+fn read_only_open_cancellation_never_returns_a_candidate() {
+    struct CancelRead<'a> {
+        io: &'a Memory,
+    }
+    #[async_trait::async_trait(?Send)]
+    impl Io for CancelRead<'_> {
+        async fn read(&self, id: &str, offset: u64, length: usize) -> Result<Vec<u8>> {
+            let bytes = self.io.read(id, offset, length).await?;
+            if offset >= HEADER as u64 {
+                self.io.stop.set(true);
+            }
+            Ok(bytes)
+        }
+        fn cancelled(&self) -> bool {
+            self.io.stop.get()
+        }
+    }
+    let io = Memory::default();
+    let mut owner = engine();
+    create(&mut owner, &io, support::bytes(CHUNK * 2));
+    futures::executor::block_on(async {
+        let key = owner.export_read_key().unwrap();
+        let total = io.bytes("base").len() as u64;
+        assert_eq!(
+            Engine::open_read_only(&CancelRead { io: &io }, "base".into(), total, key.to_vec())
+                .await
+                .err()
+                .unwrap()
+                .code,
+            "CANCELLED"
+        );
+        io.stop.set(false);
+        assert!(
+            Engine::open_read_only(&io, "base".into(), total, key.to_vec())
+                .await
+                .is_ok()
+        );
+    });
 }

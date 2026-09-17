@@ -299,13 +299,28 @@ export class RemoteDisk {
         if(!record.value.startsWith('/ipfs/')) throw fail('UNSUPPORTED_FORMAT', 'The IPNS record must reference an IPFS file.');
         const path = record.value.slice(6), [root] = path.split('/');
         CID.parse(root);
+        await this.openPath(path, signal);
+        this.remote = {ipnsName:identity.ipnsName, path:record.value, cid:this.entry.cid.toString(), sequence:record.sequence.toString(), gateway:this.gateway};
+        return this;
+    }
+    async openCid(cid, signal) {
+        try {
+            if(typeof cid !== 'string') throw new Error();
+            const parsed = CID.parse(cid);
+            if(![0x70, 0x55, 0x00].includes(parsed.code)) throw new Error();
+        } catch { throw fail('INVALID_CID', 'Expected a file CID without a URL or path.'); }
+        await this.openPath(cid, signal);
+        this.remote = {path:'/ipfs/' + this.entry.cid.toString(), cid:this.entry.cid.toString(), gateway:this.gateway};
+        return this;
+    }
+    async openPath(path, signal) {
+        check(signal);
         this.entry = await exporter(path, this, {signal, blockReadConcurrency:1});
         check(signal);
-        if(!['file','raw','identity'].includes(this.entry.type)) throw fail('UNSUPPORTED_FORMAT', 'The IPNS record does not reference a file.');
+        if(!['file','raw','identity'].includes(this.entry.type)) throw fail('UNSUPPORTED_FORMAT', 'The reference does not identify a file.');
         const size = this.entry.type === 'file' ? this.entry.unixfs.fileSize() : this.entry.size;
         if(size < 198n || size > BigInt(MAX_FILE)) throw fail('CORRUPTION', 'Invalid encrypted file size.');
         this.size = Number(size);
-        this.remote = {ipnsName:identity.ipnsName, path:record.value, cid:this.entry.cid.toString(), sequence:record.sequence.toString(), gateway:this.gateway};
         return this;
     }
     async read(offset, length, signal, priority = 'demand') {

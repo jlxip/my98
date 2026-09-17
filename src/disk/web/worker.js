@@ -49,6 +49,29 @@ async function build() {
     } catch(error) { if(id && id !== current) remove(id); vault.cancel(); throw error; }
 }
 async function execute(op,a) {
+    if(op === "close" && !vault) return null;
+    if(vault && !identity && ["unlock", "create", "createEmpty", "open", "openRemote", "save", "download", "retry", "exportReadOnlyKey"].includes(op)) {
+        throw fail("READ_ONLY", "Operation unavailable in read-only mode");
+    }
+    if(op === "openReadOnly") {
+        if(vault) throw fail("OPERATION_FAILED", "Close the current disk or identity first");
+        if(!(a.readKey instanceof Uint8Array) || a.readKey.length !== 48) throw fail("INVALID_READ_KEY", "Invalid read key");
+        const remote = new RemoteDisk({gateway:a.gateway, prefetch:a.prefetch, onNetwork:(bytes, calls)=>{networkBytes+=bytes;networkRequests+=calls;}});
+        let id, candidate;
+        try {
+            progress("resolve",0,0);
+            await remote.openCid(a.cid, activeRequest.signal); check();
+            id = source(remote);
+            candidate = await Vault.open_read_only(id, remote.size, a.readKey); check();
+            vault = candidate; current = id; prepared = undefined;
+            remote.startPrefetch(); return describe();
+        } catch(error) {
+            candidate?.free();
+            if(vault === candidate) vault = current = undefined;
+            if(id) remove(id); else remote.close();
+            throw error;
+        }
+    }
     if(op === "unlock") {
         if(vault) throw fail("OPERATION_FAILED", "Close the previous identity first");
         vault = new Vault(a.username,a.password,a.machine); identity = JSON.parse(vault.identity()); return identity;
@@ -101,6 +124,7 @@ async function execute(op,a) {
             current = id; prepared = undefined; remote.startPrefetch(); return describe();
         } catch(error) {if(id)remove(id);else remote.close();throw error;}
     }
+    case "exportReadOnlyKey": return vault.export_read_key();
     case "describe": return describe();
     case "read": {
         if(!Number.isSafeInteger(a.length) || a.length < 0 || a.length > 0xffffffff) throw fail("IO_ERROR","Invalid read length");
@@ -163,6 +187,6 @@ self.onmessage = ({data}) => {
         }catch(error) {
             if(globalThis.slopDiskCancelled()) {vault?.cancel();error=fail("CANCELLED","Operation cancelled");}
             self.postMessage({id,ok:false,error:errorInfo(error)});
-        }finally {activeRequest=undefined;args?.password?.fill(0);args?.bytes?.fill(0);}
+        }finally {activeRequest=undefined;args?.password?.fill(0);args?.bytes?.fill(0);if(args?.readKey instanceof Uint8Array) args.readKey.fill(0);}
     }).catch(()=>self.postMessage({type:"fatal",error:"Disk Worker failed"}));
 };

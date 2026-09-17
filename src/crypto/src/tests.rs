@@ -272,3 +272,29 @@ fn machine_namespace_is_unambiguous_and_literal() {
     assert!(derive_identity("u", b"p".to_vec(), "").is_err());
     assert!(derive_identity("u", b"p".to_vec(), &"a".repeat(4097)).is_err());
 }
+
+#[test]
+fn read_capability_roundtrip_and_validation() {
+    let owner = identity();
+    let disk = owner.create_disk().unwrap();
+    let key = disk.export_read_key().unwrap();
+    assert_eq!(key.len(), 48);
+    assert_eq!(&key[..16], disk.id().unwrap());
+    let encrypted = disk.seal_unit(&[0; 12], vec![1, 2, 3]).unwrap();
+    let mut reader = Disk::from_read_key(key.to_vec()).unwrap();
+    assert_eq!(reader.open_unit(&[0; 12], &encrypted).unwrap(), [1, 2, 3]);
+    for pos in [0, 16, 47] {
+        let mut bad = key.to_vec();
+        bad[pos] ^= 1;
+        assert!(Disk::from_read_key(bad)
+            .unwrap()
+            .open_unit(&[0; 12], &encrypted)
+            .is_err());
+    }
+    for size in [0, 16, 32, 47, 49] {
+        assert!(Disk::from_read_key(vec![0; size]).is_err());
+    }
+    reader.close();
+    assert!(reader.export_read_key().is_err());
+    assert!(reader.open_unit(&[0; 12], &encrypted).is_err());
+}

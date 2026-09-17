@@ -64,7 +64,19 @@ impl Vault {
         })
     }
     pub fn identity(&self) -> Result<String> {
-        Ok(serde_json::json!({"ipnsName":self.engine.identity.ipns_name().map_err(operation)?,"publicKey":self.engine.identity.public_key().map_err(operation)?}).to_string())
+        Ok(serde_json::json!({"ipnsName":self.engine.identity()?.ipns_name().map_err(operation)?,"publicKey":self.engine.identity()?.public_key().map_err(operation)?}).to_string())
+    }
+    pub fn export_read_key(&self) -> Result<js_sys::Uint8Array> {
+        let bytes = self.engine.export_read_key()?;
+        // Copy into JS before the zeroizing Rust allocation is released.
+        Ok(js_sys::Uint8Array::from(bytes.as_slice()))
+    }
+    pub async fn open_read_only(source: String, total: f64, read_key: Vec<u8>) -> Result<Vault> {
+        let read_key = Zeroizing::new(read_key);
+        Ok(Self {
+            engine: Engine::open_read_only(&BrowserIo, source, number(total)?, read_key.to_vec())
+                .await?,
+        })
     }
     pub fn describe(&self) -> Result<String> {
         serde_json::to_string(&self.engine.describe()?).map_err(|e| operation(e.to_string()))

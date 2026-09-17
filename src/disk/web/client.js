@@ -49,6 +49,19 @@ export class Slop86Disk {
     createEmpty(sizeBytes) {return this.call("createEmpty", {sizeBytes});}
     open(file) {return this.call("open", {file});}
     openRemote({gateway, prefetch} = {}) {return this.call("openRemote", {gateway,prefetch});}
+    async exportReadOnlyKey() {
+        const bytes = await this.call("exportReadOnlyKey");
+        try { return "my98-ro-v1." + btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_"); }
+        finally { bytes.fill(0); }
+    }
+    async openReadOnly({cid, readKey, gateway, prefetch} = {}) {
+        if(typeof readKey !== "string" || readKey.length !== 75 || !/^my98-ro-v1\.[A-Za-z0-9_-]{64}$/.test(readKey)) {
+            throw Object.assign(new Error("Invalid read key"), {code:"INVALID_READ_KEY"});
+        }
+        const bytes = Uint8Array.from(atob(readKey.slice(11).replaceAll("-", "+").replaceAll("_", "/")), c=>c.charCodeAt(0));
+        try { return await this.call("openReadOnly", {cid, readKey:bytes, gateway, prefetch}, [bytes.buffer]); }
+        finally { if(bytes.byteLength) bytes.fill(0); }
+    }
     describe() {return this.call("describe");}
     read(offset,length) {return this.call("read", {offset,length});}
     write(offset,data) {const bytes=new Uint8Array(data).slice();return this.call("write", {offset,bytes}, [bytes.buffer]);}
