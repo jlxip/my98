@@ -25,9 +25,9 @@ try {for(const [name,type] of Object.entries({chromium,webkit})) {
  await page.evaluate(()=>{document.body.innerHTML='<input type="file" id="fixture">';});await page.locator('#fixture').setInputFiles(diskPath);
  const before=await page.evaluate(async fixture=>{
   const file=document.querySelector('#fixture').files[0];const {Slop86Disk,DiskBuffer}=await import('/build/disk/web/client.js');const {V86}=await import('/build/libv86.mjs');
-  let last=0;let c=await Slop86Disk.create({onProgress:p=>{if(performance.now()-last>5000){last=performance.now();console.log('verify '+(p.completed/1048576).toFixed(1)+' MiB');}}});await c.unlock('disk fixtures','public compatibility password','main');await (fixture.gateway ? c.openRemote({gateway:fixture.gateway}) : c.open(file));
+  let last=0;let c=await Slop86Disk.create({onProgress:p=>{if(performance.now()-last>5000){last=performance.now();console.log('verify '+(p.completed/1048576).toFixed(1)+' MiB');}}});await c.unlock('disk fixtures','public compatibility password','main');await (fixture.gateway ? c.openRemote({onlyLocalhost:true,gateway:fixture.gateway}) : c.open(file));
   const t=performance.now(),hash=Array.from(await c.verifyImage(),b=>b.toString(16).padStart(2,'0')).join('');const verifyMs=performance.now()-t;if(hash!==fixture.sha256)throw Error('Preboot hash mismatch');await c.close();
-  c=await Slop86Disk.create();await c.unlock('disk fixtures','public compatibility password','main');const cold=performance.now();await (fixture.gateway ? c.openRemote({gateway:fixture.gateway}) : c.open(file));await c.read(0,512);const coldMs=performance.now()-cold,reads=await c.readStats();
+  c=await Slop86Disk.create();await c.unlock('disk fixtures','public compatibility password','main');const cold=performance.now();await (fixture.gateway ? c.openRemote({onlyLocalhost:true,gateway:fixture.gateway}) : c.open(file));await c.read(0,512);const coldMs=performance.now()-cold,reads=await c.readStats();
   if(reads.readBytes!==65796||reads.readCalls!==2)throw Error('Cold boot reads extra data');
   const actualRead=c.read.bind(c);let inject=true;c.read=async(offset,length)=>{if(inject&&offset>=65536){inject=false;throw Object.assign(Error('Injected transient disk read failure'),{code:'IO_ERROR'});}return actualRead(offset,length);};
   let blockedResolve;const blocked=new Promise(r=>blockedResolve=r);

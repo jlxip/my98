@@ -54,7 +54,7 @@ async function extract({Vault, RemoteDisk}, credentials) {
     };
     try {
         check();
-        try { remote = new RemoteDisk({gateway:credentials.gateway ?? undefined, prefetch:{enabled:false}}); }
+        try { remote = new RemoteDisk({gateway:credentials.gateway ?? undefined, servers:credentials.gateway == null ? undefined : [{url:credentials.gateway,resolution:'gateway',discovery:false}], prefetch:{enabled:false}}); }
         catch { throw fail('INVALID_GATEWAY'); }
         process.stderr.write('Unlocking identity…\n');
         try { vault = new Vault(credentials.username, password, credentials.machine); }

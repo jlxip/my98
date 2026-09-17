@@ -27,7 +27,7 @@ try {for(const [name,type] of Object.entries({chromium,webkit})) {
                     await c.unlock('disk fixtures','public compatibility password','main');
                     const usesProfile=['ranges','auto'].includes(policy);
                     const bootProfile=usesProfile?{version:1,cid:small.rootCid,unitBytes:65536,ranges:[[2,3],[0,1],...Array(30).fill(null)]}:undefined;
-                    await c.openRemote({gateway:endpoint,prefetch:{policy,bootProfile}});
+                    await c.openRemote({onlyLocalhost:true,gateway:endpoint,prefetch:{policy,bootProfile}});
                     await until(async()=>(await c.readStats()).remote.prefetchState==='complete');
                     const downloaded=await c.readStats();
                     if(usesProfile && !downloaded.remote.rangeProfile)throw Error('Range profile did not match');
@@ -48,7 +48,7 @@ try {for(const [name,type] of Object.entries({chromium,webkit})) {
             const {Slop86Disk}=await import('/build/disk/web/client.js');const c=await Slop86Disk.create();
             try {
                 await c.unlock('disk fixtures','public compatibility password','main');const started=performance.now();
-                await c.openRemote({gateway:endpoint});
+                await c.openRemote({onlyLocalhost:true,gateway:endpoint});
                 for(;;){const s=await c.readStats();if(s.remote.prefetchState==='complete')break;if(s.remote.prefetchState==='paused')throw Error(JSON.stringify(s));if(performance.now()-started>240000)throw Error('1 GiB timeout');await new Promise(r=>setTimeout(r,50));}
                 const downloaded=await c.readStats(),ms=performance.now()-started;
                 await window.setGatewayMode('missing');

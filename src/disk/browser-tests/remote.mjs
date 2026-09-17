@@ -8,13 +8,13 @@ export async function runRemote(fixture) {
     let c;
     try {
         for(const flavor of ['kubo','v1','path']) {
-            await mode(flavor);c=await make();const state=await c.openRemote({gateway:fixture.endpoint,prefetch:{enabled:false}});
+            await mode(flavor);c=await make();const state=await c.openRemote({onlyLocalhost:true,gateway:fixture.endpoint,prefetch:{enabled:false}});
             check(flavor+' exact image size',state.size===fixture.small.size);
             check(flavor+' header-only open',(await c.readStats()).readBytes===198);
             check(flavor+' full native hash',hex(await c.verifyImage())===fixture.small.sha256);
             await c.close();c=undefined;
         }
-        await mode('small');c=await make();await c.openRemote({gateway:fixture.endpoint,prefetch:{enabled:false}});
+        await mode('small');c=await make();await c.openRemote({onlyLocalhost:true,gateway:fixture.endpoint,prefetch:{enabled:false}});
         const plain=new Uint8Array(await(await fetch('/'+fixture.small.source)).arrayBuffer());
         check('cross-record range exact',hex(await c.read(65533,12))===hex(plain.slice(65533,65545)));
         const first=await c.readStats();await c.read(65533,12);check('repeat read uses cache',(await c.readStats()).networkRequests===first.networkRequests);
@@ -52,10 +52,10 @@ export async function runRemote(fixture) {
         check('retry reuses prepared download',(await c.retryDownload()).id===saved.download.id);
         await c.close();c=undefined;
         for(const flavor of ['expired','wrong','missing']) {
-            await mode(flavor);c=await make();await rejects(flavor+' IPNS rejected',()=>c.openRemote({gateway:fixture.endpoint,prefetch:{enabled:false}}),flavor==='missing'?'IO_ERROR':'CORRUPTION');
+            await mode(flavor);c=await make();await rejects(flavor+' IPNS rejected',()=>c.openRemote({onlyLocalhost:true,gateway:fixture.endpoint,prefetch:{enabled:false}}),flavor==='missing'?'IO_ERROR':'CORRUPTION');
             check(flavor+' leaves identity without disk',await c.describe().then(()=>false,()=>true));await c.close();c=undefined;
         }
-        await mode('large');c=await make();const started=performance.now();await c.openRemote({gateway:fixture.endpoint,prefetch:{enabled:false}});await c.read(0,512);
+        await mode('large');c=await make();const started=performance.now();await c.openRemote({onlyLocalhost:true,gateway:fixture.endpoint,prefetch:{enabled:false}});await c.read(0,512);
         let stats=await c.readStats();const cold={...stats,milliseconds:performance.now()-started};
         check('1GiB opens lazily',stats.readBytes===65796&&stats.networkBytes<2*1048576);
         check('1GiB far tail direct access',(await c.read(1073741823,1))[0]===0);

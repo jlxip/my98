@@ -11,7 +11,8 @@ export function setupDisk(host) {
         $("panel").querySelectorAll("button,input").forEach(e=>e.disabled=busy||working);
         if(!client || state) {$("empty-form").hidden=true;$("empty").setAttribute("aria-expanded","false");}
         for(const id of ["empty", "empty-size", "empty-submit", "empty-cancel"]) $(id).disabled ||= !!state;
-        $("create").disabled ||= !!state;$("open").disabled ||= !!state;$("remote").disabled ||= !!state;$("gateway").disabled ||= !!state;
+        $("create").disabled ||= !!state;$("open").disabled ||= !!state;$("remote").disabled ||= !!state;
+        $("only-localhost").disabled ||= !!state;
         for(const id of ["boot","save","download","discard","verify"]) $(id).disabled ||= !state;
         $("boot").disabled ||= active || !!adapter?.failed;
         $("save").disabled ||= !active || !!adapter?.failed;
@@ -85,10 +86,12 @@ export function setupDisk(host) {
         const [file]=await host.pickFiles();if(!file)return;
         state=await client.open(file);prepared=false;message("Header authenticated. Disk data will be read and verified on demand.");
     });
+    $("only-localhost").checked=false;
+    $("only-localhost").onchange=()=>syncControls(host.busy());
     async function openRemote() {
         message("Finding remote disk…");capturing=true;syncControls(true);
         try {
-            state=await client.openRemote({gateway:$("gateway").value});prepared=false;
+            state=await client.openRemote({gateway:$("only-localhost").checked ? "http://127.0.0.1:8080" : undefined, onlyLocalhost:$("only-localhost").checked});prepared=false;
             message("Remote disk authenticated. The full disk downloads in the background while you use it. Changes are saved locally.");
         } finally {capturing=false;syncControls(true);}
     }
@@ -139,7 +142,7 @@ export function setupDisk(host) {
         if(!window.confirm("Close the identity? Pending changes and the prepared download for this session will be lost."))return;
         if(active)await host.stop();adapter?.dispose();adapter=undefined;await host.close();active=false;
         await client.close();client=state=undefined;prepared=false;analyzing=false;analysisError=undefined;$("identity").textContent="";
-        $("password").value="";$("autoboot").checked=true;$("settings").open=false;$("empty-size").value="1024";
+        $("password").value="";$("autoboot").checked=true;$("empty-size").value="1024";
         message("");
     });
     return {syncControls};

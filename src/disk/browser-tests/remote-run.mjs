@@ -33,7 +33,7 @@ try {
             // Network cancellation must work without cross-origin isolation too.
             await page.goto(`http://127.0.0.1:${server.address().port}/disk/browser-tests/index.html?no-isolation`);
             f.setMode('hang');
-            const cancellation=await page.evaluate(async gateway=>{const {Slop86Disk}=await import('/build/disk/web/client.js');const c=await Slop86Disk.create();await c.unlock('disk fixtures','public compatibility password','main');const p=c.openRemote({gateway});setTimeout(()=>c.cancel(),100);let code;try{await p;}catch(e){code=e.code;}await c.close();return {code,isolated:crossOriginIsolated};},f.endpoint);
+            const cancellation=await page.evaluate(async gateway=>{const {Slop86Disk}=await import('/build/disk/web/client.js');const c=await Slop86Disk.create();await c.unlock('disk fixtures','public compatibility password','main');const p=c.openRemote({onlyLocalhost:true,gateway});setTimeout(()=>c.cancel(),100);let code;try{await p;}catch(e){code=e.code;}await c.close();return {code,isolated:crossOriginIsolated};},f.endpoint);
             if(cancellation.code!=='CANCELLED'||cancellation.isolated)throw Error('Non-isolated cancellation failed');
             results.at(-1).cancellationWithoutIsolation=cancellation;
             } else {results.push({browser:name,version:browser.version()});}

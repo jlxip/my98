@@ -15,7 +15,9 @@ JSON. Ctrl-C cancels and closes the helper.
 
 The command verifies the published IPNS record, pins the file CID, authenticates
 the disk header and decrypts the first block. Prefetch is disabled. The default
-gateway is the same as my98; `--gateway` accepts HTTPS or local HTTP for tests.
+query-server list and data gateway are the same as my98. An explicit `--gateway`
+uses only that server for both resolution and download; it accepts HTTPS or local
+HTTP for tests.
 It does not start Windows, write the disk or publish anything.
 
 The read key grants access to that disk version. After saving a new version,

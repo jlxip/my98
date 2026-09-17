@@ -7,7 +7,17 @@ import { diskFixture } from "./fixture.mjs";
 import { unlockIdentity as login } from "./encrypted.mjs";
 import { selectBootRanges } from "../../src/disk/scripts/range-profile.mjs";
 const results = [], f = await diskFixture();
-const ready = page => page.waitForFunction(() => document.body && !document.body.inert && !document.querySelector("#disk-user").disabled);
+const ready = async page => {
+    await page.waitForFunction(() => document.body && !document.body.inert && !document.querySelector("#disk-user").disabled);
+    // Apply fixture configuration after service-worker initialization in both browsers.
+    await page.evaluate(async gateway => {
+        const {Slop86Disk} = await import('./build/disk/web/client.js');
+        const open = Slop86Disk.prototype.openRemote;
+        Slop86Disk.prototype.openRemote = function(options) {
+            return open.call(this, {...options, gateway, servers:[{url:gateway,resolution:'gateway',discovery:false}]});
+        };
+    }, f.gateway);
+};
 async function pick(page, selector, file) {
     const chooser = page.waitForEvent("filechooser");
     await page.locator(selector).click(); await (await chooser).setFiles(file);
@@ -25,16 +35,13 @@ try {
         console.log(name + ": launching browser");
         const server = await serveSite({ prefix: "/my98/" }), browser = await type.launch();
         try {
-            const context = await browser.newContext(); await context.routeWebSocket("**/*", socket => socket.close());
+            const context = await browser.newContext();
+            await context.routeWebSocket("**/*", socket => socket.close());
             await context.addInitScript(quietAudio);
             const page = await context.newPage(), errors = [];
             page.on("pageerror", e => errors.push(String(e)));
             page.on("dialog", dialog => dialog.accept());
             await page.goto(server.url); await ready(page);
-            // An unused invalid gateway must not block identity-only login.
-            await page.locator("#disk-settings summary").click();
-            await page.locator("#disk-gateway").fill("not a URL");
-            await page.locator("#disk-settings summary").click();
             // Convert a raw image only after login, then boot the encrypted disk.
             await login(page);
             const created = page.waitForEvent("download");
@@ -69,8 +76,6 @@ try {
             await page.waitForFunction(() => !document.querySelector("#disk-login").hidden);
             // Checked by default after logout: one login opens and boots remotely.
             assert.equal(await page.locator("#disk-autoboot").isChecked(), true);
-            await page.locator("#disk-settings summary").click();
-            await page.locator("#disk-gateway").fill(f.gateway);
             await page.locator("#disk-user").fill("disk fixtures");
             await page.locator("#disk-password").fill("public compatibility password");
             await page.locator("#disk-login button").click();
@@ -90,7 +95,7 @@ try {
                 const reject = async fn => { try { await fn(); } catch { return; } throw Error('Expected rejection'); };
                 try {
                     await c.unlock('disk fixtures', 'public compatibility password', 'main');
-                    const state = await c.openRemote({gateway});
+                    const state = await c.openRemote({onlyLocalhost:true,gateway});
                     await c.read(5 * 65536, 512); // Warm the plaintext cache before recording.
                     await c.startBootAnalysis();
                     await reject(() => c.startBootAnalysis());
@@ -140,7 +145,7 @@ try {
                 const { Slop86Disk } = await import("./build/disk/web/client.js");
                 const c = await Slop86Disk.create();
                 try {
-                    await c.unlock("disk fixtures", "public compatibility password", "main"); await c.openRemote({ gateway });
+                    await c.unlock("disk fixtures", "public compatibility password", "main"); await c.openRemote({onlyLocalhost:true, gateway });
                     await c.write(100, new Uint8Array([99]));
                     return Array.from(new Uint8Array(await (await c.save()).download.blob.arrayBuffer()));
                 } finally { await c.close(); }
@@ -156,7 +161,7 @@ try {
                 let c = await Slop86Disk.create();
                 try {
                     await c.unlock('disk fixtures','public compatibility password','main');
-                    const ownerState = await c.openRemote({gateway,prefetch:{enabled:false}});
+                    const ownerState = await c.openRemote({onlyLocalhost:true,gateway,prefetch:{enabled:false}});
                     const readKey = await c.exportReadOnlyKey();
                     await c.close(); c = await Slop86Disk.create();
                     const options = {cid:ownerState.remote.cid,readKey,gateway,prefetch:{enabled:false}};

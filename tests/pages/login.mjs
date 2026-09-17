@@ -15,14 +15,15 @@ for(const [name, type] of Object.entries({chromium, webkit})) {
         await page.waitForFunction(() => !document.body.inert);
         assert.equal(await page.locator("#disk-autoboot").isChecked(), true);
         assert.equal(await page.locator("#disk-machine").inputValue(), "main");
-        assert.equal(await page.locator("#disk-settings").getAttribute("open"), null);
+        assert.equal(await page.locator("#disk-only-localhost").isChecked(), false);
+        assert.equal(await page.locator("#disk-settings, #disk-gateway").count(), 0);
         assert.equal(await page.locator("#choose-disk, #show-resume, #resume-form, #save-state, #load-state, #download-disk").count(), 0);
         assert.equal(await page.locator("#disk-workspace").isVisible(), false);
         // macOS WebKit uses Option+Tab to include non-text form controls.
         const tabKey = name === "webkit" && process.platform === "darwin" ? "Alt+Tab" : "Tab";
         // Logical tab order, including checkbox and submit by keyboard.
         await page.locator("#disk-user").focus();
-        for(const id of ["disk-password", "disk-machine", "disk-autoboot"]) {
+        for(const id of ["disk-password", "disk-machine", "disk-only-localhost", "disk-autoboot"]) {
             await page.keyboard.press(tabKey);
             assert.equal(await page.evaluate(() => document.activeElement.id), id);
         }
@@ -39,12 +40,8 @@ for(const [name, type] of Object.entries({chromium, webkit})) {
             const box = await page.locator("#disk-panel").boundingBox();
             assert(Math.abs(box.x + box.width/2 - viewport.width/2) < 1);
             if(viewport.height > 500) assert(Math.abs(box.y + box.height/2 - viewport.height/2) < 1);
-            await page.locator("#disk-settings summary").click();
-            await page.locator("#disk-gateway").fill("https://example.invalid");
-            assert.equal(await page.locator("#disk-gateway").inputValue(), "https://example.invalid");
             await page.locator("#disk-login button").scrollIntoViewIfNeeded();
             assert(await page.locator("#disk-login button").evaluate(e => {const r=e.getBoundingClientRect();return r.top>=0 && r.bottom<=innerHeight;}));
-            await page.locator("#disk-settings summary").click();
         }
         // Controlled failures at the actual controller/client boundary; no production test hooks.
         await page.route("**/login-controls-test", route => route.fulfill({contentType:"text/html",body:panel}));
@@ -89,16 +86,16 @@ for(const [name, type] of Object.entries({chromium, webkit})) {
             const wait = async predicate => {for(let i=0;!predicate();i++){if(i>1000)throw Error("UI stuck");await new Promise(r=>setTimeout(r,1));}};
             const idle=()=>wait(()=>!busy);
             const submit=()=>$('login').dispatchEvent(new Event('submit',{cancelable:true}));
-            const fill=auto=>{$('user').value='User';$('password').value='secret';$('machine').value='other';$('gateway').value='https://gateway.invalid';$('autoboot').checked=auto;};
+            const fill=auto=>{$('user').value='User';$('password').value='secret';$('machine').value='other';$('autoboot').checked=auto;};
             const close=async()=>{$('close').onclick();await idle();calls=[];};
             const sequence=()=>calls.map(c=>c[0]).join(',');
             fill(false);submit();await idle();
             check('unchecked unlocks only, with exact identity inputs',sequence()==='unlock' && JSON.stringify(calls[0])===JSON.stringify(['unlock','User','secret','other']));
             check('management visible, password cleared, no disk to boot',!$('workspace').hidden && $('login').hidden && $('password').value==='' && $('boot').disabled);
             await close();
-            check('logout restores login and default boot',!$('login').hidden && $('workspace').hidden && $('autoboot').checked && !$('settings').open);
+            check('logout restores login and default boot',!$('login').hidden && $('workspace').hidden && $('autoboot').checked);
             fill(true);submit();await idle();
-            check('checked opens and boots exactly once in order',sequence()==='unlock,open,read,boot' && calls[1][1]==='https://gateway.invalid' && session);
+            check('checked opens and boots exactly once in order',sequence()==='unlock,open,read,boot' && calls[1][1]===undefined && session);
             await close();
             failAt='unlock';fill(true);submit();await idle();
             check('unlock failure disposes candidate and retains login',sequence()==='unlock,close' && !$('login').hidden && $('status').textContent==='Unlock failed');

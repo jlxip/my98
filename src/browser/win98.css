@@ -19,14 +19,10 @@ body { margin: 0; }
 #welcome { min-height: 100dvh; display: flex; padding: 32px 24px; }
 #disk-panel { width: min(100%, 360px); margin: auto; }
 #disk-brand { margin: 0 0 28px; text-align: center; color: #929ba8; font-size: 20px; font-weight: 500; letter-spacing: .13em; }
-#disk-login .input:not([type=checkbox]), #disk-gateway { display: block; width: 100%; height: 44px; margin-top: 6px; font-size: 16px; }
+#disk-login .input:not([type=checkbox]) { display: block; width: 100%; height: 44px; margin-top: 6px; font-size: 16px; }
 #disk-login .boot-option { display: flex; align-items: center; gap: 8px; min-height: 44px; margin: 0 0 12px; cursor: pointer; }
-#disk-autoboot { width: 16px; height: 16px; margin: 0; }
+#disk-login .boot-option input { width: 16px; height: 16px; margin: 0; }
 #disk-login .btn { width: 100%; min-height: 44px; font-size: 14px; }
-#disk-settings { margin-top: 20px; }
-#disk-settings:not([open]) > :not(summary) { display: none; }
-#disk-settings summary { display: list-item; list-style: disclosure-closed inside; color: var(--muted-foreground); cursor: pointer; padding: 8px 0; }
-#disk-settings label { margin-top: 8px; }
 #welcome.authenticated { min-height: 0; padding: 16px 24px; }
 #welcome.authenticated #disk-panel { width: min(100%, 64rem); }
 #disk-workspace .btn { margin: .25rem; max-width: 100%; height: auto; min-height: 36px; white-space: normal; }
@@ -86,13 +82,6 @@ html.vm-expanded, html.vm-expanded body { overflow: hidden; overscroll-behavior:
 
 @media (max-width: 640px) { #vm-view:not(.expanded) { min-height: 60dvh; } }
 
-#disk-settings[open] summary { list-style-type: disclosure-open; }
-
-/* Keep native details focus/editing in WebKit; Basecoat's discrete animation
-   can leave open contents inert and retain their old width after resizing. */
-#disk-settings::details-content { block-size: auto; opacity: 1; transition: none; }
-#disk-settings:not([open])::details-content { display: none; }
-#disk-settings[open]::details-content { display: block; content-visibility: visible; }
 
 #direct-pointer[aria-checked=true] { color: var(--primary-foreground); background: var(--primary); }
 #vm-view.direct-input .touch-control { display: none !important; }

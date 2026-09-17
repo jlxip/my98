@@ -2,31 +2,22 @@ import {AdaptivePrefetchOrder, adaptivePolicies} from './prefetch-order.js';
 import {matchingRanges, RangePrefetchOrder} from './range-prefetch.js';
 import {CID} from 'multiformats/cid';
 import {sha256} from 'multiformats/hashes/sha2';
-import {publicKeyFromRaw} from '@libp2p/crypto/keys';
-import {validate} from 'ipns/validator';
-import {unmarshalIPNSRecord} from 'ipns';
+import {resolveIpns} from './resolution.js';
+import {dataGateway} from './network-config.js';
+export {DEFAULT_GATEWAY, gatewayURL} from './network-config.js';
 import {exporter} from 'ipfs-unixfs-exporter';
 
-export const DEFAULT_GATEWAY = 'https://trustless-gateway.net';
 const BLOCK_LIMIT = 4 * 1024 * 1024;
 const HEADER = 198, RECORD = 65536 + 62;
 const MAX_FILE = 198 + 2 ** 40 + Math.ceil(2 ** 40 / 65536) * 62;
 const fail = (code, message) => Object.assign(new Error(message), {code});
 const check = signal => { if(signal?.aborted) throw fail('CANCELLED', 'Operation cancelled'); };
-export function gatewayURL(value = DEFAULT_GATEWAY) {
-    const url = new URL(value);
-    if(url.username || url.password || url.search || url.hash ||
-       (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)))) {
-        throw fail('IO_ERROR', 'Use an HTTPS gateway (HTTP is allowed only on localhost).');
-    }
-    // The former public endpoint redirects without CORS headers. Bypass that hop.
-    if(url.origin === 'https://trustless-gateway.link' && url.pathname === '/') url.hostname = 'trustless-gateway.net';
-    return url.href.replace(/\/$/, '');
-}
 
 export class RemoteDisk {
-    constructor({gateway, onNetwork, timeoutMs = 30000, prefetch = {}}) {
-        this.gateway = gatewayURL(gateway);
+    constructor({gateway, servers, onlyLocalhost = false, onNetwork, timeoutMs = 30000, prefetch = {}} = {}) {
+        this.gateway = dataGateway(gateway, onlyLocalhost);
+        this.servers = servers;this.onlyLocalhost = onlyLocalhost;
+        this.resolutionController = undefined;
         this.onNetwork = onNetwork;
         this.timeoutMs = timeoutMs;
         this.blocks = new Map();
@@ -143,6 +134,7 @@ export class RemoteDisk {
         if(this.policy!=='sequential') this.cursor=(Math.floor((offset+length-1)/65536)+1)%this.coverage.length;
     }
     cancel() {
+        this.resolutionController?.abort();
         this.epoch++;
         this.prefetchState='stopped';
         for(const controller of this.readControllers) controller.abort();
@@ -291,17 +283,26 @@ export class RemoteDisk {
         yield bytes;
     }
     async open(identity, signal) {
-        const bytes = await this.request(`/ipns/${identity.ipnsName}?format=ipns-record`, 'application/vnd.ipfs.ipns-record', 10240, signal);
-        try {await validate(publicKeyFromRaw(new Uint8Array(identity.publicKey)), bytes);}
-        catch {throw fail('CORRUPTION', 'The IPNS record is invalid, expired, or signed by another identity.');}
         check(signal);
-        const record = unmarshalIPNSRecord(bytes);
-        if(!record.value.startsWith('/ipfs/')) throw fail('UNSUPPORTED_FORMAT', 'The IPNS record must reference an IPFS file.');
-        const path = record.value.slice(6), [root] = path.split('/');
-        CID.parse(root);
-        await this.openPath(path, signal);
-        this.remote = {ipnsName:identity.ipnsName, path:record.value, cid:this.entry.cid.toString(), sequence:record.sequence.toString(), gateway:this.gateway};
-        return this;
+        if(this.closed) throw fail('CANCELLED', 'Disk closed');
+        const controller = new AbortController(), epoch = this.epoch;
+        const abort = () => controller.abort();
+        signal?.addEventListener('abort', abort, {once:true});
+        this.resolutionController = controller;
+        try {
+            check(signal);
+            const resolved = await resolveIpns(identity, {servers:this.servers, onlyLocalhost:this.onlyLocalhost,
+                gateway:this.gateway, signal:controller.signal, onNetwork:this.onNetwork});
+            check(signal);check(controller.signal);
+            if(epoch !== this.epoch || this.closed) throw fail('CANCELLED', 'Disk closed');
+            await this.openPath(resolved.path.slice(6), controller.signal);
+            check(controller.signal);
+            this.remote = {...resolved, cid:this.entry.cid.toString(), gateway:this.gateway};
+            return this;
+        } finally {
+            signal?.removeEventListener('abort', abort);
+            if(this.resolutionController === controller) this.resolutionController = undefined;
+        }
     }
     async openCid(cid, signal) {
         try {

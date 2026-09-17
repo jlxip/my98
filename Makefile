@@ -48,6 +48,14 @@ disk-test-browser: emulator disk
 test-stop: prepare-emulator
 	node tests/api/stop.js
 
+.PHONY: resolution-test resolution-test-browser
+resolution-test: disk
+	node --test src/disk/scripts/resolution.test.mjs
+
+resolution-test-browser: site
+	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo build --manifest-path src/disk/Cargo.toml --locked --release --example compat
+	node scripts/run-browser-test.mjs tests/pages/resolution.mjs
+
 remote-test: disk
 	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo run --manifest-path src/disk/Cargo.toml --locked --release --example compat
 	node src/disk/browser-tests/remote-run.mjs
@@ -77,11 +85,13 @@ site-test: site
 	PYTHONDONTWRITEBYTECODE=1 python3 tests/server_test.py
 	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo build --manifest-path src/disk/Cargo.toml --locked --release --example compat
 	node --test scripts/run-browser-test.test.mjs
+	node --test src/disk/scripts/resolution.test.mjs
 	node scripts/run-browser-test.mjs tests/pages/audio.mjs
 	node scripts/run-browser-test.mjs tests/pages/run.mjs
 	node scripts/run-browser-test.mjs tests/pages/login.mjs
 	node scripts/run-browser-test.mjs tests/pages/empty-disk.mjs
 	node scripts/run-browser-test.mjs tests/pages/integration.mjs
+	node scripts/run-browser-test.mjs tests/pages/resolution.mjs
 	node scripts/run-browser-test.mjs tests/pages/boot-analysis.mjs
 	node scripts/run-browser-test.mjs tests/pages/media.mjs
 	node scripts/run-browser-test.mjs tests/pages/mobile.mjs

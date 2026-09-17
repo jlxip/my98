@@ -24,6 +24,7 @@
             <label>Username <input class="input" id="disk-user" autocomplete="off" autocapitalize="none" spellcheck="false" required></label>
             <label>Password <input class="input" id="disk-password" type="password" autocomplete="off" required></label>
             <label>Machine <input class="input" id="disk-machine" value="main" autocomplete="off" autocapitalize="none" spellcheck="false" required></label>
+            <label class="boot-option"><input class="input" id="disk-only-localhost" type="checkbox" autocomplete="off"> Only localhost</label>
             <label class="boot-option"><input class="input" id="disk-autoboot" type="checkbox" checked> Boot</label>
             <button class="btn primary" type="submit" data-variant="primary">Log in</button>
         </form>
@@ -50,10 +51,6 @@
             <button id="disk-verify" class="btn" data-variant="secondary">Verify full disk</button>
             <button id="disk-close" class="btn" data-variant="secondary">Close identity</button>
         </div>
-        <details id="disk-settings">
-            <summary>Advanced options</summary>
-            <label>IPFS gateway <input class="input" id="disk-gateway" type="url" value="https://trustless-gateway.net" spellcheck="false" autocapitalize="none"></label>
-        </details>
         <button id="disk-resume" hidden class="btn" data-variant="secondary">Retry and resume</button>
         <button id="disk-cancel" hidden class="btn" data-variant="secondary">Cancel operation</button>
         <p id="disk-status" class="alert" role="status" aria-live="polite"></p>

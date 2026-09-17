@@ -53,7 +53,7 @@ try {
                 await c.unlock('disk fixtures','public compatibility password','main');
                 window.started=performance.now();
                 if(options.name==='local')await c.open(document.querySelector('#fixture').files[0]);
-                else await c.openRemote({gateway:options.gateway,prefetch:{policy:options.policy,concurrency:options.concurrency,trace:true}});
+                else await c.openRemote({onlyLocalhost:true,gateway:options.gateway,prefetch:{policy:options.policy,concurrency:options.concurrency,trace:true}});
                 const adapter=new DiskBuffer(c,options.size,e=>{window.bootError=String(e);void window.vm?.stop();});
                 document.body.innerHTML='<div id="screen"><div style="white-space:pre;font:14px monospace;line-height:14px"></div><canvas></canvas></div>';
                 const vm=new V86({wasm_path:'/build/v86.wasm',memory_size:128*1048576,vga_memory_size:8*1048576,bios,vga_bios:vga,hda:{disk_adapter:adapter},acpi:false,boot_order:0x312,disable_speaker:true,disable_keyboard:true,disable_mouse:true,screen_container:document.getElementById('screen'),autostart:false});
