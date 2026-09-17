@@ -26,5 +26,6 @@
   "slop86/src/lib.js": "vendor/slop86/src/lib.js",
   "slop86/LICENSE": "vendor/slop86/LICENSE",
   "slop86/LICENSE.MIT": "vendor/slop86/LICENSE.MIT",
-  "licenses/coi-serviceworker.txt": "vendor/coi-serviceworker/LICENSE.txt"
+  "licenses/coi-serviceworker.txt": "vendor/coi-serviceworker/LICENSE.txt",
+  "src/browser/direct-pointer.js": "src/browser/direct-pointer.js"
 }

@@ -93,3 +93,7 @@ html.vm-expanded, html.vm-expanded body { overflow: hidden; overscroll-behavior:
 #disk-settings::details-content { block-size: auto; opacity: 1; transition: none; }
 #disk-settings:not([open])::details-content { display: none; }
 #disk-settings[open]::details-content { display: block; content-visibility: visible; }
+
+#direct-pointer[aria-checked=true] { color: var(--primary-foreground); background: var(--primary); }
+#vm-view.direct-input .touch-control { display: none !important; }
+#vm-view.direct-input:not(.expanded) #view-controls { display: none; }
