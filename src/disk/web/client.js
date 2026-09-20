@@ -54,12 +54,12 @@ export class Slop86Disk {
         try { return "my98-ro-v1." + btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_"); }
         finally { bytes.fill(0); }
     }
-    async openReadOnly({cid, readKey, gateway, onlyLocalhost = false, prefetch} = {}) {
+    async openReadOnly({cid, readKey, gateway, servers, onlyLocalhost = false, prefetch} = {}) {
         if(typeof readKey !== "string" || readKey.length !== 75 || !/^my98-ro-v1\.[A-Za-z0-9_-]{64}$/.test(readKey)) {
             throw Object.assign(new Error("Invalid read key"), {code:"INVALID_READ_KEY"});
         }
         const bytes = Uint8Array.from(atob(readKey.slice(11).replaceAll("-", "+").replaceAll("_", "/")), c=>c.charCodeAt(0));
-        try { return await this.call("openReadOnly", {cid, readKey:bytes, gateway, onlyLocalhost, prefetch}, [bytes.buffer]); }
+        try { return await this.call("openReadOnly", {cid, readKey:bytes, gateway, servers, onlyLocalhost, prefetch}, [bytes.buffer]); }
         finally { if(bytes.byteLength) bytes.fill(0); }
     }
     describe() {return this.call("describe");}

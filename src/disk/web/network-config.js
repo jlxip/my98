@@ -1,5 +1,6 @@
-// Shared query-service configuration for IPNS resolution and future discovery.
+// Shared query-service configuration for IPNS resolution and provider discovery.
 export const DEFAULT_SERVERS = Object.freeze([
+    Object.freeze({url:'https://piensa.jlxip.net', resolution:'gateway', discovery:true}),
     Object.freeze({url:'https://ipfs.filebase.io', resolution:'gateway', discovery:false}),
     Object.freeze({url:'https://ipfs.orbitor.dev', resolution:'gateway', discovery:false}),
     Object.freeze({url:'https://delegated-ipfs.dev', resolution:'routing', discovery:true}),
@@ -27,7 +28,7 @@ export function dataGateway(gateway, onlyLocalhost = false) {
     if(onlyLocalhost && !isLoopback(url)) throw fail('Only localhost requires a loopback gateway.');
     return url;
 }
-export function resolutionServers(servers = DEFAULT_SERVERS) {
+function queryServers(servers, capability) {
     if(!Array.isArray(servers) || servers.length > 16) throw fail('Configure at most 16 query servers.');
     const seen = new Set(), result = [];
     for(const server of servers) {
@@ -35,10 +36,12 @@ export function resolutionServers(servers = DEFAULT_SERVERS) {
             throw fail('Invalid query server capabilities.');
         }
         const url = gatewayURL(server.url);
-        if(!server.resolution) continue;
-        const key = server.resolution + ':' + url;
+        if(!server[capability]) continue;
+        const key = (capability === 'resolution' ? server.resolution + ':' : '') + url;
         if(!seen.has(key)) {seen.add(key);result.push({url, resolution:server.resolution, discovery:server.discovery});}
     }
-    if(!result.length) throw fail('No IPNS resolution servers configured.');
+    if(!result.length) throw fail(capability === 'resolution' ? 'No IPNS resolution servers configured.' : 'No discovery servers configured.');
     return result;
 }
+export const resolutionServers = (servers = DEFAULT_SERVERS) => queryServers(servers, 'resolution');
+export const discoveryServers = (servers = DEFAULT_SERVERS) => queryServers(servers, 'discovery');

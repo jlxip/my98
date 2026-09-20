@@ -33,19 +33,19 @@ try {for(const [name,type] of Object.entries({chromium,webkit})) {
         mode='flaky';hits=0;r=await request();assert.equal(r.size,0);assert.equal(hits,3);checks.push('two transient 504 responses recover automatically');
         mode='bad-type';hits=0;r=await request();assert.equal(r.code,'CORRUPTION');assert.equal(hits,1);checks.push('invalid response is not retried');
         mode='unavailable';hits=0;
-        const cancelled=page.evaluate(async()=>{const {RemoteDisk}=await import('/build/disk/web/remote-test.js');const c=new AbortController();window.cancelGateway=()=>c.abort();try{await new RemoteDisk({}).request('/ipfs/test','application/vnd.ipld.raw',10240,c.signal);}catch(e){return e.code;}});
+        const cancelled=page.evaluate(async()=>{const {RemoteDisk,DEFAULT_GATEWAY}=await import('/build/disk/web/remote-test.js');const c=new AbortController();window.cancelGateway=()=>c.abort();try{await new RemoteDisk({gateway:DEFAULT_GATEWAY}).request('/ipfs/test','application/vnd.ipld.raw',10240,c.signal);}catch(e){return e.code;}});
         while(hits===0)await new Promise(r=>setTimeout(r,5));
         await page.evaluate(()=>window.cancelGateway());assert.equal(await cancelled,'CANCELLED');await new Promise(r=>setTimeout(r,300));assert.equal(hits,1);checks.push('cancellation prevents retry during backoff');
         mode='slow';hits=0;
-        r=await page.evaluate(async()=>{const {RemoteDisk}=await import('/build/disk/web/remote-test.js');const start=performance.now();try{await new RemoteDisk({timeoutMs:650}).request('/ipfs/test','application/vnd.ipld.raw',10240);}catch(e){return {code:e.code,ms:performance.now()-start};}});
+        r=await page.evaluate(async()=>{const {RemoteDisk,DEFAULT_GATEWAY}=await import('/build/disk/web/remote-test.js');const start=performance.now();try{await new RemoteDisk({gateway:DEFAULT_GATEWAY,timeoutMs:650}).request('/ipfs/test','application/vnd.ipld.raw',10240);}catch(e){return {code:e.code,ms:performance.now()-start};}});
         assert.equal(r.code,'IO_ERROR');assert(r.ms>=600&&r.ms<1200);assert.equal(hits,2);checks.push('retries share the original timeout budget');
         mode='network';r=await request();assert.match(r.message,/network, CORS, or a redirect/);checks.push('fetch failure does not assert missing data');
         let live;
         if(process.argv.includes('--public')) {
             await page.unroute('https://trustless-gateway.net/**');
             live=await page.evaluate(async()=>{
-                const {RemoteDisk}=await import('/build/disk/web/remote-test.js');
-                const remote=new RemoteDisk({});
+                const {RemoteDisk,DEFAULT_GATEWAY}=await import('/build/disk/web/remote-test.js');
+                const remote=new RemoteDisk({gateway:DEFAULT_GATEWAY});
                 const bytes=await remote.request('/ipfs/bafkqaaa?format=raw','application/vnd.ipld.raw',10240);
                 return {gateway:remote.gateway,size:bytes.length};
             });

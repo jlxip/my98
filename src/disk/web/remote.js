@@ -3,6 +3,7 @@ import {matchingRanges, RangePrefetchOrder} from './range-prefetch.js';
 import {CID} from 'multiformats/cid';
 import {sha256} from 'multiformats/hashes/sha2';
 import {resolveIpns} from './resolution.js';
+import {discoverProviders} from './discovery.js';
 import {dataGateway} from './network-config.js';
 export {DEFAULT_GATEWAY, gatewayURL} from './network-config.js';
 import {exporter} from 'ipfs-unixfs-exporter';
@@ -15,8 +16,12 @@ const check = signal => { if(signal?.aborted) throw fail('CANCELLED', 'Operation
 
 export class RemoteDisk {
     constructor({gateway, servers, onlyLocalhost = false, onNetwork, timeoutMs = 30000, prefetch = {}} = {}) {
-        this.gateway = dataGateway(gateway, onlyLocalhost);
+        if(typeof onlyLocalhost !== 'boolean') throw fail('IO_ERROR', 'Invalid Only localhost option.');
+        this.directGateway = gateway != null || onlyLocalhost;
+        this.gateway = this.directGateway ? dataGateway(gateway, onlyLocalhost) : undefined;
         this.servers = servers;this.onlyLocalhost = onlyLocalhost;
+        this.providers = new Map();
+        this.discovery = {state:'idle',providers:0,verifiedProviders:0,verifiedEndpoints:0};
         this.resolutionController = undefined;
         this.onNetwork = onNetwork;
         this.timeoutMs = timeoutMs;
@@ -52,7 +57,7 @@ export class RemoteDisk {
             inFlight:jobs.filter(j=>j.state === 'active').length, queued:jobs.filter(j=>j.state === 'queued').length,
             prefetchState:this.prefetchState, prefetchError:this.prefetchError,
             rangeProfile:this.rangeOrder?.stats(),
-            policy:this.policy, concurrency:this.concurrency, traceDropped:this.traceDropped};
+            discovery:{...this.discovery}, policy:this.policy, concurrency:this.concurrency, traceDropped:this.traceDropped};
     }
     // Called only after the encrypted header has been authenticated by the Vault.
     startPrefetch() {
@@ -135,6 +140,8 @@ export class RemoteDisk {
     }
     cancel() {
         this.resolutionController?.abort();
+        this.discoveryController?.abort();
+        if(this.discovery.state === 'running') this.discovery.state = 'cancelled';
         this.epoch++;
         this.prefetchState='stopped';
         for(const controller of this.readControllers) controller.abort();
@@ -207,6 +214,7 @@ export class RemoteDisk {
     }
     async requestOnce(path, type, limit, signal, timeoutMs) {
         check(signal);
+        if(!this.gateway) throw fail('IO_ERROR', 'No verified HTTPS provider is available for this disk.');
         const controller = new AbortController();
         const abort = () => controller.abort();
         signal?.addEventListener('abort', abort, {once:true});
@@ -295,10 +303,14 @@ export class RemoteDisk {
                 gateway:this.gateway, signal:controller.signal, onNetwork:this.onNetwork});
             check(signal);check(controller.signal);
             if(epoch !== this.epoch || this.closed) throw fail('CANCELLED', 'Disk closed');
+            await this.prepareGateway(resolved.rootCid, controller.signal);
             await this.openPath(resolved.path.slice(6), controller.signal);
             check(controller.signal);
             this.remote = {...resolved, cid:this.entry.cid.toString(), gateway:this.gateway};
             return this;
+        } catch(error) {
+            this.discoveryController?.abort();
+            throw error;
         } finally {
             signal?.removeEventListener('abort', abort);
             if(this.resolutionController === controller) this.resolutionController = undefined;
@@ -310,9 +322,64 @@ export class RemoteDisk {
             const parsed = CID.parse(cid);
             if(![0x70, 0x55, 0x00].includes(parsed.code)) throw new Error();
         } catch { throw fail('INVALID_CID', 'Expected a file CID without a URL or path.'); }
-        await this.openPath(cid, signal);
-        this.remote = {path:'/ipfs/' + this.entry.cid.toString(), cid:this.entry.cid.toString(), gateway:this.gateway};
-        return this;
+        check(signal);
+        if(this.closed) throw fail('CANCELLED','Disk closed');
+        const controller = new AbortController();
+        const abort = () => controller.abort();
+        signal?.addEventListener('abort',abort,{once:true});this.resolutionController=controller;
+        try {
+            await this.prepareGateway(cid, controller.signal);
+            await this.openPath(cid, controller.signal);check(controller.signal);
+            this.remote = {path:'/ipfs/' + this.entry.cid.toString(), rootCid:cid, cid:this.entry.cid.toString(), gateway:this.gateway};
+            return this;
+        } catch(error) {this.discoveryController?.abort();throw error;}
+        finally {
+            signal?.removeEventListener('abort',abort);
+            if(this.resolutionController===controller)this.resolutionController=undefined;
+        }
+    }
+    async prepareGateway(rootCid, signal) {
+        check(signal);
+        if(this.directGateway) {this.discovery.state='skipped';return;}
+        const controller=new AbortController(),epoch=this.epoch;
+        const abort=()=>controller.abort();signal?.addEventListener('abort',abort,{once:true});
+        this.discoveryController=controller;this.providers.clear();
+        this.gateway=undefined;this.discovery={state:'running',providers:0,verifiedProviders:0,verifiedEndpoints:0};
+        let resolveFirst,rejectFirst,selected=false;
+        const first=new Promise((resolve,reject)=>{resolveFirst=resolve;rejectFirst=reject;});
+        const usable=()=>!controller.signal.aborted && epoch===this.epoch && !this.closed;
+        this.discoveryTask=discoverProviders(rootCid,{servers:this.servers,signal:controller.signal,onNetwork:this.onNetwork,
+            onProvider:(provider,block)=>{
+                if(!usable())return;
+                this.providers.set(provider.peerId,provider);
+                this.discovery.providers=this.discovery.verifiedProviders=this.providers.size;
+                this.discovery.verifiedEndpoints=new Set([...this.providers.values()].flatMap(p=>p.gateways)).size;
+                if(!selected && block) {
+                    selected=true;this.gateway=block.gateway;
+                    const key=CID.parse(rootCid).toString();
+                    this.blocks.set(key,block.rootBlock);this.cacheBytes+=block.rootBlock.length;
+                    resolveFirst();
+                }
+            },
+        }).then(result=>{
+            if(!usable())throw fail('CANCELLED','Operation cancelled');
+            this.discovery={state:result.state,providers:result.providers.length,
+                verifiedProviders:result.providers.filter(p=>p.gateways.length).length,
+                verifiedEndpoints:result.verifiedEndpoints,limits:result.limits,failures:result.failures,
+                endpointsTested:result.endpointsTested,receivedBytes:result.receivedBytes};
+            this.providers=new Map(result.providers.map(p=>[p.peerId,p]));
+            if(!selected)throw fail('IO_ERROR','No verified HTTPS provider is available for this disk.');
+        }).catch(error=>{
+            if(epoch===this.epoch && !this.closed) {
+                this.discovery.state=controller.signal.aborted?'cancelled':'failed';
+                this.discovery.error={code:error.code || 'IO_ERROR',message:error.message};
+            }
+            rejectFirst(error);
+        }).finally(()=>{
+            signal?.removeEventListener('abort',abort);
+            if(this.discoveryController===controller)this.discoveryController=undefined;
+        });
+        await first;check(signal);check(controller.signal);
     }
     async openPath(path, signal) {
         check(signal);
@@ -364,5 +431,5 @@ export class RemoteDisk {
         }
     }
     clearCache() {this.cancel();this.blocks.clear();this.cacheBytes=0;this.headerCovered=false;this.coverage=undefined;this.adaptiveOrder=undefined;this.rangeOrder=undefined;this.completedUnits=this.coveredBytes=0;}
-    close() {this.closed=true;this.clearCache();this.prefetchState='closed';this.entry=undefined;}
+    close() {this.closed=true;this.clearCache();this.providers.clear();this.prefetchState='closed';this.entry=undefined;}
 }

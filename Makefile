@@ -48,7 +48,14 @@ disk-test-browser: emulator disk
 test-stop: prepare-emulator
 	node tests/api/stop.js
 
-.PHONY: resolution-test resolution-test-browser
+.PHONY: discovery-test discovery-test-browser resolution-test resolution-test-browser
+discovery-test: disk
+	node --test src/disk/scripts/discovery.test.mjs
+
+discovery-test-browser: disk
+	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo run --manifest-path src/disk/Cargo.toml --locked --release --example compat
+	node scripts/run-browser-test.mjs tests/pages/discovery.mjs
+
 resolution-test: disk
 	node --test src/disk/scripts/resolution.test.mjs
 
@@ -86,12 +93,14 @@ site-test: site
 	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo build --manifest-path src/disk/Cargo.toml --locked --release --example compat
 	node --test scripts/run-browser-test.test.mjs
 	node --test src/disk/scripts/resolution.test.mjs
+	node --test src/disk/scripts/discovery.test.mjs
 	node scripts/run-browser-test.mjs tests/pages/audio.mjs
 	node scripts/run-browser-test.mjs tests/pages/run.mjs
 	node scripts/run-browser-test.mjs tests/pages/login.mjs
 	node scripts/run-browser-test.mjs tests/pages/empty-disk.mjs
 	node scripts/run-browser-test.mjs tests/pages/integration.mjs
 	node scripts/run-browser-test.mjs tests/pages/resolution.mjs
+	node scripts/run-browser-test.mjs tests/pages/discovery.mjs
 	node scripts/run-browser-test.mjs tests/pages/boot-analysis.mjs
 	node scripts/run-browser-test.mjs tests/pages/media.mjs
 	node scripts/run-browser-test.mjs tests/pages/mobile.mjs

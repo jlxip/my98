@@ -83,7 +83,7 @@ const messages = {
     AUTHENTICATION_FAILED:'Credentials are incorrect or the disk descriptor is damaged.',
     CORRUPTION:'The published reference or disk data failed verification.',
     UNSUPPORTED_FORMAT:'The published disk uses an unsupported format.',
-    IO_ERROR:'Cannot read the published disk from the gateway. Check the gateway and the published reference.',
+    IO_ERROR:'Cannot find a usable provider or read the published disk. Check its HTTPS availability, or specify a gateway.',
     CANCELLED:'Cancelled.',
 };
 process.stdout.on('error', () => { process.exitCode = 1; });

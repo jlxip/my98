@@ -14,10 +14,13 @@ one JSON object with `cid` and `readKey`; failures return a nonzero status witho
 JSON. Ctrl-C cancels and closes the helper.
 
 The command verifies the published IPNS record, pins the file CID, authenticates
-the disk header and decrypts the first block. Prefetch is disabled. The default
-query-server list and data gateway are the same as my98. An explicit `--gateway`
-uses only that server for both resolution and download; it accepts HTTPS or local
-HTTP for tests.
+the disk header and decrypts the first block. Prefetch is disabled. By default it
+uses my98's query-server list, discovers advertised HTTPS providers for the chosen
+CID and reads through the first provider that returns a verified root block.
+Discovery runs for at most 30 seconds after resolution; an absent usable provider
+is an error, with no fixed data-gateway fallback. An explicit `--gateway` uses
+only that server for both resolution and download; it accepts HTTPS or loopback
+HTTP.
 It does not start Windows, write the disk or publish anything.
 
 The read key grants access to that disk version. After saving a new version,

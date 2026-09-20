@@ -108,7 +108,7 @@ test('local redirect cannot fall back to another endpoint',async t=>{
     await rejected(resolveIpns(identity,{onlyLocalhost:true,gateway:f.servers[0].url}),'IO_ERROR');assert.equal(f.seen.length,1);
 });
 test('configuration validates before network and default capabilities are explicit',()=>{
-    assert.equal(DEFAULT_SERVERS.length,3);assert.equal(DEFAULT_SERVERS.filter(s=>s.discovery).length,1);
+    assert.equal(DEFAULT_SERVERS.length,4);assert.equal(DEFAULT_SERVERS.filter(s=>s.discovery).length,2);
     assert.equal(dataGateway(undefined,true),'http://127.0.0.1:8080');
     for(const servers of [[],Array(17).fill(DEFAULT_SERVERS[0]),[{resolution:'gateway',discovery:false}],[{url:'http://example.com',resolution:'gateway',discovery:false}],[{url:'https://x/?foo',resolution:'gateway',discovery:false}],[{url:'https://x',resolution:false,discovery:true}]]) assert.throws(()=>resolutionServers(servers));
     assert.throws(()=>dataGateway('http://127.0.0.1.example.com',true));

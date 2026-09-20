@@ -56,6 +56,29 @@ try {
     assert(!result.stderr.includes(exported.readKey));
     assert(f.requests.filter(r=>r.path.startsWith('/ipfs/')).length <= 3, 'only header/first block path fetched');
     ok('verified IPNS, pinned CID, JSON-only stdout and bounded fetches');
+    // Exercise the CLI's default path in a fresh process. Only its test transport
+    // maps the configured public services and discovered provider to the fixture.
+    const transport=join(out,'discovery-transport.mjs'),calls=join(out,'discovery-calls.jsonl');
+    await writeFile(calls,'');
+    const peerId=CID.createV1(0x72,CID.parse(f.cid1).multihash).toString();
+    await writeFile(transport,`
+import {appendFileSync} from 'node:fs';
+const original=globalThis.fetch.bind(globalThis);
+globalThis.fetch=(value,options)=>{
+    const u=new URL(value);appendFileSync(${JSON.stringify(calls)},JSON.stringify(u.href)+'\\n');
+    if(['piensa.jlxip.net','delegated-ipfs.dev'].includes(u.hostname) && u.pathname.startsWith('/routing/v1/providers/'))return Promise.resolve(new Response(JSON.stringify({Providers:[{Schema:'peer',ID:${JSON.stringify(peerId)},Addrs:['/dns4/cli-provider.example.com/tcp/443/tls/http']}]}),{headers:{'Content-Type':'application/json'}}));
+    if(u.hostname==='cli-provider.example.com')return original(${JSON.stringify(f.endpoint)}+u.pathname+u.search,options);
+    if(['piensa.jlxip.net','ipfs.filebase.io','ipfs.orbitor.dev','delegated-ipfs.dev'].includes(u.hostname))return original(${JSON.stringify(f.endpoint)}+u.pathname.replace('/routing/v1/ipns/','/ipns/')+u.search,options);
+    throw Error('Unexpected external endpoint in CLI test');
+};
+`);
+    const automatic=await launch(['--import',transport,helper],JSON.stringify(credentials)).done;
+    assert.equal(automatic.code,0,automatic.stderr);assert.deepEqual(JSON.parse(automatic.stdout),exported);
+    const automaticCalls=(await readFile(calls,'utf8')).trim().split('\n').map(JSON.parse);
+    assert.equal(automaticCalls.filter(url=>url.includes('/ipns/')).length,4);
+    assert.equal(automaticCalls.filter(url=>url.includes('/providers/')).length,2);
+    assert(automaticCalls.filter(url=>url.includes('/ipfs/')).every(url=>url.startsWith('https://cli-provider.example.com/')));
+    ok('CLI without gateway resolves all services, discovers HTTPS provider and exports the same capability');
     const remote = new RemoteDisk({gateway:f.endpoint, prefetch:{enabled:false}});
     const key = Buffer.from(exported.readKey.slice(11), 'base64url');
     let vault;
