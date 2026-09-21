@@ -42,24 +42,20 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang make python3 wget
-          rustup toolchain install 1.89.0 --profile minimal --target wasm32-unknown-unknown
-          rustup default 1.89.0
-          cargo install wasm-bindgen-cli --version 0.2.100 --locked --root build/crypto-tools
-          npm ci
-          npx playwright install --with-deps chromium webkit
-      - name: Build and test the static artifact
-        run: make site-test
+      - name: Build and test a clean staged snapshot
+        id: tests
+        run: make site-test-clean
       - name: Upload browser test diagnostics
-        if: failure()
+        if: failure() && steps.tests.outputs.diagnostics != ''
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: browser-test-diagnostics
-          path: build/pages-tests
+          path: ${{ steps.tests.outputs.diagnostics }}
           if-no-files-found: ignore
       - name: Upload site artifact
         uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:
-          path: build/site
+          path: ${{ steps.tests.outputs.site }}
 
   deploy:
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.deploy)

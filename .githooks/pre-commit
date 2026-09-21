@@ -9,9 +9,6 @@ if ! git diff --quiet --ignore-submodules=none; then
     exit 1
 fi
 
-# Keep the commit's index for the check above, but do not leak repository-local
-# Git variables into build commands that inspect the slop86 submodule.
-unset $(git rev-parse --local-env-vars)
-
-printf '%s\n' 'Running the GitHub Pages test suite before commit...'
-exec make site-test
+# The clean runner snapshots this exact index before clearing Git's hook environment.
+printf '%s\n' 'Running the GitHub Pages test suite from a clean staged snapshot...'
+exec python3 scripts/clean-site-test.py

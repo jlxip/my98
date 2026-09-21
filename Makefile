@@ -90,13 +90,17 @@ prefetch-test: disk
 	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo run --manifest-path src/disk/Cargo.toml --locked --release --example compat
 	node src/disk/browser-tests/prefetch-run.mjs
 
-.PHONY: site site-test
+.PHONY: site site-test site-test-clean
+site-test-clean:
+	python3 scripts/clean-site-test.py
+
 site: all
 	python3 scripts/package-site.py
 
 site-test: site
+	PYTHONDONTWRITEBYTECODE=1 python3 scripts/clean-site-test.test.py
 	PYTHONDONTWRITEBYTECODE=1 python3 tests/server_test.py
-	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo build --manifest-path src/disk/Cargo.toml --locked --release --example compat
+	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo run --manifest-path src/disk/Cargo.toml --locked --release --example compat
 	node --test scripts/run-browser-test.test.mjs
 	node --test src/disk/scripts/resolution.test.mjs
 	node --test src/disk/scripts/discovery.test.mjs
