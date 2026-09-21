@@ -48,7 +48,13 @@ disk-test-browser: emulator disk
 test-stop: prepare-emulator
 	node tests/api/stop.js
 
-.PHONY: discovery-test discovery-test-browser resolution-test resolution-test-browser
+.PHONY: parallel-test parallel-test-browser discovery-test discovery-test-browser resolution-test resolution-test-browser
+parallel-test: node_modules/.package-lock.json
+	node --test src/disk/scripts/parallel.test.mjs
+
+parallel-test-browser: disk
+	node scripts/run-browser-test.mjs tests/pages/parallel.mjs
+
 discovery-test: disk
 	node --test src/disk/scripts/discovery.test.mjs
 
@@ -94,6 +100,8 @@ site-test: site
 	node --test scripts/run-browser-test.test.mjs
 	node --test src/disk/scripts/resolution.test.mjs
 	node --test src/disk/scripts/discovery.test.mjs
+	node --test src/disk/scripts/parallel.test.mjs
+	node scripts/run-browser-test.mjs tests/pages/parallel.mjs
 	node scripts/run-browser-test.mjs tests/pages/audio.mjs
 	node scripts/run-browser-test.mjs tests/pages/run.mjs
 	node scripts/run-browser-test.mjs tests/pages/login.mjs

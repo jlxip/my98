@@ -21,7 +21,7 @@ try {for(const [name,type] of Object.entries({chromium,webkit})) {
         await page.route('https://trustless-gateway.net/**',async route=>{
             hits++;
             if(mode==='network')return route.abort('failed');
-            if(mode==='slow')await new Promise(r=>setTimeout(r,250));
+            if(mode==='slow' || mode==='unavailable')await new Promise(r=>setTimeout(r,1000));
             return route.fulfill({status:mode==='missing'?404:mode==='server'?500:mode==='slow'||mode==='unavailable'||mode==='flaky'&&hits<3?504:200,headers:{'access-control-allow-origin':'*','content-type':mode==='bad-type'?'text/html':'application/vnd.ipld.raw'},body:''}).catch(()=>{});
         });
         await page.goto(`http://127.0.0.1:${server.address().port}/disk/browser-tests/index.html`);
@@ -29,16 +29,16 @@ try {for(const [name,type] of Object.entries({chromium,webkit})) {
         const request=()=>page.evaluate(async()=>{const {RemoteDisk}=await import('/build/disk/web/remote-test.js');const remote=new RemoteDisk({gateway:'https://trustless-gateway.link'});try{return {size:(await remote.request('/ipns/test?format=ipns-record','application/vnd.ipld.raw',10240)).length};}catch(e){return {code:e.code,message:e.message};}});
         assert.equal((await request()).size,0);assert(requests.length>0&&requests.every(url=>url.startsWith(DEFAULT_GATEWAY+'/')));checks.push('legacy default bypasses non-CORS redirect');
         mode='missing';hits=0;let r=await request();assert.equal(r.code,'IO_ERROR');assert.match(r.message,/No published disk reference is available/);assert.equal(hits,1);checks.push('404 describes missing reference without retry');
-        mode='server';hits=0;r=await request();assert.match(r.message,/HTTP 500/);assert.doesNotMatch(r.message,/No published disk reference/);assert.equal(hits,3);checks.push('persistent 500 stops after three attempts');
-        mode='flaky';hits=0;r=await request();assert.equal(r.size,0);assert.equal(hits,3);checks.push('two transient 504 responses recover automatically');
+        mode='server';hits=0;r=await request();assert.match(r.message,/HTTP 500/);assert.doesNotMatch(r.message,/No published disk reference/);assert.equal(hits,1);checks.push('single transport attempt reports HTTP 500 to the block scheduler');
+        mode='flaky';hits=0;r=await request();assert.equal(r.code,'IO_ERROR');assert.equal(hits,1);checks.push('transient 504 is not retried outside the block scheduler');
         mode='bad-type';hits=0;r=await request();assert.equal(r.code,'CORRUPTION');assert.equal(hits,1);checks.push('invalid response is not retried');
         mode='unavailable';hits=0;
         const cancelled=page.evaluate(async()=>{const {RemoteDisk,DEFAULT_GATEWAY}=await import('/build/disk/web/remote-test.js');const c=new AbortController();window.cancelGateway=()=>c.abort();try{await new RemoteDisk({gateway:DEFAULT_GATEWAY}).request('/ipfs/test','application/vnd.ipld.raw',10240,c.signal);}catch(e){return e.code;}});
         while(hits===0)await new Promise(r=>setTimeout(r,5));
-        await page.evaluate(()=>window.cancelGateway());assert.equal(await cancelled,'CANCELLED');await new Promise(r=>setTimeout(r,300));assert.equal(hits,1);checks.push('cancellation prevents retry during backoff');
+        await page.evaluate(()=>window.cancelGateway());assert.equal(await cancelled,'CANCELLED');await new Promise(r=>setTimeout(r,300));assert.equal(hits,1);checks.push('cancellation aborts the active transport attempt');
         mode='slow';hits=0;
         r=await page.evaluate(async()=>{const {RemoteDisk,DEFAULT_GATEWAY}=await import('/build/disk/web/remote-test.js');const start=performance.now();try{await new RemoteDisk({gateway:DEFAULT_GATEWAY,timeoutMs:650}).request('/ipfs/test','application/vnd.ipld.raw',10240);}catch(e){return {code:e.code,ms:performance.now()-start};}});
-        assert.equal(r.code,'IO_ERROR');assert(r.ms>=600&&r.ms<1200);assert.equal(hits,2);checks.push('retries share the original timeout budget');
+        assert.equal(r.code,'IO_ERROR');assert(r.ms>=600&&r.ms<1200);assert.equal(hits,1);checks.push('single attempt obeys its supplied timeout budget');
         mode='network';r=await request();assert.match(r.message,/network, CORS, or a redirect/);checks.push('fetch failure does not assert missing data');
         let live;
         if(process.argv.includes('--public')) {

@@ -80,8 +80,12 @@ export async function runReadOnly(f) {
         adapter.dispose(); adapter = undefined;
         check('overlay visible', (await c.read(17,1))[0] === 211 && (await c.read(512,1))[0] === 7);
         for(const mode of ['corrupt','truncated']) {
-            await c.clearCaches(); await window.setGatewayMode(mode);
-            await rejects('tampered CID block rejected: '+mode, ()=>c.read(2*65536,1),'CORRUPTION');
+            await window.setGatewayMode('small');const broken=await Slop86Disk.create();
+            try {
+                await broken.openReadOnly({...options,prefetch:{enabled:false}});await broken.clearCaches();await window.setGatewayMode(mode);
+                await rejects('tampered CID block rejected: '+mode, ()=>broken.read(2*65536,1),'CORRUPTION');
+                await window.setGatewayMode('small');await rejects('corrupt endpoint stays excluded: '+mode,()=>broken.read(2*65536,1),'IO_ERROR');
+            }finally{await broken.close();}
         }
         await window.setGatewayMode('hang'); await c.clearCaches();
         const pending = c.read(2*65536,1); setTimeout(()=>c.cancel(),100);

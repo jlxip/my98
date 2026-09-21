@@ -31,15 +31,24 @@ export async function runRemote(fixture) {
         check('network failure stops callbacks',stopped===1&&order.length===0);
         await mode('small');await adapter.retry();
         check('retry callbacks ordered once',order.join()==='read,write'&&ram.join()==='4,5,6');adapter.dispose();
-        await c.clearCaches();await mode('corrupt');
-        await rejects('tampered block rejected',()=>c.read(2*65536,1),'CORRUPTION');
-        await mode('truncated');await rejects('truncated block rejected',()=>c.read(2*65536,1),'CORRUPTION');
+        // Corruption excludes the endpoint for its entire session. Isolate each fault
+        // from the live overlay used by the cancellation and save checks below.
+        for(const flavor of ['corrupt','truncated']) {
+            await mode('small');const broken=await make();
+            try {
+                await broken.openRemote({onlyLocalhost:true,gateway:fixture.endpoint,prefetch:{enabled:false}});
+                await broken.clearCaches();await mode(flavor);
+                await rejects(flavor+' block rejected',()=>broken.read(2*65536,1),'CORRUPTION');
+                await mode('small');await rejects(flavor+' gateway remains excluded',()=>broken.read(2*65536,1),'IO_ERROR');
+            }finally{await broken.close();}
+        }
+        await c.clearCaches();
         await mode('hang');const start=performance.now();const pending=c.read(2*65536,1);setTimeout(()=>c.cancel(),100);
         await rejects('cancel in-flight network',()=>pending,'CANCELLED');check('cancel returns promptly',performance.now()-start<3000);
         check('cancel preserves dirty sectors',(await c.describe()).dirty_sectors===2);
         await mode('small');await c.discardWrites();await c.clearCaches();
         await mode('hang');const timeout=performance.now();await rejects('network timeout',()=>c.read(0,1),'IO_ERROR');
-        check('timeout bounded',performance.now()-timeout>=29000&&performance.now()-timeout<35000);
+        check('timeout bounded',performance.now()-timeout>=4900&&performance.now()-timeout<8000);
         await mode('small');check('read after timeout succeeds',(await c.read(0,1))[0]===plain[0]);
         const download=await c.downloadCurrent();
         window.remoteOriginal=download.blob;check('complete download has original length',download.size===fixture.small.encryptedSize);

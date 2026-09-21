@@ -17,7 +17,7 @@ async function synthetic({units=12,blockSize=4*RECORD,latency=10,prefetch={concu
         const bytes=source.slice(offset,offset+blockSize),cid=CID.createV1(0x55,await sha256.digest(bytes));
         blocks.push({cid,offset,bytes});byKey.set(cid.toString(),bytes);
     }
-    const remote=new RemoteDisk({prefetch});
+    const remote=new RemoteDisk({gateway:'https://fixture.example',prefetch});
     let mode='ok',calls=0,active=0,peak=0;
     remote.request=async(path,type,limit,signal)=>{
         calls++;active++;peak=Math.max(peak,active);
@@ -109,7 +109,7 @@ export async function runPrefetch() {
         try {
             f.setMode('corrupt');r.startPrefetch();await until(()=>r.prefetchState==='paused');
             const bytes=r.cacheBytes;
-            await rejects(()=>r.read(8*RECORD,10),'CORRUPTION');
+            await rejects(()=>r.read(8*RECORD,10),'IO_ERROR'); // The sole corrupt endpoint is excluded for this session.
             check('corrupt speculative and demand bytes are never retained',r.cacheBytes===bytes&&r.prefetchError.code==='CORRUPTION');
         }finally{r.close();}
     }

@@ -4,7 +4,7 @@ import {CID} from 'multiformats/cid';
 import {sha256} from 'multiformats/hashes/sha2';
 import {resolveIpns} from './resolution.js';
 import {discoverProviders} from './discovery.js';
-import {dataGateway} from './network-config.js';
+import {dataGateway, gatewayURL} from './network-config.js';
 export {DEFAULT_GATEWAY, gatewayURL} from './network-config.js';
 import {exporter} from 'ipfs-unixfs-exporter';
 
@@ -21,6 +21,9 @@ export class RemoteDisk {
         this.gateway = this.directGateway ? dataGateway(gateway, onlyLocalhost) : undefined;
         this.servers = servers;this.onlyLocalhost = onlyLocalhost;
         this.providers = new Map();
+        this.endpoints = new Map();
+        this.admissionWaiters = new Set();
+        if(this.gateway) this.addEndpoint(this.gateway);
         this.discovery = {state:'idle',providers:0,verifiedProviders:0,verifiedEndpoints:0};
         this.resolutionController = undefined;
         this.onNetwork = onNetwork;
@@ -36,8 +39,8 @@ export class RemoteDisk {
         this.prefetchState = 'idle';
         this.configurePrefetch(prefetch);
     }
-    configurePrefetch({enabled = true, policy = 'auto', concurrency = 2, trace = false, bootProfile} = {}) {
-        if(!['auto', 'sequential', 'demand', 'head-demand', 'ranges', ...adaptivePolicies].includes(policy) || ![1, 2].includes(concurrency)) throw fail('OPERATION_FAILED', 'Invalid prefetch settings');
+    configurePrefetch({enabled = true, policy = 'auto', concurrency = 8, trace = false, bootProfile} = {}) {
+        if(!['auto', 'sequential', 'demand', 'head-demand', 'ranges', ...adaptivePolicies].includes(policy) || (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 8)) throw fail('OPERATION_FAILED', 'Invalid prefetch settings');
         this.bootProfile = bootProfile;
         this.prefetchEnabled = enabled;
         this.requestedPolicy = policy;
@@ -57,6 +60,7 @@ export class RemoteDisk {
             inFlight:jobs.filter(j=>j.state === 'active').length, queued:jobs.filter(j=>j.state === 'queued').length,
             prefetchState:this.prefetchState, prefetchError:this.prefetchError,
             rangeProfile:this.rangeOrder?.stats(),
+            endpoints:[...this.endpoints.values()].map(({url,active,validBytes,failures,rate,cooldownUntil,excluded})=>({url,active,validBytes,failures,bytesPerMs:rate,cooldownUntil,excluded})),
             discovery:{...this.discovery}, policy:this.policy, concurrency:this.concurrency, traceDropped:this.traceDropped};
     }
     // Called only after the encrypted header has been authenticated by the Vault.
@@ -104,9 +108,22 @@ export class RemoteDisk {
                 if(index < 0) {this.prefetchState='complete';break;}
                 this.traceEvent('prefetch-unit',{unit:index,policy:this.policy});
                 const demand = this.lastDemand;
-                await this.read(HEADER + index * RECORD, Math.min(RECORD, this.size - HEADER - index * RECORD), undefined, 'background');
+                let last=index;
+                // The exporter can now see distinct IPFS blocks instead of one 64 KiB record.
+                // Keep range/profile and nearby/stream ordering; do not batch experimental policies.
+                if(this.entry.node && !this.adaptiveOrder) {
+                    let bound=this.coverage.length-1;
+                    if(this.rangeOrder) {
+                        const range=this.rangeOrder.ranges.find(([a,b])=>index>=a && index<=b);
+                        if(range) bound=range[1];
+                    }
+                    if(this.policy==='head-demand' && index<16) bound=Math.min(bound,15);
+                    const maxUnits=Math.max(1,Math.floor(8*BLOCK_LIMIT/RECORD));
+                    while(last<bound && last-index+1<maxUnits && !this.coverage[last+1]) last++;
+                }
+                await this.read(HEADER + index * RECORD, Math.min((last-index+1)*RECORD, this.size - HEADER - index * RECORD), undefined, 'background', false);
                 if(epoch !== this.epoch) break;
-                if(!bootstrap && (this.policy === 'sequential' || demand === this.lastDemand)) this.cursor = (index + 1) % this.coverage.length;
+                if(!bootstrap && (this.policy === 'sequential' || demand === this.lastDemand)) this.cursor = (last + 1) % this.coverage.length;
                 if(performance.now() - yielded > 8) {await new Promise(r=>setTimeout(r,0));yielded=performance.now();}
             }
         })().catch(error=>{
@@ -143,6 +160,8 @@ export class RemoteDisk {
         this.discoveryController?.abort();
         if(this.discovery.state === 'running') this.discovery.state = 'cancelled';
         this.epoch++;
+        clearTimeout(this.scheduleTimer);
+        for(const wake of this.admissionWaiters) wake();
         this.prefetchState='stopped';
         for(const controller of this.readControllers) controller.abort();
         for(const job of this.jobs.values()) {
@@ -151,31 +170,88 @@ export class RemoteDisk {
         }
         this.jobs.clear();
     }
-    schedule() {
-        const jobs=[...this.jobs.values()], active=jobs.filter(j=>j.state==='active');
-        if(active.length >= this.concurrency) return;
-        const demand=jobs.find(j=>j.state==='queued' && j.priority==='demand');
-        const next=demand || (!this.demandReads && !active.some(j=>j.priority==='demand') && jobs.find(j=>j.state==='queued'));
-        if(!next || active.some(j=>j.priority===next.priority)) return;
-        next.state='active';
-        const start=performance.now();
-        this.traceEvent('fetch-start',{cid:next.key,priority:next.priority});
-        void (async()=>{
-            const bytes=await this.request(`/ipfs/${next.key}?format=raw`, 'application/vnd.ipld.raw', BLOCK_LIMIT, next.controller.signal);
-            const digest=await sha256.digest(bytes);
-            check(next.controller.signal);
-            if(next.epoch !== this.epoch || this.closed) throw fail('CANCELLED','Operation cancelled');
-            if(digest.digest.length !== next.cid.multihash.digest.length || !digest.digest.every((b,i)=>b===next.cid.multihash.digest[i])) throw fail('CORRUPTION','IPFS block does not match its CID.');
-            this.blocks.set(next.key, bytes);this.cacheBytes+=bytes.length;
-            return bytes;
-        })().then(bytes=>{this.traceEvent('fetch-end',{cid:next.key,priority:next.priority,bytes:bytes.length,ms:performance.now()-start});next.resolve(bytes);},error=>{this.traceEvent('fetch-error',{cid:next.key,code:error.code,ms:performance.now()-start});next.reject(error);}).finally(()=>{
-            if(this.jobs.get(next.key)===next) this.jobs.delete(next.key);
-            this.schedule();
-        });
+    addEndpoint(value) {
+        const url=gatewayURL(value);
+        if(!this.endpoints.has(url)) this.endpoints.set(url,{url,active:0,attempts:0,validBytes:0,failures:0,consecutive:0,rate:0,cooldownUntil:0,excluded:false});
     }
-    async waitForJob(job, signal) {
+    notifyAdmission() { for(const wake of this.admissionWaiters) wake(); }
+    async admitBackground(signal, epoch) {
+        while([...this.jobs.values()].filter(j=>j.hasBackground).length>=8) {
+            check(signal);
+            if(epoch!==this.epoch || this.closed) throw fail('CANCELLED','Operation cancelled');
+            await new Promise(resolve=>{
+                const wake=()=>{this.admissionWaiters.delete(wake);signal?.removeEventListener('abort',wake);resolve();};
+                this.admissionWaiters.add(wake);signal?.addEventListener('abort',wake,{once:true});
+                if(signal?.aborted) wake();
+            });
+        }
         check(signal);
-        const waiter={};job.waiters.add(waiter);
+        if(epoch!==this.epoch || this.closed) throw fail('CANCELLED','Operation cancelled');
+    }
+    finishJob(job, error, bytes) {
+        if(this.jobs.get(job.key)!==job) return;
+        this.jobs.delete(job.key);
+        if(error) job.reject(error); else job.resolve(bytes);
+        this.notifyAdmission();
+    }
+    schedule() {
+        clearTimeout(this.scheduleTimer);
+        if(this.closed) return;
+        const now=Date.now(), jobs=[...this.jobs.values()];
+        let active=[...this.endpoints.values()].reduce((n,e)=>n+e.active,0), wakeAt=Infinity;
+        const foreground=this.demandReads || jobs.some(j=>j.priority==='demand');
+        jobs.sort((a,b)=>(a.priority==='demand'?0:1)-(b.priority==='demand'?0:1));
+        for(const job of jobs) {
+            if(job.state!=='queued') continue;
+            if(job.deadline && now>=job.deadline) {this.finishJob(job,job.error || fail('IO_ERROR','IPFS block request timed out. You can retry.'));continue;}
+            const remaining=[...this.endpoints.values()].filter(e=>!e.excluded && !job.tried.has(e.url));
+            if(!remaining.length && this.discovery.state!=='running') {
+                this.finishJob(job,job.error || fail('IO_ERROR','No provider could serve this IPFS block. You can retry.'));continue;
+            }
+            if(job.deadline) wakeAt=Math.min(wakeAt,job.deadline);
+            if(active>=this.concurrency || (foreground && job.priority!=='demand')) continue;
+            for(const e of remaining) if(e.cooldownUntil>now) wakeAt=Math.min(wakeAt,e.cooldownUntil);
+            const eligible=remaining.filter(e=>e.active<2 && e.cooldownUntil<=now);
+            eligible.sort((a,b)=>(a.attempts===0?0:1)-(b.attempts===0?0:1) || b.rate-a.rate || a.active-b.active);
+            const endpoint=eligible[0];
+            if(!endpoint) continue;
+            job.deadline ??= now+this.timeoutMs;
+            job.tried.add(endpoint.url);job.state='active';endpoint.active++;endpoint.attempts++;active++;
+            this.runAttempt(job,endpoint);
+        }
+        if(Number.isFinite(wakeAt)) this.scheduleTimer=setTimeout(()=>this.schedule(),Math.max(1,wakeAt-Date.now()));
+    }
+    async runAttempt(job, endpoint) {
+        const started=performance.now(), live=()=>job.epoch===this.epoch && !this.closed && !job.controller.signal.aborted && this.jobs.get(job.key)===job;
+        this.traceEvent('fetch-start',{cid:job.key,priority:job.priority,gateway:endpoint.url});
+        try {
+            const bytes=await this.request(`/ipfs/${job.key}?format=raw`, 'application/vnd.ipld.raw', BLOCK_LIMIT, job.controller.signal, endpoint.url, Math.min(5000,Math.max(1,job.deadline-Date.now())));
+            const digest=await sha256.digest(bytes);
+            if(!live()) return;
+            if(!digest.digest.every((b,i)=>b===job.cid.multihash.digest[i]) || digest.digest.length!==job.cid.multihash.digest.length) throw fail('CORRUPTION','IPFS block does not match its CID.');
+            const ms=Math.max(1,performance.now()-started), sample=bytes.length/ms;
+            endpoint.rate=endpoint.validBytes ? .75*endpoint.rate+.25*sample : sample;
+            endpoint.validBytes+=bytes.length;endpoint.consecutive=0;endpoint.cooldownUntil=0;
+            if(!this.blocks.has(job.key)) {this.blocks.set(job.key,bytes);this.cacheBytes+=bytes.length;}
+            this.traceEvent('fetch-end',{cid:job.key,priority:job.priority,gateway:endpoint.url,bytes:bytes.length,ms});
+            this.finishJob(job,undefined,bytes);
+        } catch(error) {
+            if(!live()) return;
+            endpoint.failures++;
+            if(error.code==='CORRUPTION') endpoint.excluded=true;
+            else if(!error.status || error.status===408 || error.status===429 || error.status>=500) {
+                endpoint.cooldownUntil=Date.now()+Math.min(60000,5000*2**Math.min(endpoint.consecutive++,4));
+            }
+            job.error=error;job.state='queued';
+            this.traceEvent('fetch-error',{cid:job.key,gateway:endpoint.url,code:error.code,ms:performance.now()-started});
+        } finally {
+            endpoint.active--;
+            if(!this.closed) this.schedule();
+        }
+    }
+    async waitForJob(job, signal, priority) {
+        check(signal);
+        const waiter={priority};job.waiters.add(waiter);
         let abort;
         try {
             return await Promise.race([job.promise, new Promise((_,reject)=>{
@@ -186,44 +262,32 @@ export class RemoteDisk {
         } finally {
             signal?.removeEventListener('abort',abort);
             job.waiters.delete(waiter);
+            if(job.waiters.size && job.priority==='demand' && ![...job.waiters].some(w=>w.priority==='demand')) {
+                job.priority='background';this.schedule();
+            }
             if(!job.waiters.size && signal?.aborted) {
                 job.controller.abort();job.reject(fail('CANCELLED','Operation cancelled'));
                 if(this.jobs.get(job.key)===job) this.jobs.delete(job.key);
-                this.schedule();
+                this.notifyAdmission();this.schedule();
             }
         }
     }
-    async request(path, type, limit, signal) {
-        const deadline = Date.now() + this.timeoutMs;
-        for(let attempt = 0;; attempt++) {
-            try {
-                return await this.requestOnce(path, type, limit, signal, Math.max(1, deadline - Date.now()));
-            } catch(error) {
-                check(signal);
-                const delay = 250 * 4 ** attempt;
-                if(!error.retryable || attempt >= 2 || deadline - Date.now() <= delay) throw error;
-                await new Promise((resolve, reject) => {
-                    const finish = () => {signal?.removeEventListener('abort', abort);resolve();};
-                    const timer = setTimeout(finish, delay);
-                    const abort = () => {clearTimeout(timer);signal.removeEventListener('abort', abort);reject(fail('CANCELLED', 'Operation cancelled'));};
-                    signal?.addEventListener('abort', abort, {once:true});
-                    if(signal?.aborted) abort();
-                });
-            }
-        }
+    async request(path, type, limit, signal, gateway=this.gateway, timeoutMs=Math.min(5000,this.timeoutMs)) {
+        return this.requestOnce(path,type,limit,signal,timeoutMs,gateway);
     }
-    async requestOnce(path, type, limit, signal, timeoutMs) {
+    async requestOnce(path, type, limit, signal, timeoutMs, gateway=this.gateway) {
         check(signal);
-        if(!this.gateway) throw fail('IO_ERROR', 'No verified HTTPS provider is available for this disk.');
+        if(!gateway) throw fail('IO_ERROR', 'No verified HTTPS provider is available for this disk.');
         const controller = new AbortController();
         const abort = () => controller.abort();
         signal?.addEventListener('abort', abort, {once:true});
         let timedOut = false;
         const timer = setTimeout(() => {timedOut = true;controller.abort();}, timeoutMs);
         let response;
+        const epoch=this.epoch;
         try {
             this.onNetwork?.(0, 1);
-            response = await fetch(this.gateway + path, {
+            response = await fetch(gateway + path, {
                 headers:{Accept:type}, signal:controller.signal, credentials:'omit',
                 cache:'no-store', redirect:'error', referrerPolicy:'no-referrer',
             });
@@ -232,7 +296,7 @@ export class RemoteDisk {
                     ? 'No published disk reference is available from this gateway for this identity.'
                     : 'The gateway could not retrieve the remote data.';
                 throw Object.assign(fail('IO_ERROR', `IPFS gateway returned HTTP ${response.status}. ${detail}`), {
-                    retryable: [500, 502, 503, 504].includes(response.status),
+                    status:response.status,
                 });
             }
             if(response.headers.get('content-type')?.split(';')[0].trim() !== type) throw fail('CORRUPTION', 'Gateway did not return verifiable IPFS data.');
@@ -242,13 +306,14 @@ export class RemoteDisk {
                 for(;;) {
                     const {done, value} = await reader.read();
                     if(done) break;
-                    this.onNetwork?.(value.length, 0);
+                    if(epoch===this.epoch && !this.closed && !signal?.aborted) this.onNetwork?.(value.length, 0);
                     size += value.length;
                     if(size > limit) throw fail('CORRUPTION', 'IPFS response exceeds the supported size.');
                     parts.push(value);
                 }
             } finally { await reader.cancel().catch(()=>{}); }
             check(signal);
+            if(timedOut) throw fail('IO_ERROR','IPFS request timed out. You can retry.');
             const bytes = new Uint8Array(size); let offset = 0;
             for(const part of parts) {bytes.set(part, offset);offset += part.length;}
             return bytes;
@@ -266,7 +331,8 @@ export class RemoteDisk {
         check(signal);
         if(this.closed) throw fail('CANCELLED','Disk closed');
         if(cid.code !== 0x55 && cid.code !== 0x70) throw fail('UNSUPPORTED_FORMAT', 'Only raw and UnixFS IPFS blocks are supported.');
-        const key = cid.toString();
+        const epoch=this.epoch;
+        const key = cid.toV1().toString();
         let bytes = this.blocks.get(key);
         this.traceEvent('block',{cid:key,priority,hit:!!bytes});
         if(bytes) {yield bytes;return;}
@@ -276,14 +342,19 @@ export class RemoteDisk {
             this.blocks.set(key,bytes);this.cacheBytes+=bytes.length;
         } else {
             if(cid.multihash.code !== sha256.code) throw fail('UNSUPPORTED_FORMAT', 'Unsupported IPFS hash algorithm.');
+            while(priority==='background' && !this.jobs.get(key)?.hasBackground && !this.blocks.has(key) && [...this.jobs.values()].filter(j=>j.hasBackground).length>=8) await this.admitBackground(signal,epoch);
+            check(signal);
+            if(epoch!==this.epoch || this.closed) throw fail('CANCELLED','Operation cancelled');
+            if(this.blocks.has(key)) {yield this.blocks.get(key);return;}
             let job=this.jobs.get(key);
             if(!job) {
-                job={key,cid,priority,epoch:this.epoch,state:'queued',controller:new AbortController(),waiters:new Set()};
+                job={key,cid,priority,epoch:this.epoch,state:'queued',hasBackground:priority==='background',tried:new Set(),controller:new AbortController(),waiters:new Set()};
                 job.promise=new Promise((resolve,reject)=>{job.resolve=resolve;job.reject=reject;});
                 this.jobs.set(key,job);
             }
+            if(priority==='background') job.hasBackground=true;
             if(priority==='demand' && job.priority!=='demand') {job.priority='demand';this.traceEvent('promote',{cid:key});}
-            const pending=this.waitForJob(job,signal);
+            const pending=this.waitForJob(job,signal,priority);
             this.schedule();
             bytes=await pending;
         }
@@ -352,11 +423,13 @@ export class RemoteDisk {
             onProvider:(provider,block)=>{
                 if(!usable())return;
                 this.providers.set(provider.peerId,provider);
+                for(const gateway of provider.gateways) this.addEndpoint(gateway);
+                this.schedule();
                 this.discovery.providers=this.discovery.verifiedProviders=this.providers.size;
                 this.discovery.verifiedEndpoints=new Set([...this.providers.values()].flatMap(p=>p.gateways)).size;
                 if(!selected && block) {
                     selected=true;this.gateway=block.gateway;
-                    const key=CID.parse(rootCid).toString();
+                    const key=CID.parse(rootCid).toV1().toString();
                     this.blocks.set(key,block.rootBlock);this.cacheBytes+=block.rootBlock.length;
                     resolveFirst();
                 }
@@ -378,6 +451,7 @@ export class RemoteDisk {
         }).finally(()=>{
             signal?.removeEventListener('abort',abort);
             if(this.discoveryController===controller)this.discoveryController=undefined;
+            if(epoch===this.epoch && !this.closed) this.schedule();
         });
         await first;check(signal);check(controller.signal);
     }
@@ -391,7 +465,7 @@ export class RemoteDisk {
         this.size = Number(size);
         return this;
     }
-    async read(offset, length, signal, priority = 'demand') {
+    async read(offset, length, signal, priority = 'demand', retainOutput = true) {
         check(signal);
         if(this.closed) throw fail('CANCELLED','Disk closed');
         if(!Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || offset < 0 || length < 0 || offset + length > this.size) throw fail('IO_ERROR', 'Remote range unavailable.');
@@ -409,13 +483,13 @@ export class RemoteDisk {
             }
         }
         try {
-            const output = new Uint8Array(length); let copied = 0;
+            const output = retainOutput ? new Uint8Array(length) : undefined; let copied = 0;
             if(length === 0) return output;
-            for await(const bytes of this.entry.content({offset:BigInt(offset), length:BigInt(length), signal, priority, blockReadConcurrency:1})) {
+            for await(const bytes of this.entry.content({offset:BigInt(offset), length:BigInt(length), signal, priority, blockReadConcurrency:this.concurrency})) {
                 check(signal);
                 if(epoch!==this.epoch || this.closed) throw fail('CANCELLED','Operation cancelled');
                 if(copied + bytes.length > length) throw fail('CORRUPTION', 'IPFS range is longer than requested.');
-                output.set(bytes, copied);copied += bytes.length;
+                output?.set(bytes, copied);copied += bytes.length;
             }
             check(signal);
             if(copied !== length) throw fail('IO_ERROR', 'Incomplete IPFS range.');
@@ -424,6 +498,7 @@ export class RemoteDisk {
             if(priority==='demand' && this.prefetchState==='paused') this.startPrefetch();
             return output;
         } finally {
+            controller.abort();
             this.readControllers.delete(controller);
             externalSignal?.removeEventListener('abort',abort);
             if(priority==='demand') this.demandReads--;
@@ -431,5 +506,5 @@ export class RemoteDisk {
         }
     }
     clearCache() {this.cancel();this.blocks.clear();this.cacheBytes=0;this.headerCovered=false;this.coverage=undefined;this.adaptiveOrder=undefined;this.rangeOrder=undefined;this.completedUnits=this.coveredBytes=0;}
-    close() {this.closed=true;this.clearCache();this.providers.clear();this.prefetchState='closed';this.entry=undefined;}
+    close() {this.closed=true;this.clearCache();this.providers.clear();this.endpoints.clear();this.prefetchState='closed';this.entry=undefined;}
 }
