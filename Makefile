@@ -118,6 +118,7 @@ site-test: site
 	node scripts/run-browser-test.mjs tests/pages/discovery.mjs
 	node scripts/run-browser-test.mjs tests/pages/boot-analysis.mjs
 	node scripts/run-browser-test.mjs tests/pages/state-api.mjs
+	node scripts/run-browser-test.mjs tests/pages/state-large.mjs
 	node scripts/run-browser-test.mjs tests/pages/state.mjs
 	node scripts/run-browser-test.mjs tests/pages/media.mjs
 	node scripts/run-browser-test.mjs tests/pages/mobile.mjs
@@ -128,4 +129,5 @@ site-test: site
 state-test: site
 	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo build --manifest-path src/disk/Cargo.toml --locked --release --example compat
 	node scripts/run-browser-test.mjs tests/pages/state-api.mjs
+	node scripts/run-browser-test.mjs tests/pages/state-large.mjs
 	node scripts/run-browser-test.mjs tests/pages/state.mjs

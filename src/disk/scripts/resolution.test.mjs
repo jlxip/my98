@@ -4,7 +4,7 @@ import {createServer} from 'node:http';
 import {generateKeyPair} from '@libp2p/crypto/keys';
 import {createIPNSRecordWithExpiration, marshalIPNSRecord} from 'ipns';
 import {resolveIpns} from '../web/resolution.js';
-import {DEFAULT_SERVERS, resolutionServers, dataGateway} from '../web/network-config.js';
+import {resolutionServers, dataGateway} from '../web/network-config.js';
 import {RemoteDisk} from '../web/remote.js';
 const key = await generateKeyPair('Ed25519');
 const identity = {publicKey:key.publicKey.raw, ipnsName:key.publicKey.toCID().toString()};
@@ -107,10 +107,16 @@ test('local redirect cannot fall back to another endpoint',async t=>{
     const f=await fixture(t,[{status:302,headers:{Location:'https://should-not-be-contacted.invalid'}}]);
     await rejected(resolveIpns(identity,{onlyLocalhost:true,gateway:f.servers[0].url}),'IO_ERROR');assert.equal(f.seen.length,1);
 });
-test('configuration validates before network and default capabilities are explicit',()=>{
-    assert.equal(DEFAULT_SERVERS.length,4);assert.equal(DEFAULT_SERVERS.filter(s=>s.discovery).length,2);
+test('resolution filters capabilities, deduplicates by protocol and validates configuration',()=>{
+    const gateway={url:'https://records.example.com/prefix',resolution:'gateway',discovery:false};
+    const router={url:'https://router.example.com',resolution:'routing',discovery:true};
+    const discoveryOnly={url:'https://discovery.example.com',resolution:false,discovery:true};
+    const inactive={url:'https://unused.example.com',resolution:false,discovery:false};
+    const sameURLDifferentProtocol={...gateway,resolution:'routing'};
+    assert.deepEqual(resolutionServers([discoveryOnly,gateway,{...gateway,url:gateway.url+'/'},inactive,router,sameURLDifferentProtocol]),
+        [gateway,router,sameURLDifferentProtocol]);
     assert.equal(dataGateway(undefined,true),'http://127.0.0.1:8080');
-    for(const servers of [[],Array(17).fill(DEFAULT_SERVERS[0]),[{resolution:'gateway',discovery:false}],[{url:'http://example.com',resolution:'gateway',discovery:false}],[{url:'https://x/?foo',resolution:'gateway',discovery:false}],[{url:'https://x',resolution:false,discovery:true}]]) assert.throws(()=>resolutionServers(servers));
+    for(const servers of [[],Array(17).fill(gateway),[{resolution:'gateway',discovery:false}],[{url:'http://example.com',resolution:'gateway',discovery:false}],[{url:'https://x/?foo',resolution:'gateway',discovery:false}],[{url:'https://x',resolution:false,discovery:true}]]) assert.throws(()=>resolutionServers(servers));
     assert.throws(()=>dataGateway('http://127.0.0.1.example.com',true));
 });
 test('RemoteDisk cancellation while resolving prevents any block read',async t=>{

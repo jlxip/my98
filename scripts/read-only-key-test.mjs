@@ -12,6 +12,7 @@ import {createIPNSRecord, marshalIPNSRecord} from 'ipns';
 import {fixture} from '../src/disk/browser-tests/ipfs-fixture.mjs';
 import init, {Vault} from '../build/disk/pkg/slop86_disk.js';
 import {RemoteDisk} from '../build/disk/remote.mjs';
+import {DEFAULT_SERVERS} from '../src/disk/web/network-config.js';
 
 const root = resolve(import.meta.dirname, '..');
 process.chdir(root);
@@ -61,23 +62,34 @@ try {
     const transport=join(out,'discovery-transport.mjs'),calls=join(out,'discovery-calls.jsonl');
     await writeFile(calls,'');
     const peerId=CID.createV1(0x72,CID.parse(f.cid1).multihash).toString();
+    const baseURL=server=>new URL(server.url).href.replace(/\/+$/,'');
+    // Derive the mock's inventory from configuration, but specify the expected
+    // protocol routes independently of the production filtering/routing helpers.
+    const resolutionRequests=[...new Set(DEFAULT_SERVERS.filter(s=>s.resolution).map(s=>baseURL(s)+
+        (s.resolution==='routing'?'/routing/v1/ipns/':'/ipns/')+f.identity.ipnsName+
+        (s.resolution==='gateway'?'?format=ipns-record':'')))];
+    const discoveryRequests=[...new Set(DEFAULT_SERVERS.filter(s=>s.discovery).map(s=>baseURL(s)+
+        '/routing/v1/providers/'+CID.parse(f.cid1).toV1().toString()))];
     await writeFile(transport,`
 import {appendFileSync} from 'node:fs';
 const original=globalThis.fetch.bind(globalThis);
+const resolutionRequests=${JSON.stringify(resolutionRequests)};
+const discoveryRequests=${JSON.stringify(discoveryRequests)};
 globalThis.fetch=(value,options)=>{
     const u=new URL(value);appendFileSync(${JSON.stringify(calls)},JSON.stringify(u.href)+'\\n');
-    if(['piensa.jlxip.net','delegated-ipfs.dev'].includes(u.hostname) && u.pathname.startsWith('/routing/v1/providers/'))return Promise.resolve(new Response(JSON.stringify({Providers:[{Schema:'peer',ID:${JSON.stringify(peerId)},Addrs:['/dns4/cli-provider.example.com/tcp/443/tls/http']}]}),{headers:{'Content-Type':'application/json'}}));
-    if(u.hostname==='cli-provider.example.com')return original(${JSON.stringify(f.endpoint)}+u.pathname+u.search,options);
-    if(['piensa.jlxip.net','ipfs.filebase.io','ipfs.orbitor.dev','delegated-ipfs.dev'].includes(u.hostname))return original(${JSON.stringify(f.endpoint)}+u.pathname.replace('/routing/v1/ipns/','/ipns/')+u.search,options);
+    if(discoveryRequests.includes(u.href))return Promise.resolve(new Response(JSON.stringify({Providers:[{Schema:'peer',ID:${JSON.stringify(peerId)},Addrs:['/dns4/cli-provider.example.com/tcp/443/tls/http']}]}),{headers:{'Content-Type':'application/json'}}));
+    if(u.origin==='https://cli-provider.example.com' && u.pathname.startsWith('/ipfs/'))return original(${JSON.stringify(f.endpoint)}+u.pathname+u.search,options);
+    if(resolutionRequests.includes(u.href))return original(${JSON.stringify(f.endpoint+'/ipns/'+f.identity.ipnsName)},options);
     throw Error('Unexpected external endpoint in CLI test');
 };
 `);
     const automatic=await launch(['--import',transport,helper],JSON.stringify(credentials)).done;
     assert.equal(automatic.code,0,automatic.stderr);assert.deepEqual(JSON.parse(automatic.stdout),exported);
     const automaticCalls=(await readFile(calls,'utf8')).trim().split('\n').map(JSON.parse);
-    assert.equal(automaticCalls.filter(url=>url.includes('/ipns/')).length,4);
-    assert.equal(automaticCalls.filter(url=>url.includes('/providers/')).length,2);
-    assert(automaticCalls.filter(url=>url.includes('/ipfs/')).every(url=>url.startsWith('https://cli-provider.example.com/')));
+    const blockCalls=automaticCalls.filter(url=>url.startsWith('https://cli-provider.example.com/ipfs/'));
+    assert(blockCalls.length>0, 'blocks fetched from the discovered provider');
+    assert.deepEqual(automaticCalls.filter(url=>!blockCalls.includes(url)).sort(),
+        [...resolutionRequests,...discoveryRequests].sort(), 'each configured query endpoint uses its declared protocol exactly once');
     ok('CLI without gateway resolves all services, discovers HTTPS provider and exports the same capability');
     const remote = new RemoteDisk({gateway:f.endpoint, prefetch:{enabled:false}});
     const key = Buffer.from(exported.readKey.slice(11), 'base64url');

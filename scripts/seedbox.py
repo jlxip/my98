@@ -143,8 +143,10 @@ def login_python(store):
             try:
                 subprocess.run([str(python), "-m", "pip", "install", "--disable-pip-version-check",
                                 "argon2-cffi==25.1.0"], check=True, timeout=300)
-            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-                raise Failure("Cannot install Argon2 for login; check network access and retry") from exc
+            except subprocess.TimeoutExpired as exc:
+                raise Failure("Argon2 installation exceeded 300 seconds; check the build output above") from exc
+            except subprocess.CalledProcessError as exc:
+                raise Failure("Cannot install Argon2 for login; see the pip error above") from exc
     return str(python)
 
 

@@ -8,7 +8,7 @@ import {create as digest} from 'multiformats/hashes/digest';
 import {generateKeyPair} from '@libp2p/crypto/keys';
 import {createIPNSRecord,marshalIPNSRecord} from 'ipns';
 import {advertisedGateway,discoverProviders,DISCOVERY_LIMITS as L} from '../web/discovery.js';
-import {discoveryServers,DEFAULT_SERVERS} from '../web/network-config.js';
+import {discoveryServers} from '../web/network-config.js';
 import {RemoteDisk} from '../web/remote.js';
 
 const bytes = new Uint8Array(512);bytes[0]=42;
@@ -41,8 +41,11 @@ function stream(parts,signal,{hang=false,delay=0}={}) {
 }
 
 test('capability filtering, endpoint deduplication and validation precede traffic',async t=>{
-    assert.deepEqual(discoveryServers(),[DEFAULT_SERVERS[0],DEFAULT_SERVERS[3]]);
-    assert.equal(discoveryServers([service(1),{...service(1),url:service(1).url+'/'}]).length,1);
+    const both={...service(0),resolution:'routing'};
+    const resolutionOnly={...service(1),resolution:'gateway',discovery:false};
+    const inactive={...service(3),discovery:false};
+    assert.deepEqual(discoveryServers([resolutionOnly,both,inactive,service(2),{...both,url:both.url+'/',resolution:'gateway'}]),
+        [both,service(2)]);
     const seen=stub(t,()=>{throw Error('No traffic expected');});
     for(const servers of [[],Array(17).fill(service(0)),[{...service(0),discovery:false}],[{...service(0),discovery:'yes'}],[{...service(0),url:'http://public.example.com'}]]) {
         await assert.rejects(discoverProviders(root,{servers}),e=>e.code==='IO_ERROR');

@@ -1,6 +1,8 @@
 // Shared query-service configuration for IPNS resolution and provider discovery.
 export const DEFAULT_SERVERS = Object.freeze([
     Object.freeze({url:'https://piensa.jlxip.net', resolution:'gateway', discovery:true}),
+    Object.freeze({url:'https://nuc.jlxip.net', resolution:'routing', discovery:true}),
+    Object.freeze({url:'https://oregon.jlxip.net', resolution:'routing', discovery:true}),
     Object.freeze({url:'https://ipfs.filebase.io', resolution:'gateway', discovery:false}),
     Object.freeze({url:'https://ipfs.orbitor.dev', resolution:'gateway', discovery:false}),
     Object.freeze({url:'https://delegated-ipfs.dev', resolution:'routing', discovery:true}),

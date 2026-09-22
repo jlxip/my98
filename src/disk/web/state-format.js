@@ -15,6 +15,18 @@ async function collect(stream, max, check, progress) {
     finally {reader.releaseLock();}
     return new Blob(parts);
 }
+// Large whole-Blob reads exceed WebKit's deferred response buffer. Keep each
+// read bounded and allow cancellation before allocating and between slices.
+async function readSection(blob, check) {
+    check();
+    const bytes=new Uint8Array(blob.size), chunk=8*1024*1024;
+    for(let offset=0;offset<blob.size;offset+=chunk) {
+        check();
+        const part=await blob.slice(offset,offset+chunk).arrayBuffer();
+        check();bytes.set(new Uint8Array(part),offset);
+    }
+    return bytes.buffer;
+}
 export async function encodeState(vault, metadata, state, {check,progress}) {
     if(!(state instanceof ArrayBuffer) || !state.byteLength || state.byteLength>LIMIT)throw invalid("Invalid machine state");
     const overlay=vault.state_overlay();
@@ -73,7 +85,7 @@ export async function decodeState(vault, input, {check,progress,signal}) {
     const metadata=JSON.parse(dec.decode(await raw.slice(4,4+metaLength).arrayBuffer()));
     const {stateLength,overlayLength}=metadata;
     if(!Number.isSafeInteger(stateLength)||stateLength<1||!Number.isSafeInteger(overlayLength)||overlayLength<0||4+metaLength+stateLength+overlayLength!==raw.size)throw invalid("Invalid state sections");
-    const state=await raw.slice(4+metaLength,4+metaLength+stateLength).arrayBuffer();
-    const overlay=new Uint8Array(await raw.slice(4+metaLength+stateLength).arrayBuffer());check();
+    const state=await readSection(raw.slice(4+metaLength,4+metaLength+stateLength),check);
+    const overlay=new Uint8Array(await readSection(raw.slice(4+metaLength+stateLength),check));check();
     return {metadata,state,overlay};
 }
