@@ -4,9 +4,12 @@
 hooks:
 	git config --local core.hooksPath .githooks
 
-.PHONY: seedbox-test seedbox-integration
+.PHONY: seedbox-test seedbox-integration seedbox-renewal-integration
 seedbox-test:
 	PYTHONDONTWRITEBYTECODE=1 python3 scripts/seedbox_test.py
+
+seedbox-renewal-integration:
+	PYTHONDONTWRITEBYTECODE=1 python3 scripts/seedbox_renewal_integration.py
 
 seedbox-integration:
 	PYTHONDONTWRITEBYTECODE=1 python3 scripts/seedbox_integration.py
@@ -114,7 +117,15 @@ site-test: site
 	node scripts/run-browser-test.mjs tests/pages/resolution.mjs
 	node scripts/run-browser-test.mjs tests/pages/discovery.mjs
 	node scripts/run-browser-test.mjs tests/pages/boot-analysis.mjs
+	node scripts/run-browser-test.mjs tests/pages/state-api.mjs
+	node scripts/run-browser-test.mjs tests/pages/state.mjs
 	node scripts/run-browser-test.mjs tests/pages/media.mjs
 	node scripts/run-browser-test.mjs tests/pages/mobile.mjs
 	node scripts/run-browser-test.mjs tests/pages/direct-pointer.mjs
 	node scripts/run-browser-test.mjs tests/pages/display.mjs
+
+.PHONY: state-test
+state-test: site
+	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo build --manifest-path src/disk/Cargo.toml --locked --release --example compat
+	node scripts/run-browser-test.mjs tests/pages/state-api.mjs
+	node scripts/run-browser-test.mjs tests/pages/state.mjs

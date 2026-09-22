@@ -21,6 +21,7 @@ pub const MAX_UNIT_BYTES: usize = 16 * 1024 * 1024;
 const DESCRIPTOR: u8 = 1;
 const DATA: u8 = 2;
 const METADATA: u8 = 3;
+const SNAPSHOT: u8 = 4;
 const ZERO_NONCE: [u8; 12] = [0; 12];
 const AUTH: &str = "Authentication failed";
 
@@ -41,6 +42,7 @@ fn label(kind: u8) -> &'static [u8] {
         DESCRIPTOR => b"slop86/descriptor/v1",
         DATA => b"slop86/data/v1",
         METADATA => b"slop86/disk-metadata/v1",
+        SNAPSHOT => b"my98/machine-state/v1",
         _ => unreachable!(),
     }
 }
@@ -124,6 +126,7 @@ fn unit_nonce(unit: &[u8]) -> Result<[u8; 12]> {
 }
 
 #[wasm_bindgen]
+#[derive(Clone)]
 pub struct Identity {
     signing_seed: Zeroizing<[u8; 32]>,
     metadata_key: Zeroizing<[u8; 32]>,
@@ -307,6 +310,21 @@ impl Disk {
     pub fn open_metadata(&self, envelope: &[u8]) -> Result<Vec<u8>> {
         self.check()?;
         unseal(&self.key, METADATA, &ZERO_NONCE, &self.id, envelope)
+    }
+    /// Independent domain, random per-record salt; context binds the whole container
+    /// header and record position, preventing reordering or cross-state splicing.
+    pub fn seal_snapshot(&self, context: &[u8], bytes: Vec<u8>) -> Result<Vec<u8>> {
+        self.check()?;
+        let bytes = Zeroizing::new(bytes);
+        let mut aad = self.id.to_vec();
+        aad.extend_from_slice(context);
+        seal(&self.key, SNAPSHOT, &ZERO_NONCE, &aad, &bytes)
+    }
+    pub fn open_snapshot(&self, context: &[u8], bytes: &[u8]) -> Result<Vec<u8>> {
+        self.check()?;
+        let mut aad = self.id.to_vec();
+        aad.extend_from_slice(context);
+        unseal(&self.key, SNAPSHOT, &ZERO_NONCE, &aad, bytes)
     }
     pub fn close(&mut self) {
         self.key.zeroize();

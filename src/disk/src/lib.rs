@@ -269,6 +269,8 @@ pub struct Engine {
     hash: Option<(Sha256, u64, u64)>,
     unchanged: Option<u64>,
 }
+mod snapshot;
+
 impl Engine {
     pub fn new(username: &str, password: Vec<u8>, machine: &str) -> Result<Self> {
         Ok(Self {

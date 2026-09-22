@@ -1,7 +1,10 @@
 import init, {Vault} from "../pkg/slop86_disk.js";
 import {RemoteDisk} from "./remote.js";
 import {BootAnalysis} from "./boot-analysis.js";
+import {encodeState, decodeState} from "./state-format.js";
 const sources = new Map();
+let stateCandidate, stateSerial = 0;
+function dropState() {stateCandidate?.vault.free();stateCandidate=undefined;}
 let identity, activeRequest;
 let networkBytes = 0, networkRequests = 0;
 let vault, sourceId = 0, current, prepared, nextDownload = 0;
@@ -50,7 +53,7 @@ async function build() {
 }
 async function execute(op,a) {
     if(op === "close" && !vault) return null;
-    if(vault && !identity && ["unlock", "create", "createEmpty", "open", "openRemote", "save", "download", "retry", "exportReadOnlyKey"].includes(op)) {
+    if(vault && !identity && ["unlock", "create", "createEmpty", "open", "openRemote", "save", "download", "retry", "exportReadOnlyKey", "saveState"].includes(op)) {
         throw fail("READ_ONLY", "Operation unavailable in read-only mode");
     }
     if(op === "openReadOnly") {
@@ -77,7 +80,7 @@ async function execute(op,a) {
         vault = new Vault(a.username,a.password,a.machine); identity = JSON.parse(vault.identity()); return identity;
     }
     if(!vault) throw fail("OPERATION_FAILED", "Identity is closed");
-    if(bootAnalysis && ["create", "createEmpty", "open", "openRemote", "save", "download", "retry", "discard", "verify"].includes(op)) throw fail("OPERATION_FAILED", "Finish or cancel the boot analysis first");
+    if(bootAnalysis && ["create", "createEmpty", "open", "openRemote", "save", "download", "retry", "discard", "verify", "saveState", "prepareState"].includes(op)) throw fail("OPERATION_FAILED", "Finish or cancel the boot analysis first");
     switch(op) {
     case "startBootAnalysis": {
         const state = describe();
@@ -124,6 +127,30 @@ async function execute(op,a) {
             current = id; prepared = undefined; remote.startPrefetch(); return describe();
         } catch(error) {if(id)remove(id);else remote.close();throw error;}
     }
+    case "saveState": {
+        const blob=await encodeState(vault,{...a.metadata,baseCid:describe().remote?.cid || null},a.state,{check,progress});
+        check();return {blob,size:blob.size};
+    }
+    case "prepareState": {
+        dropState();
+        const decoded=await decodeState(vault,a.input,{check,progress,signal:activeRequest.signal});
+        try {
+            check();const candidate=vault.fork_state(decoded.overlay);
+            const token=++stateSerial;
+            stateCandidate={vault:candidate,token,revision:describe().revision,source:current};
+            return {token,metadata:decoded.metadata,state:decoded.state,size:describe().size};
+        } finally {decoded.overlay.fill(0);}
+    }
+    case "candidateRead": {
+        if(!stateCandidate || a.token!==stateCandidate.token)throw fail("INVALID_STATE","Expired state candidate");
+        return stateCandidate.vault.read(a.offset,a.length);
+    }
+    case "discardState": if(stateCandidate?.token===a.token)dropState();return null;
+    case "commitState": {
+        if(!stateCandidate || a.token!==stateCandidate.token || stateCandidate.revision!==describe().revision || stateCandidate.source!==current)throw fail("INVALID_STATE","Disk changed during restoration");
+        check();const old=vault;vault=stateCandidate.vault;stateCandidate=undefined;old.free();prepared=undefined;
+        return describe();
+    }
     case "exportReadOnlyKey": return vault.export_read_key();
     case "describe": return describe();
     case "read": {
@@ -168,7 +195,7 @@ async function execute(op,a) {
     case "readTrace": return sources.get(current)?.trace || [];
     case "resumePrefetch": sources.get(current)?.startPrefetch?.();return null;
     case "clearCaches": vault.clear_cache();sources.get(current)?.clearCache?.();return null;
-    case "close": bootAnalysis=undefined;vault.free();vault=undefined;for(const id of sources.keys())remove(id);identity=current=prepared=undefined;return null;
+    case "close": dropState();bootAnalysis=undefined;vault.free();vault=undefined;for(const id of sources.keys())remove(id);identity=current=prepared=undefined;return null;
     default: throw fail("OPERATION_FAILED","Unknown disk operation");
     }
 }
@@ -183,7 +210,7 @@ self.onmessage = ({data}) => {
     sequence=sequence.then(async()=>{
         const {id,op,args,epoch}=data;
         try {await ready;if(initError)throw initError;activeEpoch=epoch;activeRequest=new AbortController();progressAt=-Infinity;check();const result=await execute(op,args);
-            self.postMessage({id,ok:true,result},result instanceof Uint8Array?[result.buffer]:[]);
+            self.postMessage({id,ok:true,result},result instanceof Uint8Array?[result.buffer]:result?.state instanceof ArrayBuffer?[result.state]:[]);
         }catch(error) {
             if(globalThis.slopDiskCancelled()) {vault?.cancel();error=fail("CANCELLED","Operation cancelled");}
             self.postMessage({id,ok:false,error:errorInfo(error)});

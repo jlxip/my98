@@ -17,8 +17,9 @@ for(const [name, type] of Object.entries({chromium, webkit})) {
         assert.equal(await page.locator("#disk-machine").inputValue(), "main");
         assert.equal(await page.locator("#disk-only-localhost").isChecked(), false);
         assert.equal(await page.locator("#disk-settings, #disk-gateway").count(), 0);
-        assert.equal(await page.locator("#choose-disk, #show-resume, #resume-form, #save-state, #load-state, #download-disk").count(), 0);
+        assert.equal(await page.locator("#choose-disk, #show-resume, #resume-form, #download-disk").count(), 0);
         assert.equal(await page.locator("#disk-workspace").isVisible(), false);
+        for(const id of ["save-state","load-state","disk-load-state"]) assert.equal(await page.locator("#"+id).isVisible(),false);
         // macOS WebKit uses Option+Tab to include non-text form controls.
         const tabKey = name === "webkit" && process.platform === "darwin" ? "Alt+Tab" : "Tab";
         // Logical tab order, including checkbox and submit by keyboard.

@@ -264,6 +264,9 @@ class Kubo:
         return self.call("id", "--format=<id>")
 
     def resolve(self, name, fds=()):
+        return self.resolve_record(name, fds)["cid"]
+
+    def resolve_record(self, name, fds=()):
         # name resolve --nocache can still return this daemon's own publication
         # instead of the newer network record when it holds the same signing key.
         record = self.call("routing", "get", "--", "/ipns/" + name,
@@ -278,13 +281,17 @@ class Kubo:
             expires = datetime.datetime.fromisoformat(entry["Validity"].replace("Z", "+00:00"))
             if entry["ValidityType"] != 0 or expires.tzinfo is None or expires <= datetime.datetime.now(datetime.timezone.utc):
                 raise Failure("Invalid or expired IPNS record")
+            sequence = entry["Sequence"]
+            if type(sequence) is not int or not 0 <= sequence < 1 << 64:
+                raise Failure("Invalid IPNS sequence")
             target = entry["Value"]
             match = re.fullmatch(r"/ipfs/([A-Za-z0-9]+)", target)
         except (ValueError, KeyError, TypeError) as exc:
             raise Failure("Invalid IPNS record inspection") from exc
         if not match:
             raise Failure("IPNS must resolve to a single /ipfs/CID disk root")
-        return self.canonical(match[1], fds, timeout=3)
+        return {"cid": self.canonical(match[1], fds, timeout=3),
+                "sequence": str(sequence)}
 
     def pin_records(self, kind, fds=()):
         # Listing roots distinguishes 'not pinned' from daemon/network failure.
@@ -355,6 +362,33 @@ class Kubo:
                   "--", "/ipfs/" + cid, timeout=120, fds=fds)
 
 
+    def renew(self, name, record, fds=()):
+        # Only key holders can extend validity. Never create a newer sequence for
+        # an automatic renewal: a disconnected replica must not outrank updates.
+        key = None
+        for line in self.call("key", "list", "-l", fds=fds).splitlines():
+            identity, alias = line.strip().split(None, 1)
+            if self.name(identity) == name:
+                key = alias
+                break
+        if key is None:
+            return False
+        args = ("name", "publish", "--key=" + key)
+        try:
+            self.call(*args, "--sequence=" + record["sequence"],
+                      "--", "/ipfs/" + record["cid"], timeout=120, fds=fds)
+        except Failure as exc:
+            # Kubo rejects an explicit sequence equal to its local publication.
+            # Omission preserves the sequence ONLY if its local value matches.
+            if "sequence number must be greater than the current record sequence" not in str(exc):
+                raise
+            local = self.call("name", "resolve", "--nocache", "--", name, timeout=24, fds=fds)
+            if not local.startswith("/ipfs/") or self.canonical(local[6:], fds) != record["cid"]:
+                raise Failure("Local Kubo publication differs; refusing automatic renewal") from exc
+            self.call(*args, "--", local, timeout=120, fds=fds)
+        return True
+
+
 class Store:
     def __init__(self, directory):
         self.directory = Path(directory)
@@ -386,6 +420,12 @@ class Store:
                 CREATE TABLE IF NOT EXISTS pins (
                     cid TEXT PRIMARY KEY, owned INTEGER NOT NULL, error TEXT);
             """)
+            # TEXT preserves the full IPNS uint64 range in SQLite. Existing
+            # installations establish their baseline on the first verified record.
+            columns = {r[1] for r in db.execute("PRAGMA table_info(names)")}
+            for column in ("seen_sequence", "seen_cid", "renewed_sequence", "renewed_at"):
+                if column not in columns:
+                    db.execute("ALTER TABLE names ADD COLUMN " + column + " TEXT")
             db.execute("INSERT OR IGNORE INTO meta VALUES ('peer', ?)", (peer,))
             db.execute("INSERT OR IGNORE INTO meta VALUES ('owner', ?)", (uuid.uuid4().hex,))
             if db.execute("SELECT value FROM meta WHERE key='peer'").fetchone()[0] != peer:
@@ -452,6 +492,19 @@ class Store:
             db.close()
 
 
+    def observe(self, name, record):
+        # Called under the name lock, before downloading or replacing any pin.
+        # Remember even a newer record whose download subsequently fails.
+        row = self.row(name)
+        previous = row["seen_sequence"]
+        sequence = record["sequence"]
+        if previous is not None:
+            if int(sequence) < int(previous):
+                raise Failure("IPNS rollback refused: sequence " + sequence + " < " + previous)
+            if int(sequence) == int(previous) and record["cid"] != row["seen_cid"]:
+                raise Failure("Conflicting IPNS values at the same sequence")
+        self.update(name, seen_sequence=sequence, seen_cid=record["cid"])
+
     def snapshot(self, name):
         return self.directory / (hashlib.sha256(name.encode()).hexdigest() + ".snapshot")
 
@@ -470,6 +523,37 @@ class Follower:
     def __init__(self, store, kubo):
         self.store, self.kubo = store, kubo
 
+    def renew_current(self, name, fds):
+        row = self.store.row(name)
+        if (not row["enabled"] or row["seen_sequence"] is None or
+                row["current"] != row["seen_cid"] or self.store.publication(name)):
+            return False
+        if row["renewed_sequence"] == row["seen_sequence"] and row["renewed_at"]:
+            elapsed = datetime.datetime.now(datetime.timezone.utc) - datetime.datetime.fromisoformat(row["renewed_at"])
+            if datetime.timedelta(0) <= elapsed < datetime.timedelta(hours=12):
+                return False
+        with self.store.lock("cid:" + row["current"]) as cid_fd:
+            inherited = (*fds, cid_fd)
+            self.ensure_pin(row["current"], inherited)
+            record = {"cid": row["current"], "sequence": row["seen_sequence"]}
+            if not self.kubo.renew(name, record, inherited):
+                return False
+            self.store.update(name, renewed_sequence=row["seen_sequence"], renewed_at=now())
+            return True
+
+    def resolve(self, name, fds):
+        try:
+            record = self.kubo.resolve_record(name, fds)
+            self.store.observe(name, record)
+        except Failure:
+            # The accepted disk stays pinned on expired/unavailable/older records.
+            # A key holder may restore availability at the SAME known sequence.
+            if not self.renew_current(name, fds):
+                raise
+            record = self.kubo.resolve_record(name, fds)
+            self.store.observe(name, record)
+        return record["cid"]
+
     def follow(self, name):
         try:
             with self.store.lock("name:" + name) as name_fd:
@@ -483,23 +567,25 @@ class Follower:
                         self.store.update(name, last_check=now())
                         # An uncertain publication owns the name until it is confirmed.
                         # In particular, an older IPNS result cannot overwrite its intent.
-                        cid = self.kubo.resolve(name, (name_fd,))
+                        cid = self.resolve(name, (name_fd,))
                         if cid != publication["cid"]:
                             raise Failure("Publication awaiting IPNS confirmation; retry the same disk")
                         with self.store.lock("cid:" + cid) as cid_fd:
                             self.ensure_pin(cid, (name_fd, cid_fd))
                             self.store.commit_publication(name, cid)
+                        self.renew_current(name, (name_fd,))
                         return True
                     if not row["enabled"]:
                         self.store.update(name, current=None, pending=None, error=None)
                         return True
                     self.store.update(name, last_check=now())
-                    cid = self.kubo.resolve(name, (name_fd,))
+                    cid = self.resolve(name, (name_fd,))
                     self.store.update(name, pending=cid)
                     with self.store.lock("cid:" + cid) as cid_fd:
                         fds = (name_fd, cid_fd)
                         self.ensure_pin(cid, fds)
                         self.store.update(name, current=cid, pending=None, error=None)
+                    self.renew_current(name, (name_fd,))
                     return True
                 except Busy:
                     return True  # Another name/process is already obtaining this CID.
@@ -634,9 +720,10 @@ class Follower:
                     with self.store.db() as db:
                         db.execute("UPDATE publications SET stage='confirming' WHERE name=?", (name,))
                     self.store.update(name, last_check=now())
-                    if self.kubo.resolve(name, fds) != cid:
+                    if self.resolve(name, fds) != cid:
                         raise Failure("Publication awaiting IPNS confirmation; retry the same disk")
                     self.store.commit_publication(name, cid)
+                    self.store.update(name, renewed_sequence=self.store.row(name)["seen_sequence"], renewed_at=now())
                     print("Published: " + cid, flush=True)
             except (Failure, OSError, sqlite3.Error, Busy) as exc:
                 with self.store.db() as db:

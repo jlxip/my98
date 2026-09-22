@@ -78,6 +78,24 @@ impl Vault {
                 .await?,
         })
     }
+    pub async fn state_base(&self) -> Result<Vec<u8>> {
+        self.engine.state_base(&BrowserIo).await
+    }
+    pub fn state_overlay(&self) -> Result<Vec<u8>> {
+        self.engine.state_overlay()
+    }
+    pub fn fork_state(&self, bytes: Vec<u8>) -> Result<Vault> {
+        let bytes = Zeroizing::new(bytes);
+        Ok(Vault {
+            engine: self.engine.fork_state(&bytes)?,
+        })
+    }
+    pub fn seal_state(&self, context: Vec<u8>, bytes: Vec<u8>) -> Result<Vec<u8>> {
+        self.engine.seal_state(&context, bytes)
+    }
+    pub fn open_state(&self, context: Vec<u8>, bytes: Vec<u8>) -> Result<Vec<u8>> {
+        self.engine.open_state(&context, &bytes)
+    }
     pub fn describe(&self) -> Result<String> {
         serde_json::to_string(&self.engine.describe()?).map_err(|e| operation(e.to_string()))
     }

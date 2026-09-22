@@ -1,4 +1,5 @@
 import { V86 } from "../../build/libv86.mjs";
+import {captureMachineState, restoreMachineState, DEFAULT_CONFIG} from "./machine-state.js";
 import { setupDisk } from "./disk-ui.js";
 import { setupTouch, setupFullscreen } from "./vm-input.js";
 import { setupDirectPointer } from "./direct-pointer.js";
@@ -7,7 +8,14 @@ const $ = id => document.getElementById(id);
 const media = { cdrom: null, fda: null, fdb: null };
 let emulator, diskName = "windows98.img", busy = false, muted = false;
 let diskBlocked = false;
-let diskController;
+let diskController, machineAdapter, machineConfig = {...DEFAULT_CONFIG};
+let compatibilityPromise;
+function compatibility() {
+    return compatibilityPromise ||= Promise.all(["build/libv86.mjs","build/v86.wasm","bios/seabios.bin","bios/bochs-vgabios.bin"].map(async path=>{
+        const hash=await crypto.subtle.digest("SHA-256",await readAsset(path));
+        return Array.from(new Uint8Array(hash),b=>b.toString(16).padStart(2,"0")).join("");
+    })).then(hashes=>"my98-state-adapter-1:"+hashes.join(":"));
+}
 
 function status(message, error = false)
 {
@@ -233,6 +241,46 @@ async function exportDisk(drive)
     status("Disk download prepared.");
 }
 
+async function createMachine(diskAdapter, config, container)
+{
+        await compatibility();
+        const hda = { disk_adapter: diskAdapter };
+        const wasmPath = "build/v86.wasm";
+        const [bios, vgaBios, wasm] = await Promise.all([
+            readAsset("bios/seabios.bin"), readAsset("bios/bochs-vgabios.bin"), readAsset(wasmPath),
+        ]);
+        const module = await WebAssembly.compile(wasm);
+        let initializationError;
+        const vm = new V86({
+            wasm_fn: async imports => {
+                try { return (await WebAssembly.instantiate(module, imports)).exports; }
+                catch(error) { initializationError = error; return new Promise(() => {}); }
+            },
+            memory_size: config.memory_size,
+            vga_memory_size: config.vga_memory_size,
+            bios: { buffer: bios }, vga_bios: { buffer: vgaBios },
+            hda, boot_order: 0x312, acpi: false,
+            net_device: { type: "ne2k", relay_url: "wss://relay.widgetry.org/", mtu: 1500 },
+            screen: { container: container, use_graphical_text: false },
+            disable_speaker: false, autostart: false,
+        });
+        try { await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => finish(initializationError || new Error("The machine could not initialize. Choose the files again.")), 30000);
+            const loaded = () => finish();
+            const failed = event => finish(new Error(event.file_name || "Error loading the machine."));
+            function finish(error)
+            {
+                clearTimeout(timer);
+                vm.remove_listener("emulator-loaded", loaded);
+                vm.remove_listener("download-error", failed);
+                error ? reject(error) : resolve();
+            }
+            vm.add_listener("emulator-loaded", loaded);
+            vm.add_listener("download-error", failed);
+        }); } catch(error) { await vm.destroy(); throw error; }
+        return vm;
+}
+
 async function start(diskAdapter, name, autoFullscreen = true)
 {
     // Invoke fullscreen before the first asynchronous read loses user activation.
@@ -241,40 +289,9 @@ async function start(diskAdapter, name, autoFullscreen = true)
     try
     {
         status("Preparing Windows…");
-        const hda = { disk_adapter: diskAdapter };
-        const wasmPath = "build/v86.wasm";
-        const [bios, vgaBios, wasm] = await Promise.all([
-            readAsset("bios/seabios.bin"), readAsset("bios/bochs-vgabios.bin"), readAsset(wasmPath),
-        ]);
-        const module = await WebAssembly.compile(wasm);
-        let initializationError;
-        emulator = new V86({
-            wasm_fn: async imports => {
-                try { return (await WebAssembly.instantiate(module, imports)).exports; }
-                catch(error) { initializationError = error; return new Promise(() => {}); }
-            },
-            memory_size: 256 * 1024 * 1024,
-            vga_memory_size: 8 * 1024 * 1024,
-            bios: { buffer: bios }, vga_bios: { buffer: vgaBios },
-            hda, boot_order: 0x312, acpi: false,
-            net_device: { type: "ne2k", relay_url: "wss://relay.widgetry.org/", mtu: 1500 },
-            screen: { container: $("screen_container"), use_graphical_text: false },
-            disable_speaker: false, autostart: false,
-        });
-        await new Promise((resolve, reject) => {
-            const timer = setTimeout(() => finish(initializationError || new Error("The machine could not initialize. Choose the files again.")), 30000);
-            const loaded = () => finish();
-            const failed = event => finish(new Error(event.file_name || "Error loading the machine."));
-            function finish(error)
-            {
-                clearTimeout(timer);
-                emulator.remove_listener("emulator-loaded", loaded);
-                emulator.remove_listener("download-error", failed);
-                error ? reject(error) : resolve();
-            }
-            emulator.add_listener("emulator-loaded", loaded);
-            emulator.add_listener("download-error", failed);
-        });
+        machineConfig = {...DEFAULT_CONFIG};
+        machineAdapter = diskAdapter;
+        emulator = await createMachine(diskAdapter, machineConfig, $("screen_container"));
         diskName = name;
         $("disk-name").textContent = diskName;
         $("disk-name").title = diskName;
@@ -415,6 +432,38 @@ diskController = setupDisk({
     busy: () => busy,
     hasSession: () => !!emulator,
     setBusy(value) { busy = value; updateControls(); },
+    async captureState(disk, signal) {
+        return captureMachineState({machine:emulator,adapter:machineAdapter,disk,config:machineConfig,compatibility:await compatibility(),signal});
+    },
+    async restoreState(disk, input, signal) {
+        const previous=emulator, previousAdapter=machineAdapter;
+        const container=document.createElement("div");
+        container.innerHTML="<div></div><canvas></canvas>";
+        try {
+            const restored=await restoreMachineState({disk,input,signal,
+                current:previous ? {machine:previous,adapter:previousAdapter} : null,
+                compatibility:await compatibility(),
+                createMachine:(adapter,config)=>createMachine(adapter,config,container),
+                onDiskError:async error=>{diskBlocked=true;if(emulator)await emulator.stop();status(error.message,true);updateControls();},
+            });
+            direct.deactivate();touch.release();
+            if(previous)await previous.destroy().catch(()=>{});
+            previousAdapter?.dispose();
+            const text=container.querySelector("div"), canvas=container.querySelector("canvas");
+            text.id="screen";canvas.id="vga";
+            $("screen_container").replaceChildren(text,canvas);
+            emulator=restored.machine;machineAdapter=restored.adapter;machineConfig=restored.config;
+            diskBlocked=false;$("session").hidden=false;
+            for(const drive of Object.keys(media))media[drive]=null;
+            diskName="Restored state";$("disk-name").textContent=diskName;$("disk-name").title=diskName;
+            emulator.add_listener("screen-set-size",fitScreen);
+            emulator.add_listener("emulator-started",updateControls);
+            emulator.add_listener("emulator-stopped",updateControls);
+            if(restored.running)emulator.run();
+            fitScreen();status("State restored.");
+            return restored;
+        } finally {container.remove();}
+    },
     async stop() { if(emulator) await emulator.stop(); },
     async boot(adapter, name, {autoFullscreen = true} = {}) {
         direct.deactivate();

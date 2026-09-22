@@ -29,11 +29,21 @@ class FakeKubo:
         self.remove_error = set()
         self.lost = set()
         self.before_add = lambda cid: None
+        self.sequences = {}
+        self.records = {}
+        self.renew = lambda name, record, fds=(): False
 
     def resolve(self, name, fds=()):
         if name in self.resolve_error:
             raise s.Failure("record unavailable or expired")
         return self.targets[name]
+
+    def resolve_record(self, name, fds=()):
+        cid = self.resolve(name, fds)
+        if name not in self.records or self.records[name] != cid:
+            self.sequences[name] = self.sequences.get(name, 0) + 1
+            self.records[name] = cid
+        return {"cid": cid, "sequence": str(self.sequences[name])}
 
     def pins(self, kind, fds=()):
         return dict(self.recursive if kind == "recursive" else self.direct)
@@ -73,6 +83,80 @@ class Lifecycle(unittest.TestCase):
     def sync(self, names=("one",)):
         with contextlib.redirect_stderr(io.StringIO()):
             return self.follow.sync(names)
+
+    def test_rollback_after_restart_preserves_current_pin(self):
+        self.kubo.resolve_record = lambda *args: {"cid": "new", "sequence": "20260915121758"}
+        self.assertTrue(self.sync())
+        self.store = s.Store(self.tmp.name)
+        self.store.initialize("peer")
+        self.follow = s.Follower(self.store, self.kubo)
+        self.kubo.resolve_record = lambda *args: {"cid": "old", "sequence": "3"}
+        self.assertFalse(self.sync())
+        self.assertEqual(self.store.row("one")["current"], "new")
+        self.assertEqual(set(self.kubo.recursive), {"new"})
+        self.assertIn("rollback", self.store.row("one")["error"])
+
+    def test_failed_new_download_still_remembers_highest_sequence(self):
+        self.assertTrue(self.sync())
+        self.kubo.resolve_record = lambda *args: {"cid": "new", "sequence": "18446744073709551615"}
+        self.kubo.add_error.add("new")
+        self.assertFalse(self.sync())
+        self.kubo.resolve_record = lambda *args: {"cid": "older", "sequence": "5"}
+        self.assertFalse(self.sync())
+        self.assertEqual(self.store.row("one")["seen_sequence"], "18446744073709551615")
+        self.assertEqual(self.store.row("one")["current"], "a")
+        self.assertIn("a", self.kubo.recursive)
+        self.assertNotIn("older", self.kubo.recursive)
+
+    def test_same_sequence_different_content_is_rejected(self):
+        self.assertTrue(self.sync())
+        self.kubo.resolve_record = lambda *args: {"cid": "other", "sequence": "1"}
+        self.assertFalse(self.sync())
+        self.assertEqual(set(self.kubo.recursive), {"a"})
+        self.assertIn("Conflicting", self.store.row("one")["error"])
+
+    def test_renewal_uses_accepted_version_after_pin_and_is_throttled(self):
+        calls = []
+        def renew(name, record, fds=()):
+            self.assertIn(record["cid"], self.kubo.recursive)
+            self.assertEqual(self.store.row(name)["current"], record["cid"])
+            calls.append(dict(record))
+            return True
+        self.kubo.renew = renew
+        self.assertTrue(self.sync())
+        self.assertTrue(self.sync())
+        self.assertEqual(calls, [{"cid": "a", "sequence": "1"}])
+        self.store.update("one", renewed_at="2000-01-01T00:00:00+00:00")
+        self.assertTrue(self.sync())
+        self.assertEqual(calls, [{"cid": "a", "sequence": "1"}] * 2)
+
+    def test_expiry_can_renew_known_pinned_version_without_increasing_sequence(self):
+        self.assertTrue(self.sync())
+        self.kubo.resolve_error.add("one")
+        def renew(name, record, fds=()):
+            self.assertEqual(record, {"cid": "a", "sequence": "1"})
+            self.kubo.resolve_error.clear()
+            return True
+        self.kubo.renew = renew
+        self.assertTrue(self.sync())
+        self.assertEqual(self.store.row("one")["seen_sequence"], "1")
+
+    def test_renewal_failure_keeps_pin_and_reports_error(self):
+        self.kubo.renew = mock.Mock(side_effect=s.Failure("cannot align publisher"))
+        self.assertFalse(self.sync())
+        self.assertEqual(set(self.kubo.recursive), {"a"})
+        self.assertEqual(self.store.row("one")["error"], "cannot align publisher")
+        self.assertIsNone(self.store.row("one")["renewed_at"])
+
+    def test_existing_database_migrates_without_losing_pin_state(self):
+        self.assertTrue(self.sync())
+        with self.store.db() as db:
+            for column in ("seen_sequence", "seen_cid", "renewed_sequence", "renewed_at"):
+                db.execute("ALTER TABLE names DROP COLUMN " + column)
+        self.store.initialize("peer")
+        self.assertEqual(self.store.row("one")["current"], "a")
+        self.assertIsNone(self.store.row("one")["seen_sequence"])
+        self.assertTrue(self.sync())
 
     def test_unchanged_does_not_download(self):
         self.assertTrue(self.sync())
@@ -282,6 +366,38 @@ class KuboAdapter(unittest.TestCase):
         with mock.patch.object(k, "call", return_value="/ipfs/bcid/path"):
             with self.assertRaises(s.Failure):
                 k.resolve("k123")
+
+    def test_renewal_never_increases_sequence_on_mismatched_local_publication(self):
+        k = s.Kubo()
+        def call(*args, **kwargs):
+            if args[:2] == ("key", "list"): return "k123 my98"
+            if args[:2] == ("name", "publish"):
+                raise s.Failure("sequence number must be greater than the current record sequence")
+            if args[:2] == ("name", "resolve"): return "/ipfs/other"
+            raise AssertionError(args)
+        with mock.patch.object(k, "call", side_effect=call) as calls, \
+                mock.patch.object(k, "name", return_value="k123"), \
+                mock.patch.object(k, "canonical", return_value="other"):
+            with self.assertRaises(s.Failure):
+                k.renew("k123", {"cid": "current", "sequence": "42"})
+            publishes = [c for c in calls.call_args_list if c.args[:2] == ("name", "publish")]
+            self.assertEqual(len(publishes), 1)
+            self.assertIn("--sequence=42", publishes[0].args)
+
+    def test_renewal_preserves_exact_local_path_when_cid_has_an_alias(self):
+        k = s.Kubo()
+        def call(*args, **kwargs):
+            if args[:2] == ("key", "list"): return "k123 my98"
+            if args[:2] == ("name", "resolve"): return "/ipfs/QmAlias"
+            if "--sequence=42" in args:
+                raise s.Failure("sequence number must be greater than the current record sequence")
+            return "ok"
+        with mock.patch.object(k, "call", side_effect=call) as calls, \
+                mock.patch.object(k, "name", return_value="k123"), \
+                mock.patch.object(k, "canonical", return_value="bcanonical"):
+            self.assertTrue(k.renew("k123", {"cid": "bcanonical", "sequence": "42"}))
+            self.assertEqual(calls.call_args.args[-1], "/ipfs/QmAlias")
+            self.assertFalse(any(a.startswith("--sequence=") for a in calls.call_args.args))
 
     def test_pin_listing_failure_is_not_assumed_absence(self):
         k = s.Kubo()

@@ -42,6 +42,7 @@
             <button id="disk-open" class="btn" data-variant="secondary">Open encrypted disk</button>
             <button id="disk-remote" class="btn" data-variant="secondary">Open remote disk</button>
             <p class="hint">A remote disk must already be published for this identity. Local saves are not uploaded.</p>
+            <button id="disk-load-state" class="btn" data-variant="secondary">Load state</button>
             <button id="disk-boot" class="btn" data-variant="secondary">Boot disk</button>
             <button id="disk-save" class="btn" data-variant="secondary">Save full disk after Windows shutdown</button>
             <button id="disk-discard" class="btn" data-variant="secondary">Discard pending writes</button>
@@ -54,7 +55,7 @@
         <button id="disk-resume" hidden class="btn" data-variant="secondary">Retry and resume</button>
         <button id="disk-cancel" hidden class="btn" data-variant="secondary">Cancel operation</button>
         <p id="disk-status" class="alert" role="status" aria-live="polite"></p>
-        <p id="disk-notice" class="hint" hidden>Each save downloads a complete disk. Your password, pending changes and prepared download are lost when you close this page.</p>
+        <p id="disk-notice" class="hint" hidden>Saving the disk downloads a complete disk. A state file requires its original base disk. Your password, pending changes and prepared download are lost when you close this page.</p>
         <p id="acceleration-status" class="alert" role="status" aria-live="polite"></p>
         <p id="welcome-status" class="alert" role="status" aria-live="polite"></p>
         <noscript>Enable JavaScript to boot Windows.</noscript>
@@ -66,6 +67,7 @@
             <div id="controls">
                 <fieldset><legend>Machine</legend>
                     <button id="pause" class="btn" data-variant="secondary">Pause</button><button id="reset" class="btn" data-variant="secondary">Reset</button>
+                    <button id="save-state" class="btn" data-variant="secondary">Save state</button><button id="load-state" class="btn" data-variant="secondary">Load state</button><button id="cancel-state" hidden class="btn" data-variant="secondary">Cancel state operation</button>
                     <button id="ctrlaltdel" class="btn" data-variant="secondary">Ctrl+Alt+Del</button>
                 </fieldset>
                 <fieldset><legend>Input and output</legend>

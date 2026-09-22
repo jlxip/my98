@@ -2,8 +2,9 @@
 export function setupDisk(host) {
     const $ = id => document.getElementById("disk-" + id);
     let client, BufferClass, state, adapter, active = false, working = false, capturing = false, prepared = false;
-    let analyzing = false, analysisError;
-    const message = (text,error=false) => { $("status").textContent=text;$("status").classList.toggle("error",error); };
+    let analyzing = false, analysisError, stateAbort;
+    const stateSaveButton=document.getElementById("save-state"), stateLoadButton=document.getElementById("load-state"), stateCancelButton=document.getElementById("cancel-state");
+    const message = (text,error=false) => { $("status").textContent=text;$("status").classList.toggle("error",error); if(stateAbort) {const target=document.getElementById("session-status");target.textContent=text;target.classList.toggle("error",error);} };
     function syncControls(busy) {
         $("workspace").hidden=!client;$("login").hidden=!!client;
         $("brand").hidden=!!client;$("notice").hidden=!client;
@@ -22,7 +23,12 @@ export function setupDisk(host) {
         if(analyzing) for(const id of ["save", "download", "verify", "discard", "retry"]) $(id).disabled = true;
         $("retry").disabled ||= !prepared;
         $("resume").hidden=!adapter?.failed;$("resume").disabled=busy||working||!adapter?.failed;
-        $("cancel").hidden=!capturing;$("cancel").disabled=!capturing;
+        $("load-state").disabled=busy||working||!state||analyzing;
+        if(stateSaveButton) stateSaveButton.disabled=busy||working||!active||analyzing||!!adapter?.failed;
+        if(stateLoadButton) stateLoadButton.disabled=busy||working||!state||analyzing;
+        if(stateCancelButton) stateCancelButton.hidden=!stateAbort;
+        if(stateCancelButton) stateCancelButton.disabled=false;
+        $("cancel").hidden=!(capturing||stateAbort);$("cancel").disabled=!(capturing||stateAbort);
     }
     async function run(text,work) {
         if(working||host.busy())return;
@@ -48,6 +54,10 @@ export function setupDisk(host) {
                 message(analysisError, true);
                 void client.cancelBootAnalysis().then(() => { analyzing = false; syncControls(host.busy()); }).catch(error => message(error.message, true));
             },onProgress:p=>{
+                if(stateAbort) {
+                    const labels={compress:"Compressing state", "encrypt-state":"Encrypting state", "decrypt-state":"Decrypting state", "download-state":"Downloading state", decompress:"Decompressing state"};
+                    message(`${labels[p.phase] || "Preparing state"}: ${(p.completed/1048576).toFixed(1)} MiB…`);
+                }
                 if(capturing && p.phase==="resolve") message("Finding remote disk…");
                 else if(capturing) message(`${({verify:"Verifying",encrypt:"Encrypting",download:"Downloading",resolve:"Finding remote disk"})[p.phase]||"Working"}: ${(p.completed/1048576).toFixed(1)} MiB…`);
             }});
@@ -111,6 +121,31 @@ export function setupDisk(host) {
             throw error;
         }
     }
+    async function stateOperation(save) {
+        let file;
+        if(!save) {
+            [file]=await host.pickFiles();if(!file)return;
+            if(host.hasSession()&&!window.confirm("Replace the current session with this state? Changes made since it was saved will be lost."))return;
+        }
+        stateAbort=new AbortController();syncControls(true);
+        try {
+            if(save) {
+                const result=await host.captureState(client,stateAbort.signal);
+                const id=state.disk_id.slice(0,4).map(n=>n.toString(16).padStart(2,"0")).join("");
+                host.download(result.blob,`${id}.my98state`);
+                message("State download prepared. Keep the original base disk with this state.");
+            } else {
+                const result=await host.restoreState(client,file,stateAbort.signal);
+                adapter=result.adapter;state=result.description;active=true;prepared=false;
+                message("State restored. Pending disk writes were replaced by the saved state.");
+            }
+        } catch(error) {message(error.message,true);throw error;}
+        finally {stateAbort=undefined;state=await client.describe();}
+    }
+    $("load-state").onclick=()=>run("Restoring state…",()=>stateOperation(false));
+    if(stateLoadButton) stateLoadButton.onclick=$("load-state").onclick;
+    if(stateSaveButton) stateSaveButton.onclick=()=>run("Saving state…",()=>stateOperation(true));
+    if(stateCancelButton) stateCancelButton.onclick=()=>stateAbort?.abort();
     $("boot").onclick=()=>run("Booting encrypted disk…",()=>boot());
     $("analyze").onclick=()=>run(analyzing ? "Generating boot ranges…" : "Starting boot analysis…",async()=>{
         if(!analyzing) { await boot(true); return; }
@@ -137,7 +172,7 @@ export function setupDisk(host) {
         if(active){await host.stop();adapter?.dispose();adapter=undefined;await host.close();active=false;}
         state=await client.discardWrites();message("Writes discarded.");
     });
-    $("cancel").onclick=()=>{client?.cancel();message("Cancellation requested…");};
+    $("cancel").onclick=()=>{if(stateAbort)stateAbort.abort();else client?.cancel();message("Cancellation requested…");};
     $("close").onclick=()=>run("Closing identity…",async()=>{
         if(!window.confirm("Close the identity? Pending changes and the prepared download for this session will be lost."))return;
         if(active)await host.stop();adapter?.dispose();adapter=undefined;await host.close();active=false;

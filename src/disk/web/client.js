@@ -65,6 +65,17 @@ export class Slop86Disk {
     describe() {return this.call("describe");}
     read(offset,length) {return this.call("read", {offset,length});}
     write(offset,data) {const bytes=new Uint8Array(data).slice();return this.call("write", {offset,bytes}, [bytes.buffer]);}
+    saveState(state, metadata) {return this.call("saveState",{state,metadata},[state]);}
+    prepareState(input) {return this.call("prepareState",{input});}
+    commitState(token) {return this.call("commitState",{token});}
+    discardState(token) {return this.call("discardState",{token});}
+    stateDisk(token) {
+        const parent=this;
+        return {committed:false,
+            read(offset,length) {return this.committed ? parent.read(offset,length) : parent.call("candidateRead",{token,offset,length});},
+            write(offset,data) {if(!this.committed)throw new Error("State candidate is stopped");return parent.write(offset,data);},
+        };
+    }
     save() {return this.call("save");}
     downloadCurrent() {return this.call("download");}
     retryDownload() {return this.call("retry");}
@@ -146,6 +157,19 @@ export class DiskBuffer {
     }
     fail(error) { if(!this.failed) { this.failed = true; this.error = error; void this.onError?.(error); } }
     dispose() { this.disposed = true; for(const r of this.queue || []) r.bytes?.fill(0); this.queue = []; this.bootSector?.fill(0); this.bootSector = undefined; }
-    get_state() { throw new Error("Encrypted disks boot from disk; RAM snapshots are unavailable"); }
-    set_state() { throw new Error("RAM snapshots cannot replace encrypted disks"); }
+    async drain() {
+        while(this.pumping || this.queue?.length) {
+            if(this.failed || this.disposed)throw this.error || new Error("Disk adapter unavailable");
+            await new Promise(resolve=>setTimeout(resolve,0));
+        }
+        if(this.failed || this.disposed)throw this.error || new Error("Disk adapter unavailable");
+    }
+    get_state() {
+        if(!this.snapshotReady || this.pumping || this.queue?.length || this.failed)throw new Error("Capture requires a stopped, drained disk");
+        return [1,this.byteLength];
+    }
+    set_state(state) {
+        if(!this.snapshotReady || !Array.isArray(state) || state.length!==2 || state[0]!==1 || state[1]!==this.byteLength)throw new Error("Incompatible state disk adapter");
+        this.bootSector=undefined;
+    }
 }

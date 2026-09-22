@@ -636,3 +636,69 @@ fn read_only_open_cancellation_never_returns_a_candidate() {
         );
     });
 }
+
+#[test]
+fn state_overlay_is_transactional_and_bound_to_crypto_context() {
+    let io = Memory::default();
+    let mut e = engine();
+    create(&mut e, &io, vec![0; 4096]);
+    let other_io = Memory::default();
+    let mut other = engine();
+    create(&mut other, &other_io, vec![0; 4096]);
+    futures::executor::block_on(async {
+        let base = e.state_base(&io).await.unwrap();
+        e.write(&io, 17, &[42]).await.unwrap();
+        let overlay = e.state_overlay().unwrap();
+        e.write(&io, 17, &[99]).await.unwrap();
+        let mut restored = e.fork_state(&overlay).unwrap();
+        assert_eq!(restored.read(&io, 17, 1).await.unwrap(), vec![42]);
+        assert_eq!(e.read(&io, 17, 1).await.unwrap(), vec![99]);
+        restored.write(&io, 18, &[7]).await.unwrap();
+        assert_eq!(e.read(&io, 18, 1).await.unwrap(), vec![0]);
+        for n in [1, 11, overlay.len() - 1] {
+            assert!(e.fork_state(&overlay[..n]).is_err());
+        }
+        let mut duplicate = overlay.clone();
+        duplicate.extend(&overlay);
+        assert!(e.fork_state(&duplicate).is_err());
+        assert_eq!(e.read(&io, 17, 1).await.unwrap(), vec![99]);
+        let sealed = e.seal_state(&base, b"snapshot bytes".to_vec()).unwrap();
+        assert_eq!(e.open_state(&base, &sealed).unwrap(), b"snapshot bytes");
+        assert!(e.open_state(b"another state or index", &sealed).is_err());
+        let mut damaged = sealed.clone();
+        *damaged.last_mut().unwrap() ^= 1;
+        assert!(e.open_state(&base, &damaged).is_err());
+        assert!(other.open_state(&base, &sealed).is_err());
+    });
+}
+#[test]
+fn state_read_only_restores_but_cannot_export() {
+    let io = Memory::default();
+    let mut e = engine();
+    create(&mut e, &io, vec![0; 4096]);
+    futures::executor::block_on(async {
+        let key = e.export_read_key().unwrap();
+        let mut ro = Engine::open_read_only(
+            &io,
+            "base".into(),
+            io.bytes("base").len() as u64,
+            key.to_vec(),
+        )
+        .await
+        .unwrap();
+        e.write(&io, 10, &[12]).await.unwrap();
+        let overlay = e.state_overlay().unwrap();
+        let sealed = e.seal_state(b"context", b"state".to_vec()).unwrap();
+        assert_eq!(ro.open_state(b"context", &sealed).unwrap(), b"state");
+        assert_eq!(
+            ro.seal_state(b"context", vec![0]).unwrap_err().code,
+            "READ_ONLY"
+        );
+        assert_eq!(ro.state_overlay().unwrap_err().code, "READ_ONLY");
+        ro = ro.fork_state(&overlay).unwrap();
+        assert!(ro.describe().unwrap().read_only);
+        assert_eq!(ro.read(&io, 10, 1).await.unwrap(), vec![12]);
+        ro.write(&io, 10, &[13]).await.unwrap();
+        assert_eq!(ro.begin_save(&io).await.unwrap_err().code, "READ_ONLY");
+    });
+}
