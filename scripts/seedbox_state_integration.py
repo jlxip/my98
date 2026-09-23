@@ -80,6 +80,31 @@ def main():
             assert store.row(name)['seen_sequence']==seq
             wait();assert f.publish_state(state,'disk',namefile);replicate()
             root=store.row(name)['current']
+            # Profiles share a root with exactly the same disk/state CIDs.
+            profile=base/'load-profiles.json'
+            boot=dict(version=2,cid=diskcid,origin=dict(kind='boot'),unitBytes=65536,ranges=[[0,1]]+[None]*31)
+            saved=dict(boot,origin=dict(kind='state',sha256=s.hashlib.sha256(state.read_bytes()).hexdigest()))
+            original_parts=kubo.publication_parts(root)
+            profile.write_text(json.dumps([boot,saved]))
+            wait();assert f.publish_profile(profile,'disk',namefile);replicate()
+            root=store.row(name)['current']
+            assert kubo.publication_parts(root)==original_parts
+            seq=store.row(name)['seen_sequence'];assert f.publish_profile(profile,'disk',namefile)
+            assert store.row(name)['seen_sequence']==seq
+            boot['ranges']=[[1,2]]+[None]*31;profile.write_text(json.dumps([boot]))
+            wait();assert f.publish_profile(profile,'disk',namefile)
+            assert len(json.loads(publisher.cli('cat','/ipfs/'+store.row(name)['current']+'/load-profiles.json')))==2
+            state.write_bytes(state_bytes(disk.read_bytes(),3))
+            wait();assert f.publish_state(state,'disk',namefile)
+            assert json.loads(publisher.cli('cat','/ipfs/'+store.row(name)['current']+'/load-profiles.json'))==[boot]
+            wait();assert f.publish_state(None,'disk',namefile)
+            assert kubo.publication_parts(store.row(name)['current'])[1] is None
+            assert json.loads(publisher.cli('cat','/ipfs/'+store.row(name)['current']+'/load-profiles.json'))==[boot]
+            wait();assert f.publish_profile(None,'disk',namefile);assert store.row(name)['current']==diskcid
+            wait();assert f.publish_state(state,'disk',namefile)
+            saved['origin']['sha256']=s.hashlib.sha256(state.read_bytes()).hexdigest();profile.write_text(json.dumps([boot,saved]))
+            wait();assert f.publish_profile(profile,'disk',namefile);replicate()
+            root=store.row(name)['current']
             # Share only the fixture signing key, then renew the directory at same sequence.
             pem=base/'fixture.pem';publisher.cli('key','export','disk','-o',str(pem),daemon=False)
             replicas[0].cli('key','import','disk',str(pem),daemon=False);pem.unlink()
@@ -88,12 +113,13 @@ def main():
                 replica.cli('repo','gc')
                 assert replica.cli('cat','/ipfs/'+root+'/disk.my98',binary_output=True)==disk.read_bytes()
                 assert replica.cli('cat','/ipfs/'+root+'/state.my98state',binary_output=True)==state.read_bytes()
+                assert json.loads(replica.cli('cat','/ipfs/'+root+'/load-profiles.json'))==[boot,saved]
                 replica.cli('pin','verify','--verbose')
             rk=s.Kubo(args.ipfs,replicas[0].api);rs=s.Store(replicas[0].base/'state');rs.initialize(rk.identity())
             before=rs.row(name)['seen_sequence'];rs.update(name,renewed_at='2000-01-01T00:00:00+00:00')
             assert s.Follower(rs,rk).sync([name])
             assert rs.row(name)['seen_sequence']==before and rs.row(name)['renewed_sequence']==before
-            report=dict(ok=True,kubo=replicas[0].cli('version'),roots=roots,diskCid=diskcid,twoReplicas=True,offlineAfterGC=True,sameSequenceRenewal=True,replaceAndClear=True,invalidStateRejected=True)
+            report=dict(ok=True,kubo=replicas[0].cli('version'),roots=roots,diskCid=diskcid,twoReplicas=True,offlineAfterGC=True,sameSequenceRenewal=True,replaceAndClear=True,invalidStateRejected=True,profilesMergeReplaceClear=True,profilesReplicatedOffline=True)
             Path(args.output).write_text(json.dumps(report,indent=2)+'\n')
             print(json.dumps(report,indent=2))
         finally:

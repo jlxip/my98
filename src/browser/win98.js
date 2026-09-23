@@ -435,7 +435,7 @@ diskController = setupDisk({
     async captureState(disk, signal) {
         return captureMachineState({machine:emulator,adapter:machineAdapter,disk,config:machineConfig,compatibility:await compatibility(),signal});
     },
-    async restoreState(disk, input, signal) {
+    async restoreState(disk, input, signal, {analyze=false}={}) {
         const previous=emulator, previousAdapter=machineAdapter;
         const container=document.createElement("div");
         container.innerHTML="<div></div><canvas></canvas>";
@@ -459,7 +459,9 @@ diskController = setupDisk({
             emulator.add_listener("screen-set-size",fitScreen);
             emulator.add_listener("emulator-started",updateControls);
             emulator.add_listener("emulator-stopped",updateControls);
-            if(restored.running)emulator.run();
+            if(analyze)await disk.startLoadAnalysis({origin:'restored'});
+            await disk.setLoadPrefetch({origin:'restored',scope:'disk'});
+            if(restored.running || analyze)emulator.run();
             fitScreen();status("State restored.");
             return restored;
         } finally {container.remove();}

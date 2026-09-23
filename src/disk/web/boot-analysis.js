@@ -6,9 +6,10 @@ const fail = (code, message) => Object.assign(new Error(message), {code});
 
 // Demand coordinates only: independent of caches, network traffic and writes.
 export class BootAnalysis {
-    constructor(cid, size) {
+    constructor(cid, size, origin) {
         this.cid = cid;
         this.size = size;
+        this.origin = origin;
         this.units = new Set();
         this.recording = true;
     }
@@ -31,6 +32,6 @@ export class BootAnalysis {
         if(this.overflow) throw fail('ANALYSIS_INCOMPLETE', 'Analysis exceeded 200,000 distinct blocks. No partial profile was exported.');
         // Preserve the frozen set if generation throws, so retries use the same reads.
         const {details, rankSum, ...profile} = selectBootRanges([...this.units]);
-        return [{version:1, cid:this.cid, unitBytes:UNIT, ...profile}];
+        return [{version:this.origin ? 2 : 1, cid:this.cid, ...(this.origin ? {origin:this.origin} : {}), unitBytes:UNIT, ...profile}];
     }
 }

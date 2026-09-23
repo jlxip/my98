@@ -121,20 +121,21 @@ try {
             assert.deepEqual(analysis.fresh[0].ranges.filter(Boolean), [[3, 3]]);
             assert.equal(await page.locator('#disk-analyze').isEnabled(), true);
             await page.locator('#disk-analyze').click();
+            await page.locator('#disk-analyze-boot').click();
             await page.waitForFunction(() => document.querySelector('#disk-analyze').textContent === 'Stop analyzing' && !document.querySelector('#disk-analyze').disabled);
             assert.equal(await page.locator('#vm-view').evaluate(e=>e.classList.contains('expanded')), false);
             assert.equal(await page.evaluate(()=>!!(document.fullscreenElement || document.webkitFullscreenElement)), false);
             for(const id of ['save', 'download', 'verify', 'discard', 'retry']) assert.equal(await page.locator('#disk-' + id).isDisabled(), true);
-            const jsonPath = `build/pages-tests/${name}-boot-ranges.json`;
+            const jsonPath = `build/pages-tests/${name}-load-profile.json`;
             const [jsonDownload] = await Promise.all([page.waitForEvent('download'), page.locator('#disk-analyze').click()]);
-            assert.match(jsonDownload.suggestedFilename(), /^[0-9a-f]{8}-boot-ranges\.json$/);
+            assert.match(jsonDownload.suggestedFilename(), /^[0-9a-f]{8}-load-profile\.json$/);
             await jsonDownload.saveAs(jsonPath);
             const [profile] = JSON.parse(await readFile(jsonPath, 'utf8'));
-            assert.equal(profile.cid, analysis.cid); assert.equal(profile.ranges.length, 32);
+            assert.equal(profile.version,2); assert.deepEqual(profile.origin,{kind:'boot'}); assert.equal(profile.cid, analysis.cid); assert.equal(profile.ranges.length, 32);
             assert.ok(profile.observedUnits > 0); assert.equal(profile.minUtilization, 0.5);
             assert.equal(await page.locator('#pause').textContent(), 'Pause');
-            assert.equal(await page.locator('#disk-analyze').textContent(), 'Analyze boot');
-            assert.equal(await page.locator('#disk-analyze').isDisabled(), true);
+            assert.equal(await page.locator('#disk-analyze').textContent(), 'Analyze loads');
+            assert.equal(await page.locator('#disk-analyze').isDisabled(), false);
             // Pause/resume still operates on the same live VM after analysis.
             await page.locator('#pause').click(); await page.waitForFunction(() => document.querySelector('#pause').textContent === 'Resume');
             await page.locator('#pause').click(); await page.waitForFunction(() => document.querySelector('#pause').textContent === 'Pause');

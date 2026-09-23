@@ -54,10 +54,19 @@
                 <button id="disk-download" class="btn" data-variant="secondary">Download full disk</button>
             </div>
             <div class="disk-action-row">
-                <button id="disk-analyze" class="btn" data-variant="secondary">Analyze boot</button>
+                <button id="disk-analyze" class="btn" data-variant="secondary">Analyze loads</button>
                 <button id="disk-retry" class="btn" data-variant="secondary">Retry download</button>
                 <button id="disk-verify" class="btn" data-variant="secondary">Verify full disk</button>
                 <button id="disk-close" class="btn" data-variant="secondary">Close identity</button>
+            </div>
+            <div id="disk-analysis-options" hidden>
+                <p class="hint">Choose the starting point. Perform the expected actions, then stop analyzing to download its load profile.</p>
+                <div class="disk-action-row">
+                    <button id="disk-analyze-boot" class="btn" data-variant="secondary">Boot</button>
+                    <button id="disk-analyze-resume" class="btn" data-variant="secondary">Resume state</button>
+                    <button id="disk-analyze-file" class="btn" data-variant="secondary">Load state</button>
+                    <button id="disk-analyze-cancel" class="btn" data-variant="secondary">Cancel</button>
+                </div>
             </div>
         </div>
         <button id="disk-resume" hidden class="btn" data-variant="secondary">Retry and resume</button>

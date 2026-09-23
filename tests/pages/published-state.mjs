@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import {readFile,writeFile,mkdir} from 'node:fs/promises';
 import {chromium,webkit} from 'playwright';
 import {serveSite,quietAudio} from './server.mjs';
@@ -31,7 +32,7 @@ for(const [name,type] of Object.entries({chromium,webkit})) {
   console.log(name,'publish fixture');
   const publication=await fixture.publishState(await readFile(path));
   await page.close();
-  const p=await context.newPage();p.on('pageerror',e=>errors.push(String(e)));
+  const p=await context.newPage();p.on('pageerror',e=>errors.push(String(e)));p.on('dialog',d=>d.accept());
   async function prepare() {
    await p.goto(server.url);await p.waitForFunction(()=>!document.body.inert);
    await p.evaluate(async gateway=>{
@@ -69,6 +70,23 @@ for(const [name,type] of Object.entries({chromium,webkit})) {
   await p.locator('#disk-resume-state').click();
   await p.waitForFunction(()=>document.querySelector('#disk-status').textContent.includes('State restored'));
   assert.equal(await p.evaluate(()=>vm.v86.cpu.mem8[0x70000]),41);
+  // Record from both the exact published origin and the same local file before its first run.
+  const expectedHash=createHash('sha256').update(await readFile(path)).digest('hex');
+  for(const origin of ['resume','file']) {
+   await p.locator('#disk-analyze').click();
+   if(origin==='resume')await p.screenshot({path:`build/published-state/${name}-analysis-options.png`});
+   if(origin==='file') {
+    const chooser=p.waitForEvent('filechooser');await p.locator('#disk-analyze-file').click();await(await chooser).setFiles(path);
+   }else await p.locator('#disk-analyze-resume').click();
+   await p.waitForFunction(()=>document.querySelector('#disk-analyze').textContent==='Stop analyzing' && !document.querySelector('#disk-analyze').disabled);
+   assert.equal(await p.evaluate(()=>vm.is_running()),true);
+   assert.equal(await p.evaluate(()=>vm.v86.cpu.mem8[0x70000]),41);
+   assert.equal(await p.evaluate(async()=>(await disk.read(10000,1))[0]),42);
+   const dl=p.waitForEvent('download');await p.locator('#disk-analyze').click();
+   const target=`build/published-state/${name}-${origin}-load-profile.json`;await(await dl).saveAs(target);
+   const [profile]=JSON.parse(await readFile(target,'utf8'));
+   assert.deepEqual(profile.origin,{kind:'state',sha256:expectedHash});assert.equal(profile.cid,publication.diskCid);
+  }
   // API read-only directory root; disk-only references still work and have no state.
   console.log(name,'read-only');
   const api=await p.evaluate(async({publication,readKey,gateway})=>{

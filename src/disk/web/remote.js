@@ -1,5 +1,6 @@
 import {AdaptivePrefetchOrder, adaptivePolicies} from './prefetch-order.js';
 import {matchingRanges, RangePrefetchOrder} from './range-prefetch.js';
+import {MAX_PROFILE_BYTES, sameOrigin, validateLoadProfiles} from './load-profiles.js';
 import {CID} from 'multiformats/cid';
 import {sha256} from 'multiformats/hashes/sha2';
 import {resolveIpns} from './resolution.js';
@@ -37,6 +38,7 @@ export class RemoteDisk {
         this.trace = [];
         this.traceDropped = 0;
         this.prefetchState = 'idle';
+        this.loadGeneration = 0;
         this.configurePrefetch(prefetch);
     }
     configurePrefetch({enabled = true, policy = 'auto', concurrency = 8, trace = false, bootProfile} = {}) {
@@ -60,12 +62,15 @@ export class RemoteDisk {
             inFlight:jobs.filter(j=>j.state === 'active').length, queued:jobs.filter(j=>j.state === 'queued').length,
             prefetchState:this.prefetchState, prefetchError:this.prefetchError,
             rangeProfile:this.rangeOrder?.stats(),
+            loadProfile:this.load ? {...this.load, selected:this.load.selected ? {cid:this.load.selected.cid,origin:this.load.selected.origin} : undefined,
+                status:this.load.selected && this.rangeOrder?.stats().completedUnits===this.rangeOrder?.stats().units ? 'complete' : this.load.status} : undefined,
             endpoints:[...this.endpoints.values()].map(({url,active,validBytes,failures,rate,cooldownUntil,excluded})=>({url,active,validBytes,failures,bytesPerMs:rate,cooldownUntil,excluded})),
             discovery:{...this.discovery}, policy:this.policy, concurrency:this.concurrency, traceDropped:this.traceDropped};
     }
     // Called only after the encrypted header has been authenticated by the Vault.
     startPrefetch() {
         if(this.closed || !this.entry || this.stateDownloads) return;
+        if(this.load?.needsReload && this.load.scope!=='none') {this.setLoadPrefetch(this.load.origin,this.load.scope);return;}
         if(!this.coverage) {
             this.coverage = new Uint8Array(Math.ceil((this.size - HEADER) / RECORD));
             this.completedUnits = 0;
@@ -78,22 +83,77 @@ export class RemoteDisk {
             this.rangeOrder=this.policy==='ranges' && ranges ? new RangePrefetchOrder(ranges,this.coverage) : undefined;
             this.adaptiveOrder = adaptivePolicies.includes(this.policy) ? new AdaptivePrefetchOrder(this.policy,this.coverage) : undefined;
         }
-        if(!this.prefetchEnabled || this.prefetchState === 'complete') return;
+        if(!this.prefetchEnabled || this.prefetchState === 'complete' || this.load?.status==='loading') return;
         this.prefetchState = 'running';
         this.prefetchError = undefined;
         this.kickPrefetch();
     }
+    // Short control operation: optional metadata and ranges never occupy the Worker RPC queue.
+    setLoadPrefetch(origin, scope) {
+        if(!['none','profile','disk'].includes(scope))throw fail('OPERATION_FAILED','Invalid load prefetch scope.');
+        if(this.load && sameOrigin(this.load.origin,origin) && !this.load.needsReload && scope!=='none') {
+            this.load.scope=scope;this.prefetchEnabled=true;
+            if(this.prefetchState==='complete' && this.completedUnits!==this.coverage?.length)this.prefetchState='stopped';
+            this.startPrefetch();return;
+        }
+        this.loadGeneration++;
+        this.profileController?.abort();this.prefetchController?.abort();
+        this.prefetchState='stopped';this.prefetchEnabled=false;
+        this.load=undefined;
+        this.startPrefetch(); // Establish coverage even when no speculation is requested.
+        this.rangeOrder=this.adaptiveOrder=undefined;this.policy='demand';
+        this.load={origin:{...origin},scope,status:scope==='none'?'disabled':'loading',needsReload:scope==='none'};
+        if(scope==='none')return;
+        this.prefetchEnabled=true;
+        const generation=this.loadGeneration, controller=new AbortController();
+        this.profileController=controller;
+        const timer=setTimeout(()=>controller.abort(),this.timeoutMs);
+        this.profileTask=(async()=>{
+            if(!this.profilesCid) {this.load.status='missing';return;}
+            const store={get:(cid,options)=>this.get(cid,{...options,signal:controller.signal,priority:'background'})};
+            const entry=await exporter(this.profilesCid,store,{signal:controller.signal,blockReadConcurrency:1});
+            if(!['file','raw','identity'].includes(entry.type))throw fail('INVALID_PROFILE','Load profiles must be a file.');
+            const size=Number(entry.type==='file'?entry.unixfs.fileSize():entry.size);
+            if(!Number.isSafeInteger(size) || size>MAX_PROFILE_BYTES)throw fail('INVALID_PROFILE','Load profiles exceed 64 KiB.');
+            const data=new Uint8Array(size);let offset=0;
+            for await(const bytes of entry.content({signal:controller.signal,blockReadConcurrency:1})) {
+                if(offset+bytes.length>size)throw fail('INVALID_PROFILE','Invalid load profile size.');
+                data.set(bytes,offset);offset+=bytes.length;
+            }
+            check(controller.signal);
+            if(generation!==this.loadGeneration)return;
+            if(offset!==size)throw fail('INVALID_PROFILE','Incomplete load profiles.');
+            const profiles=validateLoadProfiles(JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(data)),this.remote.cid,this.coverage.length);
+            const selected=profiles.find(p=>sameOrigin(p.origin,origin));
+            this.load.selected=selected;this.load.status=selected?'ready':'mismatch';
+            if(selected) {
+                this.rangeOrder=new RangePrefetchOrder(matchingRanges({...selected,version:1},this.remote.cid,this.coverage.length),this.coverage);
+                this.policy='ranges';
+            }
+        })().catch(error=>{
+            if(generation!==this.loadGeneration)return;
+            this.load.status=error.code==='INVALID_PROFILE' || error instanceof SyntaxError || error instanceof TypeError ? 'invalid' : 'failed';
+            this.load.error={code:error.code || 'IO_ERROR',message:error.message};
+        }).finally(()=>{
+            clearTimeout(timer);
+            if(generation!==this.loadGeneration || this.closed)return;
+            this.profileController=undefined;
+            this.startPrefetch();
+        });
+    }
     kickPrefetch() {
-        if(this.prefetchLoop || this.prefetchState !== 'running' || this.closed) return;
-        const epoch = this.epoch;
+        if(this.prefetchLoop || this.prefetchState !== 'running' || this.closed || this.load?.status==='loading') return;
+        const epoch = this.epoch, generation=this.loadGeneration, controller=new AbortController();
+        this.prefetchController=controller;
         this.prefetchLoop = (async()=>{
             // Let openRemote return, and allow an immediately queued guest read first.
             await new Promise(r=>setTimeout(r, 0));
-            if(epoch !== this.epoch) return;
-            if(!this.headerCovered) await this.read(0,HEADER,undefined,'background');
+            if(epoch !== this.epoch || generation!==this.loadGeneration) return;
+            if(!this.headerCovered) await this.read(0,HEADER,controller.signal,'background');
             let yielded = performance.now();
-            while(epoch === this.epoch && this.prefetchState === 'running') {
+            while(epoch === this.epoch && generation===this.loadGeneration && this.prefetchState === 'running') {
                 let index = this.rangeOrder?.next() ?? -1;
+                if(index<0 && this.load?.scope==='profile') {this.prefetchState='complete';break;}
                 if(this.policy === 'head-demand') {
                     for(let i=0;i<Math.min(16,this.coverage.length);i++) if(!this.coverage[i]) {index=i;break;}
                 }
@@ -121,17 +181,18 @@ export class RemoteDisk {
                     const maxUnits=Math.max(1,Math.floor(8*BLOCK_LIMIT/RECORD));
                     while(last<bound && last-index+1<maxUnits && !this.coverage[last+1]) last++;
                 }
-                await this.read(HEADER + index * RECORD, Math.min((last-index+1)*RECORD, this.size - HEADER - index * RECORD), undefined, 'background', false);
+                await this.read(HEADER + index * RECORD, Math.min((last-index+1)*RECORD, this.size - HEADER - index * RECORD), controller.signal, 'background', false);
                 if(epoch !== this.epoch) break;
                 if(!bootstrap && (this.policy === 'sequential' || demand === this.lastDemand)) this.cursor = (last + 1) % this.coverage.length;
                 if(performance.now() - yielded > 8) {await new Promise(r=>setTimeout(r,0));yielded=performance.now();}
             }
         })().catch(error=>{
-            if(epoch !== this.epoch || this.closed) return;
+            if(epoch !== this.epoch || generation!==this.loadGeneration || this.closed) return;
             this.prefetchState='paused';
             this.prefetchError={code:error.code || 'IO_ERROR',message:error.message};
         }).finally(()=>{
             this.prefetchLoop = undefined;
+            if(this.prefetchController===controller)this.prefetchController=undefined;
             this.kickPrefetch();
         });
     }
@@ -156,6 +217,9 @@ export class RemoteDisk {
         if(this.policy!=='sequential') this.cursor=(Math.floor((offset+length-1)/65536)+1)%this.coverage.length;
     }
     cancel() {
+        this.loadGeneration++;
+        this.profileController?.abort();this.prefetchController?.abort();
+        if(this.load?.status==='loading') {this.load.status='cancelled';this.load.needsReload=true;}
         this.resolutionController?.abort();
         this.discoveryController?.abort();
         if(this.discovery.state === 'running') this.discovery.state = 'cancelled';
@@ -459,16 +523,18 @@ export class RemoteDisk {
         check(signal);
         this.entry = await exporter(path, this, {signal, blockReadConcurrency:1});
         this.stateCid = undefined;
+        this.profilesCid = undefined;
         if(this.entry.type === 'directory') {
             const entries = new Map();
             for await(const entry of this.entry.entries({signal, blockReadConcurrency:1})) {
-                if(entries.size >= 2 || !['disk.my98','state.my98state'].includes(entry.name) || entries.has(entry.name)) throw fail('UNSUPPORTED_FORMAT', 'Unsupported publication directory.');
+                if(entries.size >= 3 || !['disk.my98','state.my98state','load-profiles.json'].includes(entry.name) || entries.has(entry.name)) throw fail('UNSUPPORTED_FORMAT', 'Unsupported publication directory.');
                 entries.set(entry.name,entry);
             }
-            if(entries.size !== 2) throw fail('UNSUPPORTED_FORMAT', 'Incomplete publication directory.');
+            if(!entries.has('disk.my98')) throw fail('UNSUPPORTED_FORMAT', 'Incomplete publication directory.');
             this.entry = await exporter(entries.get('disk.my98').cid,this,{signal,blockReadConcurrency:1});
             const state = entries.get('state.my98state');
-            this.stateCid = state.cid.toString();
+            this.stateCid = state?.cid.toString();
+            this.profilesCid = entries.get('load-profiles.json')?.cid.toString();
         }
         check(signal);
         if(!['file','raw','identity'].includes(this.entry.type)) throw fail('UNSUPPORTED_FORMAT', 'The reference does not identify a file.');
@@ -551,6 +617,6 @@ export class RemoteDisk {
             this.schedule();
         }
     }
-    clearCache() {this.cancel();this.blocks.clear();this.cacheBytes=0;this.headerCovered=false;this.coverage=undefined;this.adaptiveOrder=undefined;this.rangeOrder=undefined;this.completedUnits=this.coveredBytes=0;}
+    clearCache() {this.cancel();if(this.load)this.load.needsReload=true;this.blocks.clear();this.cacheBytes=0;this.headerCovered=false;this.coverage=undefined;this.adaptiveOrder=undefined;this.rangeOrder=undefined;this.completedUnits=this.coveredBytes=0;}
     close() {this.closed=true;this.clearCache();this.providers.clear();this.endpoints.clear();this.prefetchState='closed';this.entry=undefined;}
 }

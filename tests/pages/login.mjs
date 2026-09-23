@@ -64,6 +64,7 @@ for(const [name, type] of Object.entries({chromium, webkit})) {
                 },
                 async openRemote(value) {
                     calls.push(["open",value.gateway]);
+                    check('opening defers prefetch until origin selection',value.prefetch.enabled===false);
                     if(failAt==="open")throw Error("Remote unavailable");
                     if(failAt==="wait-remote") {
                         options.onProgress({phase:"resolve"});
@@ -75,6 +76,10 @@ for(const [name, type] of Object.entries({chromium, webkit})) {
                 async close() {calls.push(["close"]);},
                 cancel() {calls.push(["cancel"]);remoteReject(Object.assign(Error("Cancelled"),{code:"CANCELLED"}));},
                 async resumePrefetch() {},
+                async setLoadPrefetch(value) {
+                    calls.push(["prefetch"]);
+                    check('boot selects its profile before full prefetch',value.origin==='boot' && value.scope==='disk');
+                },
             };
             Slop86Disk.create=async value=>{options=value;return client;};
             window.confirm=()=>true;
@@ -97,7 +102,7 @@ for(const [name, type] of Object.entries({chromium, webkit})) {
             await close();
             check('logout restores login and default boot',!$('login').hidden && $('workspace').hidden && $('autoboot').checked);
             fill(true);submit();await idle();
-            check('checked opens and boots exactly once in order',sequence()==='unlock,open,read,boot' && calls[1][1]===undefined && session);
+            check('checked opens and boots exactly once in order',sequence()==='unlock,open,prefetch,read,boot' && calls[1][1]===undefined && session);
             await close();
             failAt='unlock';fill(true);submit();await idle();
             check('unlock failure disposes candidate and retains login',sequence()==='unlock,close' && !$('login').hidden && $('status').textContent==='Unlock failed');
@@ -108,20 +113,20 @@ for(const [name, type] of Object.entries({chromium, webkit})) {
             check('disk without published state keeps resume disabled',$('resume-state').disabled);
             await close();
             failAt='boot';fill(true);submit();await idle();
-            check('boot failure preserves authenticated disk',sequence()==='unlock,open,read,boot' && !$('boot').disabled && $('remote').disabled && $('status').textContent==='Boot failed');
+            check('boot failure preserves authenticated disk',sequence()==='unlock,open,prefetch,read,boot' && !$('boot').disabled && $('remote').disabled && $('status').textContent==='Boot failed');
             failAt='';$('boot').onclick();await idle();
-            check('boot retry reuses opened disk',sequence()==='unlock,open,read,boot,read,boot' && session);
+            check('boot retry reuses opened disk',sequence()==='unlock,open,prefetch,read,boot,prefetch,read,boot' && session);
             await close();
             failAt='wait-unlock';fill(true);submit();await wait(()=>!!unlockRelease);
             submit();check('duplicate submit does not unlock twice',sequence()==='unlock' && $('user').disabled);
-            unlockRelease();await idle();check('one full boot after duplicate',sequence()==='unlock,open,read,boot');
+            unlockRelease();await idle();check('one full boot after duplicate',sequence()==='unlock,open,prefetch,read,boot');
             await close();
             failAt='wait-remote';fill(true);submit();await wait(()=>!!remoteReject);
             check('remote progress and cancellation exposed',!$('cancel').hidden && !$('cancel').disabled && $('status').textContent==='Finding remote disk…');
             $('cancel').onclick();await idle();
             check('cancel preserves identity, stops before boot and releases controls',sequence()==='unlock,open,cancel' && !$('workspace').hidden && !$('remote').disabled && $('boot').disabled && $('cancel').hidden && $('status').textContent.includes('cancelled'));
             failAt='';$('remote').onclick();await idle();$('boot').onclick();await idle();
-            check('cancelled open can be retried and booted',session && sequence()==='unlock,open,cancel,open,read,boot');
+            check('cancelled open can be retried and booted',session && sequence()==='unlock,open,cancel,open,prefetch,read,boot');
             await close();
             return checks;
         });

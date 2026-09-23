@@ -27,7 +27,7 @@ export async function diskFixture({isolated=false} = {}) {
     let record = marshalIPNSRecord(await createIPNSRecord(signer, "/ipfs/" + cid, 1n, 3600000, { v1Compatible: false }));
     const blocks=new Map([[cid,block]]), delays=new Map(), timers=new Set();let sequence=1n;
     async function addBlock(bytes,code=0x55) {const id=CID.createV1(code,await sha256.digest(bytes));blocks.set(id.toString(),bytes);return id;}
-    async function publishState(bytes, diskBytes=block) {
+    async function publishState(bytes, diskBytes=block, profiles) {
         const baseCid=await addBlock(diskBytes);
         const links=[],unixfs=new UnixFS({type:"file"});
         for(let i=0;i<bytes.length;i+=262144) {
@@ -36,13 +36,15 @@ export async function diskFixture({isolated=false} = {}) {
         }
         const file=dagPB.encode(dagPB.prepare({Data:unixfs.marshal(),Links:links}));
         const stateCid=await addBlock(file,0x70);
+        const profilesCid=profiles===undefined ? undefined : await addBlock(profiles instanceof Uint8Array ? profiles : new TextEncoder().encode(JSON.stringify(profiles)));
         const directory=dagPB.encode(dagPB.prepare({Data:new UnixFS({type:"directory"}).marshal(),Links:[
             {Name:"disk.my98",Hash:baseCid,Tsize:diskBytes.length},
             {Name:"state.my98state",Hash:stateCid,Tsize:file.length+bytes.length},
+            ...(profilesCid ? [{Name:'load-profiles.json',Hash:profilesCid,Tsize:blocks.get(profilesCid.toString()).length}] : []),
         ]}));
         const root=await addBlock(directory,0x70);
         record=marshalIPNSRecord(await createIPNSRecord(signer,"/ipfs/"+root,++sequence,3600000,{v1Compatible:false}));
-        return {publicationCid:root.toString(),stateCid:stateCid.toString(),diskCid:baseCid.toString()};
+        return {publicationCid:root.toString(),stateCid:stateCid.toString(),diskCid:baseCid.toString(),profilesCid:profilesCid?.toString()};
     }
     const requests = [];
     const server = createServer((req, res) => {

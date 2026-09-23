@@ -1,12 +1,16 @@
-export interface DiskState {readOnly:boolean;size:number;disk_id:number[];dirty_bytes:number;dirty_sectors:number;cache_bytes:number;revision:number;remote?:{ipnsName?:string;path:string;cid:string;sequence?:string;gateway:string;rootCid?:string;resolutionServer?:string};}
+export interface DiskState {readOnly:boolean;size:number;disk_id:number[];dirty_bytes:number;dirty_sectors:number;cache_bytes:number;revision:number;remote?:{ipnsName?:string;path:string;cid:string;sequence?:string;gateway:string;rootCid?:string;stateCid?:string;resolutionServer?:string};}
 export interface PreparedDownload {id:number;blob:Blob;size:number;}
 export interface SavedDisk extends DiskState {outcome:"created"|"unchanged";download?:PreparedDownload;}
 export interface BootRangeProfile {version:1;cid:string;unitBytes:65536;ranges:([number,number]|null)[];}
 export interface GeneratedBootRangeProfile extends BootRangeProfile {minUtilization:number;observedUnits:number;coveredUnits:number;downloadUnits:number;}
+export type LoadOrigin = {kind:"boot"}|{kind:"state";sha256:string};
+export interface LoadRangeProfile extends Omit<GeneratedBootRangeProfile,"version"> {version:2;origin:LoadOrigin;}
+export interface LoadPrefetchOptions {origin:"boot"|"restored";scope:"none"|"profile"|"disk";}
+export interface LoadProfileStats {origin:LoadOrigin;scope:"none"|"profile"|"disk";status:"disabled"|"loading"|"missing"|"mismatch"|"ready"|"complete"|"invalid"|"failed"|"cancelled";selected?:{cid:string;origin:LoadOrigin};error?:{code:string;message:string};}
 export interface PrefetchOptions {enabled?:boolean;policy?:'auto'|'sequential'|'demand'|'head-demand'|'fresh-demand'|'nearby'|'streams'|'ranges';bootProfile?:BootRangeProfile;concurrency?:1|2|3|4|5|6|7|8;trace?:boolean;}
 export interface DiscoveryStats {state:'idle'|'skipped'|'running'|'complete'|'limited'|'failed'|'cancelled';providers:number;verifiedProviders:number;verifiedEndpoints:number;endpointsTested?:number;receivedBytes?:number;limits?:string[];failures?:{stage:string;target:string;code:string;message:string}[];error?:{code:string;message:string};}
 export interface EndpointStats {url:string;active:number;validBytes:number;failures:number;bytesPerMs:number;cooldownUntil:number;excluded:boolean;}
-export interface RemoteStats {endpoints:EndpointStats[];discovery:DiscoveryStats;rangeProfile?:{ranges:number;units:number;completedUnits:number};retainedBytes:number;coveredBytes:number;totalBytes:number;completedUnits:number;totalUnits:number;inFlight:number;queued:number;prefetchState:'idle'|'running'|'paused'|'stopped'|'complete'|'closed';prefetchError?:{code:string;message:string};policy:string;concurrency:number;traceDropped:number;}
+export interface RemoteStats {loadProfile?:LoadProfileStats;endpoints:EndpointStats[];discovery:DiscoveryStats;rangeProfile?:{ranges:number;units:number;completedUnits:number};retainedBytes:number;coveredBytes:number;totalBytes:number;completedUnits:number;totalUnits:number;inFlight:number;queued:number;prefetchState:'idle'|'running'|'paused'|'stopped'|'suspended'|'complete'|'closed';prefetchError?:{code:string;message:string};policy:string;concurrency:number;traceDropped:number;}
 export interface DiskTraceEvent {type:string;unit?:number;policy?:string;time:number;offset?:number;length?:number;ms?:number;cid?:string;gateway?:string;priority?:string;hit?:boolean;bytes?:number;code?:string;}
 export interface QueryServer {url:string;resolution:'gateway'|'routing'|false;discovery:boolean;}
 /** Extract the public identity from a v2 credential, validating its encoding. */
@@ -32,6 +36,10 @@ export class Slop86Disk {
  discardWrites():Promise<DiskState>;
  readStats():Promise<{readBytes:number;readCalls:number;networkBytes:number;networkRequests:number;blockCacheBytes:number;remote?:RemoteStats}>;
  readTrace():Promise<DiskTraceEvent[]>;
+ startLoadAnalysis(options:{origin:"boot"|"restored"}):Promise<void>;
+ finishLoadAnalysis():Promise<LoadRangeProfile[]>;
+ cancelLoadAnalysis():Promise<void>;
+ setLoadPrefetch(options:LoadPrefetchOptions):Promise<void>;
  startBootAnalysis():Promise<void>;
  finishBootAnalysis():Promise<GeneratedBootRangeProfile[]>;
  cancelBootAnalysis():Promise<void>;

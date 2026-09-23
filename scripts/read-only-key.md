@@ -10,12 +10,17 @@ python3 scripts/read-only-key.py [--gateway URL]
 Requires Python 3 and Node.js 24 or later. The command never installs or builds
 anything automatically. Enter username, hidden password and machine (`main` by
 default). Prompts, progress and errors go to stderr. On success stdout is exactly
-one JSON object with `ipnsName`, `cid` and `readKey`. When a state is published it also includes
-`publicationCid`, the directory containing the base disk and its state; `cid`
+one JSON object with `ipnsName`, `cid` and `readKey`. When a publication directory is used it also includes
+`publicationCid`, the directory containing the base disk and optional state/profiles; `cid`
 continues to identify the disk file. Pass `publicationCid` as the `cid` argument
 to `openReadOnly` to discover the state, then use `prepareState({published:true})`
 through the machine-state restoration API. Failures return a nonzero status without
 JSON. Ctrl-C cancels and closes the helper.
+
+The directory may additionally contain optional [load profiles](load-profiles.md).
+They do not change credential export or state authentication. Consumers can select
+`setLoadPrefetch({origin:"restored",scope:"profile"})` after restoration, before
+running the VM; this schedules background work without waiting for the profile.
 
 The command verifies the published IPNS record, pins the file CID, authenticates
 the disk header and decrypts the first block. Prefetch is disabled. By default it

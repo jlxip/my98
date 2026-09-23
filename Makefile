@@ -93,6 +93,7 @@ read-only-key-test: disk
 prefetch-test: disk
 	node --test src/disk/scripts/range-profile.test.mjs
 	node --test src/disk/scripts/boot-analysis.test.mjs
+	node --test src/disk/scripts/load-profiles.test.mjs
 	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo run --manifest-path src/disk/Cargo.toml --locked --release --example compat
 	node src/disk/browser-tests/prefetch-run.mjs
 
@@ -120,6 +121,7 @@ site-test: site
 	node scripts/run-browser-test.mjs tests/pages/resolution.mjs
 	node scripts/run-browser-test.mjs tests/pages/discovery.mjs
 	node scripts/run-browser-test.mjs tests/pages/boot-analysis.mjs
+	node scripts/run-browser-test.mjs tests/pages/load-profiles.mjs
 	node scripts/run-browser-test.mjs tests/pages/published-state.mjs
 	node scripts/run-browser-test.mjs tests/pages/published-state-network.mjs
 	node scripts/run-browser-test.mjs tests/pages/state-api.mjs

@@ -99,6 +99,10 @@ export class Slop86Disk {
     startBootAnalysis() {return this.call("startBootAnalysis");}
     finishBootAnalysis() {return this.call("finishBootAnalysis");}
     cancelBootAnalysis() {return this.call("cancelBootAnalysis");}
+    startLoadAnalysis({origin}={}) {return this.call("startLoadAnalysis",{origin});}
+    finishLoadAnalysis() {return this.call("finishLoadAnalysis");}
+    cancelLoadAnalysis() {return this.call("cancelLoadAnalysis");}
+    setLoadPrefetch({origin,scope}) {return this.call("setLoadPrefetch",{origin,scope});}
     resumePrefetch() {return this.call("resumePrefetch");}
     clearCaches() {return this.call("clearCaches");}
     cancel() {

@@ -801,10 +801,13 @@ class StatePublishing(unittest.TestCase):
         Publishing.setUp(self)
         self.directories = {}
         self.parts = {}
+        self.profile_parts = {}
+        self.content = {}
         self.kubo.canonical = lambda cid, fds=(): cid
         self.kubo.call = self.call
         self.kubo.remove_staging = lambda path, fds=(): self.directories.pop(path, None)
-        self.kubo.publication_parts = lambda cid, fds=(): (*self.parts.get(cid, (cid, None)), disk_bytes()[:198])
+        self.kubo.publication_parts = lambda cid, fds=(), profiles=False: (*self.parts.get(cid, (cid, None)), disk_bytes()[:198], *([self.profile_parts.get(cid)] if profiles else []))
+        self.kubo.state_hash = lambda cid, fds=(): s.hashlib.sha256(self.content[cid]).hexdigest() if cid else None
         self.assertTrue(self.publish())
         self.state = Path(self.tmp.name) / "session.my98state"
         self.write_state(1)
@@ -816,11 +819,16 @@ class StatePublishing(unittest.TestCase):
     def import_disk(self, path, label=None, fds=()):
         data = Path(path).read_bytes()
         cid = "state-" + s.hashlib.sha256(data).hexdigest() if data[:8] == b"MY98STAT" else ("a" if data[-1] == 1 else "b")
+        if data.startswith(b"["):
+            cid = "profiles-" + s.hashlib.sha256(data).hexdigest()
+        self.content[cid] = data
         if label is not None:
             self.kubo.add(cid, label, fds)
         return cid
 
     def call(self, *args, **kwargs):
+        if args[0] == "cat":
+            return self.content[args[-1].removeprefix("/ipfs/")]
         op = args[1]
         if op == "mkdir":
             self.directories.setdefault(args[-1], {})
@@ -829,15 +837,68 @@ class StatePublishing(unittest.TestCase):
             self.directories[parent][child] = args[-2].removeprefix("/ipfs/")
         elif op == "stat":
             contents = self.directories[args[-1]]
-            disk, state = contents['disk.my98'], contents['state.my98state']
-            cid = 'bundle-' + disk + '-' + state
+            disk, state = contents['disk.my98'], contents.get('state.my98state')
+            cid = 'bundle-' + disk + '-' + str(state) + '-' + str(contents.get('load-profiles.json'))
             self.parts[cid] = (disk, state)
+            self.profile_parts[cid] = contents.get('load-profiles.json')
             return cid
         else:
             raise AssertionError(args)
 
     def publish_state(self):
         return self.follow.publish_state(self.state, 'my98', self.names)
+
+    def profile(self, kind='boot'):
+        origin={'kind':kind}
+        if kind=='state':origin['sha256']=s.hashlib.sha256(self.state.read_bytes()).hexdigest()
+        return dict(version=2,cid='a',origin=origin,unitBytes=65536,ranges=[[0,0]]+[None]*31)
+
+    def publish_profiles(self, profiles):
+        path=Path(self.tmp.name)/'profiles.json';path.write_text(json.dumps(profiles))
+        return self.follow.publish_profile(path,'my98',self.names)
+
+    def current_profiles(self):
+        root=self.store.row('one')['current'];cid=self.profile_parts.get(root)
+        return json.loads(self.content[cid]) if cid else []
+
+    def test_profiles_merge_replace_and_clear(self):
+        self.assertTrue(self.publish_state());base=self.parts[self.store.row('one')['current']]
+        self.assertTrue(self.publish_profiles([self.profile()]));self.assertEqual(len(self.current_profiles()),1)
+        self.assertTrue(self.publish_profiles([self.profile('state')]));self.assertEqual(len(self.current_profiles()),2)
+        self.assertEqual(self.parts[self.store.row('one')['current']],base)
+        p=self.profile();p['ranges']=[None]*32
+        self.assertTrue(self.publish_profiles([p]));self.assertEqual(self.current_profiles()[0],p)
+        self.assertTrue(self.follow.publish_profile(None,'my98',self.names));self.assertEqual(self.current_profiles(),[])
+        self.assertEqual(self.parts[self.store.row('one')['current']],base)
+
+    def test_state_changes_keep_only_boot_profile(self):
+        self.assertTrue(self.publish_state());self.assertTrue(self.publish_profiles([self.profile(),self.profile('state')]))
+        root=self.store.row('one')['current'];self.assertTrue(self.publish_state());self.assertEqual(self.store.row('one')['current'],root)
+        self.write_state(2);self.assertTrue(self.publish_state());self.assertEqual(self.current_profiles(),[self.profile()])
+        self.assertTrue(self.follow.publish_state(None,'my98',self.names));self.assertEqual(self.current_profiles(),[self.profile()])
+        self.assertIsNone(self.parts[self.store.row('one')['current']][1])
+        self.assertTrue(self.publish());self.assertEqual(self.store.row('one')['current'],'a')
+
+    def test_invalid_profiles_do_not_publish(self):
+        self.assertTrue(self.publish_state());root=self.store.row('one')['current']
+        cases=[[],[self.profile(),self.profile()], [dict(self.profile(),version=1)], [dict(self.profile(),cid='b')],
+               [dict(self.profile(),ranges=[[0,0],[0,0]]+[None]*30)],
+               [dict(self.profile('state'),origin={'kind':'state','sha256':'0'*64})]]
+        for profiles in cases:
+            with self.assertRaises(s.Failure):self.publish_profiles(profiles)
+            self.assertEqual(self.store.row('one')['current'],root)
+        with self.assertRaises(s.Failure):s.read_profiles(b' '*65537)
+        with self.assertRaises(s.Failure):s.read_profiles(b'!')
+
+    def test_profile_publication_recovers_and_rejects_other_content(self):
+        self.assertTrue(self.publish_state());self.publish_error='before'
+        with self.assertRaises(s.Failure):self.publish_profiles([self.profile()])
+        pending=self.store.publication('one')['cid']
+        with self.assertRaisesRegex(s.Failure,'Another publication'):self.publish_profiles([self.profile('state')])
+        self.assertEqual(self.store.publication('one')['cid'],pending)
+        self.publish_error=None;self.assertTrue(self.publish_profiles([self.profile()]))
+        self.assertEqual(self.store.row('one')['current'],pending)
+        self.assertEqual(self.directories,{})
 
     def test_replace_clear_and_new_disk(self):
         self.assertTrue(self.publish_state());first = self.store.row('one')['current']

@@ -1,3 +1,4 @@
+import {sha256} from '@noble/hashes/sha2.js';
 // Encrypted, bounded, independently authenticated records. No disk keys leave WASM.
 const MAGIC = new TextEncoder().encode("MY98STAT");
 const CHUNK = 1024 * 1024, LIMIT = 1024 * 1024 * 1024;
@@ -63,6 +64,7 @@ export async function decodeState(vault, input, {check,progress,signal}) {
     const length=number(prefix.subarray(8));
     if(length<1||length>4096)throw invalid("Invalid state header");
     const header=new Uint8Array(await file.slice(12,12+length).arrayBuffer());
+    const hash=sha256.create().update(prefix).update(header);
     const h=JSON.parse(dec.decode(header));
     if(h.version!==1||!Number.isSafeInteger(h.raw)||h.raw<4||h.raw>LIMIT||!Number.isSafeInteger(h.packed)||h.packed<1||h.packed>LIMIT)throw invalid("Unsupported state size or version");
     const base=await vault.state_base();check();
@@ -73,6 +75,7 @@ export async function decodeState(vault, input, {check,progress,signal}) {
     for(let i=0;i<records;i++) {
         check();const size=Math.min(CHUNK,h.packed-i*CHUNK)+62;
         const sealed=new Uint8Array(await file.slice(offset,offset+size).arrayBuffer());
+        hash.update(sealed);
         const plain=vault.open_state(context(header,i),sealed);
         try {parts.push(new Blob([plain]));}finally {plain.fill(0);}
         offset+=size;progress("decrypt-state",offset,file.size);
@@ -87,5 +90,6 @@ export async function decodeState(vault, input, {check,progress,signal}) {
     if(!Number.isSafeInteger(stateLength)||stateLength<1||!Number.isSafeInteger(overlayLength)||overlayLength<0||4+metaLength+stateLength+overlayLength!==raw.size)throw invalid("Invalid state sections");
     const state=await readSection(raw.slice(4+metaLength,4+metaLength+stateLength),check);
     const overlay=new Uint8Array(await readSection(raw.slice(4+metaLength+stateLength),check));check();
-    return {metadata,state,overlay};
+    const stateSha256=Array.from(hash.digest(),b=>b.toString(16).padStart(2,'0')).join('');
+    return {metadata,state,overlay,stateSha256};
 }

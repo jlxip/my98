@@ -67,7 +67,7 @@ try{
         await page.locator('#disk-remote').click();
         await page.waitForFunction(()=>!document.querySelector('#disk-boot').disabled,{},{timeout:10000}).catch(async e=>{console.log(await page.evaluate(()=>({status:document.querySelector('#disk-status').textContent,options:globalThis.localUiOptions})));console.log({external,requests,fixtureRequests:f.requests});throw e;});
         assert.equal(await page.locator('#disk-only-localhost').isDisabled(),true);
-        assert.deepEqual(await page.evaluate(()=>globalThis.localUiOptions),{gateway:'http://127.0.0.1:8080',onlyLocalhost:true});
+        assert.deepEqual(await page.evaluate(()=>globalThis.localUiOptions),{gateway:'http://127.0.0.1:8080',onlyLocalhost:true,prefetch:{enabled:false}});
         assert(f.requests.some(u=>u.startsWith('/ipns/')));assert(f.requests.some(u=>u.startsWith('/ipfs/')));ok('real UI resolves and downloads only through localhost, options locked');
         await page.locator('#disk-close').click();
         await page.waitForFunction(()=>!document.querySelector('#disk-login').hidden);

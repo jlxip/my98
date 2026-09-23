@@ -70,7 +70,7 @@ async function extract({Vault, RemoteDisk}, credentials) {
         check(); key = vault.export_read_key();
         if(key.length !== 64 || !key.subarray(0,32).every((byte,i)=>byte === identity.publicKey[i])) throw fail('BUILD_REQUIRED');
         const readKey = 'my98-ro-v2.' + Buffer.from(key.buffer, key.byteOffset, key.byteLength).toString('base64url');
-        return {ipnsName:identity.ipnsName, cid:remote.remote.cid, readKey, ...(remote.remote.stateCid ? {publicationCid:remote.remote.rootCid} : {})};
+        return {ipnsName:identity.ipnsName, cid:remote.remote.cid, readKey, ...(remote.remote.rootCid!==remote.remote.cid ? {publicationCid:remote.remote.rootCid} : {})};
     } finally {
         password.fill(0); key?.fill(0); first?.fill(0);
         remote?.close(); vault?.free();

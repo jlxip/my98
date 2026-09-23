@@ -105,6 +105,54 @@ def validate_state(path, base):
         raise Failure("Truncated state or trailing bytes")
 
 
+def validate_profiles(value, disk, header, state_hash=None):
+    """Bounded, public read hints. Neither their metrics nor ranges authorize data."""
+    if not isinstance(value, list) or len(value) > 2:
+        raise Failure("Invalid load profile list")
+    units = (struct.unpack_from('<Q', header, 16)[0] + 65535) // 65536
+    seen = set()
+    for p in value:
+        if not isinstance(p, dict) or type(p.get('version')) is not int or p['version'] != 2 or p.get('cid') != disk or type(p.get('unitBytes')) is not int or p['unitBytes'] != 65536:
+            raise Failure("Load profile must use version 2 and the current disk CID")
+        origin = p.get('origin')
+        if not isinstance(origin, dict) or origin.get('kind') not in ('boot', 'state') or origin['kind'] in seen:
+            raise Failure("Invalid or duplicate load profile origin")
+        seen.add(origin['kind'])
+        if origin['kind'] == 'state':
+            if not state_hash or origin.get('sha256') != state_hash:
+                raise Failure("Load profile does not match the published state")
+        elif 'sha256' in origin:
+            raise Failure("Boot profile cannot name a state")
+        ranges = p.get('ranges')
+        if not isinstance(ranges, list) or len(ranges) != 32:
+            raise Failure("Load profiles require 32 range slots")
+        ordered = []
+        for r in ranges:
+            if r is None:
+                continue
+            if not isinstance(r, list) or len(r) != 2 or any(type(n) is not int for n in r) or not 0 <= r[0] <= r[1] < units:
+                raise Failure("Invalid load profile range")
+            ordered.append(r)
+        ordered.sort()
+        if any(a[1] >= b[0] for a, b in zip(ordered, ordered[1:])):
+            raise Failure("Overlapping load profile ranges")
+        for field in ('observedUnits', 'coveredUnits', 'downloadUnits'):
+            if field in p and (type(p[field]) is not int or not 0 <= p[field] <= units):
+                raise Failure("Invalid load profile metric")
+        if 'minUtilization' in p and (type(p['minUtilization']) not in (int, float) or not 0 < p['minUtilization'] <= 1):
+            raise Failure("Invalid load profile utilization")
+    return value
+
+
+def read_profiles(data):
+    if len(data) > 65536:
+        raise Failure("Load profiles exceed 64 KiB")
+    try:
+        return json.loads(data)
+    except (ValueError, UnicodeError) as exc:
+        raise Failure("Invalid load profiles JSON") from exc
+
+
 def snapshot_file(source, target):
     if Path(source).resolve() == target.resolve():
         raise Failure("Source uses the reserved snapshot path")
@@ -403,24 +451,27 @@ class Kubo:
             args.append("--pin-name=" + label)
         return self.canonical(self.call(*args, "--", str(path), timeout=1800, fds=fds), fds)
 
-    def publication_parts(self, cid, fds=()):
+    def publication_parts(self, cid, fds=(), profiles=False):
         try:
-            return self._publication_parts(cid, fds)
+            return self._publication_parts(cid, fds, profiles)
         except (ValueError, KeyError, TypeError, AttributeError) as exc:
             raise Failure("Invalid publication metadata returned by Kubo") from exc
 
-    def _publication_parts(self, cid, fds=()):
+    def _publication_parts(self, cid, fds=(), profiles=False):
         path = "/ipfs/" + cid
+        profiles_cid = None
         info = json.loads(self.call("files", "stat", "--enc=json", "--", path, fds=fds))
         if info["Type"] == "directory":
             links = json.loads(self.call("dag", "get", "--", path, fds=fds)).get("Links") or []
-            if len(links) != 2 or {link["Name"] for link in links} != {"disk.my98", "state.my98state"}:
+            names = {link["Name"] for link in links}
+            if not 1 <= len(links) <= 3 or len(names) != len(links) or 'disk.my98' not in names or not names <= {'disk.my98', 'state.my98state', 'load-profiles.json'}:
                 raise Failure("Unsupported publication directory")
             parts = {link["Name"]: self.canonical(link["Hash"]["/"], fds) for link in links}
             for child in parts.values():
                 if json.loads(self.call("files", "stat", "--enc=json", "--", "/ipfs/" + child, fds=fds))["Type"] != "file":
                     raise Failure("Publication entries must be files")
-            disk, state = parts["disk.my98"], parts["state.my98state"]
+            disk, state = parts["disk.my98"], parts.get("state.my98state")
+            profiles_cid = parts.get('load-profiles.json')
         elif info["Type"] == "file":
             disk, state = cid, None
         else:
@@ -432,7 +483,22 @@ class Kubo:
         actual = json.loads(self.call("files", "stat", "--enc=json", "--", "/ipfs/" + disk, fds=fds))["Size"]
         if version != 1 or chunk != 65536 or not 1 <= size <= 1 << 40 or actual != 198 + size + ((size + chunk - 1) // chunk) * 62:
             raise Failure("Invalid published disk")
-        return disk, state, header
+        return (disk, state, header, profiles_cid) if profiles else (disk, state, header)
+
+    def state_hash(self, cid, fds=()):
+        if cid is None:
+            return None
+        size = json.loads(self.call('files', 'stat', '--enc=json', '--', '/ipfs/' + cid, fds=fds))['Size']
+        if type(size) is not int or not 12 <= size <= (1 << 30) + 65536:
+            raise Failure('Invalid published state size')
+        digest = hashlib.sha256()
+        for offset in range(0, size, 8 * 1024 * 1024):
+            length = min(size-offset, 8 * 1024 * 1024)
+            data = self.call('cat', '--offset=' + str(offset), '--length=' + str(length), '--', '/ipfs/' + cid, fds=fds, binary=True)
+            if len(data) != length:
+                raise Failure('Incomplete published state')
+            digest.update(data)
+        return digest.hexdigest()
 
     def remove_staging(self, path, fds=()):
         # ls of the parent distinguishes an already removed path from RPC failure.
@@ -656,6 +722,7 @@ class Follower:
                     # A killed publisher may leave scratch data; no active importer
                     # can hold this name lock at the same time.
                     self.store.snapshot(name).unlink(missing_ok=True)
+                    self.store.snapshot(name).with_suffix('.profiles.json').unlink(missing_ok=True)
                     row = self.store.row(name)
                     publication = self.store.publication(name)
                     if publication:
@@ -822,12 +889,19 @@ class Follower:
 
 
     def publish_state(self, source, key, names_path):
+        return self.publish_component(source, key, names_path, 'state')
+
+    def publish_profile(self, source, key, names_path):
+        return self.publish_component(source, key, names_path, 'profile')
+
+    def publish_component(self, source, key, names_path, component):
         name = self.kubo.key_name(key)
         with self.store.lock("name:" + name) as name_fd:
             fds = (name_fd,)
             self.add_name(name, names_path)
             snapshot = self.store.snapshot(name)
-            if source is not None and Path(source).resolve() == snapshot.resolve():
+            profile_snapshot = snapshot.with_suffix('.profiles.json')
+            if source is not None and Path(source).resolve() in (snapshot.resolve(), profile_snapshot.resolve()):
                 raise Failure("Source uses the reserved snapshot path")
             try:
                 pending = self.store.publication(name)
@@ -837,31 +911,73 @@ class Follower:
                     self.store.update(name, pending=root)
                 with self.store.lock("cid:" + root) as root_fd:
                     self.ensure_pin(root, (*fds, root_fd))
-                disk, old_state, header = self.kubo.publication_parts(root, fds)
-                if source is None:
-                    cid = disk
-                    if old_state is None and not pending:
-                        self.store.update(name, current=disk, pending=None, error=None)
-                        self.clear_staging(name, fds)
-                        print("No published state.")
-                        return self.cleanup()
-                else:
+                disk, old_state, header, old_profiles = self.kubo.publication_parts(root, fds, profiles=True)
+                profiles = []
+                state_hash = None
+                if old_profiles:
+                    try:
+                        profiles = read_profiles(self.kubo.call('cat', '--length=65537', '--', '/ipfs/' + old_profiles, fds=fds, binary=True))
+                        if any(isinstance(p, dict) and isinstance(p.get('origin'), dict) and p['origin'].get('kind') == 'state' for p in profiles):
+                            state_hash = self.kubo.state_hash(old_state, fds)
+                        validate_profiles(profiles, disk, header, state_hash)
+                    except (Failure, TypeError) as exc:
+                        print('Ignoring unusable published load profiles: ' + str(exc), file=sys.stderr)
+                        profiles = []
+                state_cid = old_state
+                if source is not None:
+                    if component == 'profile' and Path(source).stat().st_size > 65536:
+                        raise Failure('Load profiles exceed 64 KiB')
                     snapshot_file(source, snapshot)
-                    validate_state(snapshot, header)
-                    state_cid = self.kubo.import_disk(snapshot, fds=fds)
-                    # Reconstruct a deterministic wrapper; never remove a pending
-                    # publication's scratch protection until its root is pinned.
-                    self.clear_staging(name, fds)
+                if component == 'state':
+                    state_cid = None
+                    if source is not None:
+                        validate_state(snapshot, header)
+                        state_cid = self.kubo.import_disk(snapshot, fds=fds)
+                        with snapshot.open('rb') as handle:
+                            state_hash = hashlib.file_digest(handle, 'sha256').hexdigest()
+                    profiles = [p for p in profiles if p['origin']['kind'] == 'boot' or state_cid and p['origin']['sha256'] == state_hash]
+                elif source is None:
+                    profiles = []
+                else:
+                    with snapshot.open('rb') as handle:
+                        incoming = read_profiles(handle.read(65537))
+                    if old_state and state_hash is None:
+                        state_hash = self.kubo.state_hash(old_state, fds)
+                    validate_profiles(incoming, disk, header, state_hash)
+                    if not incoming:
+                        raise Failure('Supply at least one profile, or use clear-profiles')
+                    kinds = {p['origin']['kind'] for p in incoming}
+                    profiles = [p for p in profiles if p['origin']['kind'] not in kinds] + incoming
+                profiles.sort(key=lambda p: p['origin']['kind'])
+                entries = {'disk.my98': disk}
+                if state_cid:
+                    entries['state.my98state'] = state_cid
+                if profiles:
+                    data = (json.dumps(profiles, sort_keys=True, separators=(',', ':')) + '\n').encode()
+                    if len(data) > 65536:
+                        raise Failure('Combined load profiles exceed 64 KiB')
+                    profile_snapshot.write_bytes(data)
+                    entries['load-profiles.json'] = self.kubo.import_disk(profile_snapshot, fds=fds)
+                # Reconstruct the deterministic wrapper without releasing pending root protection.
+                self.clear_staging(name, fds)
+                cid = disk
+                if len(entries) > 1:
                     path = "/my98-seedbox-" + self.store.label.split(":", 1)[1] + "/" + hashlib.sha256(name.encode()).hexdigest()
                     with self.store.db() as db:
                         db.execute("INSERT OR REPLACE INTO staging VALUES (?,?)", (name, path))
                     self.kubo.call("files", "mkdir", "-p", "--", path, fds=fds)
-                    self.kubo.call("files", "cp", "--", "/ipfs/" + disk, path + "/disk.my98", fds=fds)
-                    with self.store.lock("cid:" + state_cid) as state_fd:
-                        inherited = (*fds, state_fd)
-                        self.ensure_pin(state_cid, inherited, snapshot)
-                        self.kubo.call("files", "cp", "--", "/ipfs/" + state_cid, path + "/state.my98state", fds=inherited)
+                    for entry, child in entries.items():
+                        with self.store.lock('cid:' + child) as child_fd:
+                            inherited = (*fds, child_fd)
+                            content = profile_snapshot if entry == 'load-profiles.json' else snapshot if entry == 'state.my98state' and component == 'state' and source else None
+                            self.ensure_pin(child, inherited, content)
+                            self.kubo.call('files', 'cp', '--', '/ipfs/' + child, path + '/' + entry, fds=inherited)
                     cid = self.kubo.canonical(self.kubo.call("files", "stat", "--hash", "--", path, fds=fds), fds)
+                if not pending and cid == root:
+                    self.store.update(name, current=root, pending=None, error=None)
+                    self.clear_staging(name, fds)
+                    print('Publication unchanged.')
+                    return self.cleanup()
                 if pending and pending["cid"] != cid:
                     raise Failure("Another publication is uncertain; retry its original content first")
                 with self.store.db() as db:
@@ -889,6 +1005,7 @@ class Follower:
                 raise
             finally:
                 snapshot.unlink(missing_ok=True)
+                profile_snapshot.unlink(missing_ok=True)
         return self.cleanup()
 
     def adopt_legacy(self, legacy, key, names_path):
@@ -1157,17 +1274,17 @@ def main(argv=None):
         "and refuses manual seedbox entries. It cannot detect arbitrary wrappers or atomically "
         "exclude other crontab editors. Paths/options cannot contain newlines or %. "
         "It does not install/start cron or Kubo; keep the script and executables at their current paths.")
-    parser.add_argument("command", choices=("login", "add", "sync", "status", "publish", "publish-state", "clear-state", "setup-cron"))
-    parser.add_argument("target", nargs="?", help="Public IPNS key for add; disk file for publish; state file for publish-state")
+    parser.add_argument("command", choices=("login", "add", "sync", "status", "publish", "publish-state", "clear-state", "publish-profile", "clear-profiles", "setup-cron"))
+    parser.add_argument("target", nargs="?", help="Public IPNS key for add; disk file for publish; state file for publish-state; profile JSON for publish-profile")
     parser.add_argument("--key", default="my98", help="Existing Kubo publication key (default: my98)")
     parser.add_argument("--names", help="Names file (default: STATE/names.txt)")
     parser.add_argument("--state", default="~/.local/my98", help="State directory (default: ~/.local/my98)")
     parser.add_argument("--api", default="/ip4/127.0.0.1/tcp/5001", help="Kubo API multiaddress")
     parser.add_argument("--ipfs", help="Kubo executable (default: automatic, including IPFS Desktop)")
     args = parser.parse_args(argv)
-    if args.command in ("add", "publish", "publish-state") and not args.target:
-        parser.error(args.command + " requires " + {"add":"a public IPNS key", "publish":"a disk file", "publish-state":"a state file"}[args.command])
-    if args.command in ("login", "sync", "status", "clear-state", "setup-cron") and args.target:
+    if args.command in ("add", "publish", "publish-state", "publish-profile") and not args.target:
+        parser.error(args.command + " requires " + {"add":"a public IPNS key", "publish":"a disk file", "publish-state":"a state file", "publish-profile":"a profile JSON file"}[args.command])
+    if args.command in ("login", "sync", "status", "clear-state", "clear-profiles", "setup-cron") and args.target:
         parser.error(args.command + " does not accept a target")
     os.umask(0o077)
     try:
@@ -1198,6 +1315,8 @@ def main(argv=None):
             return 0
         if args.command in ("publish-state", "clear-state"):
             return 0 if follower.publish_state(args.target, args.key, names_path) else 1
+        if args.command in ("publish-profile", "clear-profiles"):
+            return 0 if follower.publish_profile(args.target, args.key, names_path) else 1
         if args.command == "publish":
             return 0 if follower.publish(args.target, args.key, names_path) else 1
         return 0 if follower.sync(lambda: kubo.names(names_path)) else 1

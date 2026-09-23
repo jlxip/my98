@@ -9,6 +9,12 @@ let identity, activeRequest;
 let networkBytes = 0, networkRequests = 0;
 let vault, sourceId = 0, current, prepared, nextDownload = 0;
 let bootAnalysis;
+let restoredOrigin, freshRestore=false;
+const originFor = kind => {
+    if(kind==='boot')return {kind:'boot'};
+    if(kind==='restored' && restoredOrigin)return {...restoredOrigin};
+    throw fail('OPERATION_FAILED','Restore a state before selecting its load profile');
+};
 let sequence = Promise.resolve(), cancelEpoch = 0, activeEpoch = 0, cancelView;
 let readBytes = 0, readCalls = 0, progressAt = 0, initError;
 const fail = (code, message) => Object.assign(new Error(message), {code});
@@ -44,7 +50,7 @@ async function build() {
         // Accept only after Blob assembly succeeds and queued cancellation has been observed.
         await yieldEvents(); check();
         id = source(blob); vault.accept(id, blob.size);
-        const previous = current; current = id;
+        const previous = current; current = id;restoredOrigin=undefined;freshRestore=false;
         prepared = {id:++nextDownload, blob, size:blob.size};
         if(previous) remove(previous);
         progress("encrypt", describe().size, describe().size);
@@ -82,19 +88,32 @@ async function execute(op,a) {
     if(!vault) throw fail("OPERATION_FAILED", "Identity is closed");
     if(bootAnalysis && ["create", "createEmpty", "open", "openRemote", "save", "download", "retry", "discard", "verify", "saveState", "prepareState"].includes(op)) throw fail("OPERATION_FAILED", "Finish or cancel the boot analysis first");
     switch(op) {
+    case "startLoadAnalysis": {
+        const state=describe(), origin=originFor(a.origin);
+        if(bootAnalysis || !state.remote?.cid || (a.origin==='boot' ? state.dirty_bytes : !freshRestore))throw fail('OPERATION_FAILED','Analysis requires a clean remote boot or a freshly restored remote state');
+        bootAnalysis=new BootAnalysis(state.remote.cid,state.size,origin);
+        freshRestore=false;return null;
+    }
+    case "setLoadPrefetch": {
+        const origin=originFor(a.origin), remote=sources.get(current);
+        if(!['none','profile','disk'].includes(a.scope))throw fail('OPERATION_FAILED','Invalid load prefetch scope');
+        remote?.setLoadPrefetch?.(origin,a.scope);return null;
+    }
     case "startBootAnalysis": {
         const state = describe();
         if(bootAnalysis || !state.remote?.cid || state.dirty_bytes) throw fail("OPERATION_FAILED", "Boot analysis requires a clean remote disk and no existing analysis");
         bootAnalysis = new BootAnalysis(state.remote.cid, state.size);
         return null;
     }
-    case "finishBootAnalysis": {
+    case "finishBootAnalysis":
+    case "finishLoadAnalysis": {
         if(!bootAnalysis) throw fail("OPERATION_FAILED", "No boot analysis is available");
         const profile = bootAnalysis.finish();
         bootAnalysis = undefined;
         return profile;
     }
-    case "cancelBootAnalysis": bootAnalysis = undefined; return null;
+    case "cancelBootAnalysis":
+    case "cancelLoadAnalysis": bootAnalysis = undefined; return null;
     case "createEmpty": {
         const size = a.sizeBytes;
         if(!Number.isSafeInteger(size) || size <= 0 || size > 2 ** 40 || size % 512) {
@@ -113,7 +132,7 @@ async function execute(op,a) {
     }
     case "open": {
         const id = source(a.file);
-        try {await vault.open(id,a.file.size);current = id;prepared = undefined;return describe();}
+        try {await vault.open(id,a.file.size);current = id;prepared = undefined;restoredOrigin=undefined;freshRestore=false;return describe();}
         catch(error) {remove(id);throw error;}
     }
     case "openRemote": {
@@ -124,7 +143,7 @@ async function execute(op,a) {
             progress("resolve",0,0);
             await remote.open(identity, activeRequest.signal); check();
             id = source(remote); await vault.open(id,remote.size);
-            current = id; prepared = undefined; remote.startPrefetch(); return describe();
+            current = id; prepared = undefined; restoredOrigin=undefined;freshRestore=false;remote.startPrefetch(); return describe();
         } catch(error) {if(id)remove(id);else remote.close();throw error;}
     }
     case "saveState": {
@@ -143,7 +162,7 @@ async function execute(op,a) {
         try {
             check();const candidate=vault.fork_state(decoded.overlay);
             const token=++stateSerial;
-            stateCandidate={vault:candidate,token,revision:describe().revision,source:current};
+            stateCandidate={vault:candidate,token,revision:describe().revision,source:current,origin:{kind:'state',sha256:decoded.stateSha256}};
             return {token,metadata:decoded.metadata,state:decoded.state,size:describe().size};
         } finally {decoded.overlay.fill(0);}
     }
@@ -154,12 +173,14 @@ async function execute(op,a) {
     case "discardState": if(stateCandidate?.token===a.token)dropState();return null;
     case "commitState": {
         if(!stateCandidate || a.token!==stateCandidate.token || stateCandidate.revision!==describe().revision || stateCandidate.source!==current)throw fail("INVALID_STATE","Disk changed during restoration");
-        check();const old=vault;vault=stateCandidate.vault;stateCandidate=undefined;old.free();prepared=undefined;
+        check();const old=vault;vault=stateCandidate.vault;restoredOrigin=stateCandidate.origin;freshRestore=true;stateCandidate=undefined;old.free();prepared=undefined;
+        sources.get(current)?.setLoadPrefetch?.(restoredOrigin,'none');
         return describe();
     }
     case "exportReadOnlyKey": return vault.export_read_key();
     case "describe": return describe();
     case "read": {
+        freshRestore=false;
         if(!Number.isSafeInteger(a.length) || a.length < 0 || a.length > 0xffffffff) throw fail("IO_ERROR","Invalid read length");
         const start=performance.now(), input=sources.get(current), before=readCalls;
         if(bootAnalysis?.observe(a.offset, a.length)) self.postMessage({type:"analysis", error:"Analysis exceeded 200,000 distinct blocks. No partial profile was exported. Windows can continue running."});
@@ -167,7 +188,7 @@ async function execute(op,a) {
         try {return await vault.read(a.offset,a.length);}
         finally {input?.traceEvent?.('guest-read',{offset:a.offset,length:a.length,ms:performance.now()-start,hit:before===readCalls});}
     }
-    case "write": await vault.write(a.offset,a.bytes);return describe();
+    case "write": freshRestore=false;await vault.write(a.offset,a.bytes);return describe();
     case "save": {
         if(!await vault.begin_save()) {await yieldEvents();check();vault.accept_unchanged();return {...describe(),outcome:"unchanged"};}
         return build();
@@ -190,7 +211,7 @@ async function execute(op,a) {
         return prepared;
     }
     case "retry": if(!prepared) throw fail("OPERATION_FAILED","No prepared download");return prepared;
-    case "discard": vault.discard();return describe();
+    case "discard": vault.discard();restoredOrigin=undefined;freshRestore=false;sources.get(current)?.setLoadPrefetch?.({kind:'boot'},'none');return describe();
     case "verify": {
         vault.verify_start();let count=0;
         try {for(;;) {check();const hash=await vault.verify_step();count++;if(hash) {await yieldEvents();check();progress("verify",describe().size,describe().size);return hash;}
@@ -201,7 +222,7 @@ async function execute(op,a) {
     case "readTrace": return sources.get(current)?.trace || [];
     case "resumePrefetch": sources.get(current)?.startPrefetch?.();return null;
     case "clearCaches": vault.clear_cache();sources.get(current)?.clearCache?.();return null;
-    case "close": dropState();bootAnalysis=undefined;vault.free();vault=undefined;for(const id of sources.keys())remove(id);identity=current=prepared=undefined;return null;
+    case "close": dropState();bootAnalysis=restoredOrigin=undefined;freshRestore=false;vault.free();vault=undefined;for(const id of sources.keys())remove(id);identity=current=prepared=undefined;return null;
     default: throw fail("OPERATION_FAILED","Unknown disk operation");
     }
 }

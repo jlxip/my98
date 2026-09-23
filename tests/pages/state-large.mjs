@@ -3,6 +3,7 @@ import {mkdir,writeFile} from "node:fs/promises";
 import {chromium,webkit} from "playwright";
 import {serveSite} from "./server.mjs";
 import {encodeState} from "../../src/disk/web/state-format.js";
+import {build} from 'esbuild';
 
 // Exercise the format in a real Worker. Crypto authentication has separate API
 // coverage; this vault fixture isolates large emulator AND overlay Blob reads.
@@ -23,9 +24,9 @@ async function makeFixture() {
     // export/CompressionStream limits on large in-memory Blob inputs.
     const file=await encodeState(vault,{fixture:"large sections"},state.buffer,{check:()=>{},progress:()=>{}});
     await writeFile("build/state/large.my98state",new Uint8Array(await file.arrayBuffer()));
-    return {size,expected};
+    return {size,expected,fileHash:Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await file.arrayBuffer())),b=>b.toString(16).padStart(2,'0')).join('')};
 }
-async function roundtrip(moduleURL,{size,expected}) {
+async function roundtrip(moduleURL,{size,expected,fileHash}) {
     const {decodeState}=await import(moduleURL);
     const hash=async bytes=>Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",bytes))).join(",");
     const file=await (await fetch(new URL("/build/state/large.my98state",moduleURL))).blob();
@@ -39,6 +40,7 @@ async function roundtrip(moduleURL,{size,expected}) {
         ok(await hash(decoded.state)===expected[0],"all emulator bytes");
         ok(await hash(decoded.overlay)===expected[1],"all overlay bytes");
         ok(decoded.metadata.fixture==="large sections","metadata preserved");
+        ok(decoded.stateSha256===fileHash,'incremental encrypted file fingerprint');
     };
     await verify();
     // Inject cancellation/read errors during each section, after decompression.
@@ -74,6 +76,7 @@ async function roundtrip(moduleURL,{size,expected}) {
 
 const results=[];
 await mkdir("build/state",{recursive:true});
+await build({entryPoints:['src/disk/web/state-format.js'],bundle:true,format:'esm',platform:'browser',target:'es2022',outfile:'build/state/state-format.js'});
 await writeFile("build/state/large.html","<!doctype html><title>Large state worker test</title>");
 const fixture=await makeFixture();
 const server=await serveSite({root:".",headers:true});
@@ -83,7 +86,7 @@ try {for(const [name,type] of Object.entries({chromium,webkit})) {
         const page=await browser.newPage();
         await page.goto(server.url+"build/state/large.html");
         const result=await page.evaluate(async ({source,fixture})=>{
-            const moduleURL=new URL("/src/disk/web/state-format.js",location.href).href;
+            const moduleURL=new URL("/build/state/state-format.js",location.href).href;
             const url=URL.createObjectURL(new Blob([
                 `(${source})(${JSON.stringify(moduleURL)},${JSON.stringify(fixture)}).then(result=>postMessage({result}),error=>postMessage({error:String(error.stack||error)}));`,
             ],{type:"text/javascript"}));
@@ -93,7 +96,7 @@ try {for(const [name,type] of Object.entries({chromium,webkit})) {
                 worker.onerror=event=>reject(Error(event.message));
             });} finally {worker.terminate();URL.revokeObjectURL(url);}
         },{source:roundtrip.toString(),fixture});
-        assert.equal(result.checks,16);
+        assert.equal(result.checks,18);
         results.push({name,...result});console.log(name,result);
     } finally {await browser.close();}
 }} finally {await server.close();await writeFile("build/state/large-validation.json",JSON.stringify(results,null,2));}

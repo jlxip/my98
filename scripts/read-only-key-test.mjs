@@ -7,6 +7,8 @@ import {resolve, join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {createServer} from 'node:http';
 import {CID} from 'multiformats/cid';
+import * as dagPB from '@ipld/dag-pb';
+import {UnixFS} from 'ipfs-unixfs';
 import {sha256} from 'multiformats/hashes/sha2';
 import {createIPNSRecord, marshalIPNSRecord} from 'ipns';
 import {fixture} from '../src/disk/browser-tests/ipfs-fixture.mjs';
@@ -124,9 +126,10 @@ globalThis.fetch=(value,options)=>{
     const badHeader = Buffer.from(original); badHeader[0] ^= 1;
     const compat = resolve('build/disk-target/release/examples/compat');
     const signer = {type:'Ed25519', sign:async bytes=>new Uint8Array(Buffer.from(execFileSync(compat, ['sign', Buffer.from(bytes).toString('hex')], {encoding:'utf8'}).trim(), 'hex'))};
-    let block, record, blockCid;
+    let block, record, blockCid;const extraBlocks=new Map();
     corruptionServer = createServer((req,res)=>{
         if(req.url.startsWith('/ipns/')) res.writeHead(200, {'Content-Type':'application/vnd.ipfs.ipns-record'}).end(record);
+        else if(extraBlocks.has(new URL(req.url,'http://localhost').pathname.slice(6)))res.writeHead(200,{'Content-Type':'application/vnd.ipld.raw'}).end(extraBlocks.get(new URL(req.url,'http://localhost').pathname.slice(6)));
         else if(req.url.startsWith('/ipfs/' + blockCid)) res.writeHead(200, {'Content-Type':'application/vnd.ipld.raw'}).end(block);
         else res.writeHead(404).end();
     });
@@ -138,6 +141,18 @@ globalThis.fetch=(value,options)=>{
         if(name === 'raw CID control') { assert.equal(result.code, 0, result.stderr); ok(name); }
         else failed(result, name);
     }
+    block=original;blockCid=CID.createV1(0x55,await sha256.digest(block)).toString();
+    const profiles=Buffer.from(JSON.stringify([{version:2,cid:blockCid,origin:{kind:'boot'},unitBytes:65536,ranges:[[0,0],...Array(31).fill(null)]}]));
+    const profileCid=CID.createV1(0x55,await sha256.digest(profiles));extraBlocks.set(profileCid.toString(),profiles);
+    const dir=dagPB.encode(dagPB.prepare({Data:new UnixFS({type:'directory'}).marshal(),Links:[{Name:'disk.my98',Hash:CID.parse(blockCid),Tsize:block.length},{Name:'load-profiles.json',Hash:profileCid,Tsize:profiles.length}]}));
+    const rootCid=CID.createV1(0x70,await sha256.digest(dir));extraBlocks.set(rootCid.toString(),dir);
+    record=marshalIPNSRecord(await createIPNSRecord(signer,'/ipfs/'+rootCid,2n,3600000,{v1Compatible:false}));
+    const profileGateway='http://127.0.0.1:'+corruptionServer.address().port;
+    const profileExport=await run({...login,gateway:profileGateway});assert.equal(profileExport.code,0,profileExport.stderr);
+    assert.deepEqual(JSON.parse(profileExport.stdout),{ipnsName:exported.ipnsName,cid:blockCid,readKey:exported.readKey,publicationCid:rootCid.toString()});
+    ok('profile-only directory exports its root and stable credential');
+    const profilePTY=await launch(['scripts/read-only-key-test.py',profileGateway,'success-publication'],'','python3').done;
+    assert.equal(profilePTY.code,0,profilePTY.stderr);ok('PTY profile publication (hidden password and root)');
     const temp = await mkdtemp(join(tmpdir(), 'my98-cli-'));
     try {
         await mkdir(join(temp, 'scripts'));

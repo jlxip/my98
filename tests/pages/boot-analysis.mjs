@@ -25,9 +25,9 @@ for(const [name, type] of Object.entries({chromium, webkit})) {
             const state = {size:655360, disk_id:[1,2,3,4], dirty_bytes:0, remote:{cid:'snapshot'}};
             const client = {
                 unlock:async()=>({ipnsName:'test'}), openRemote:async()=>state,
-                startBootAnalysis:async()=>{started++;}, cancelBootAnalysis:async()=>{cancelled++;},
-                read:async()=>new Uint8Array(512), resumePrefetch:async()=>{},
-                finishBootAnalysis:async()=>{generationCalls++;if(generationFails) {generationFails=false;throw Error('Generation failed');}return [{version:1,cid:'snapshot',unitBytes:65536,ranges:[[0,0],...Array(31).fill(null)]}];},
+                startLoadAnalysis:async()=>{started++;}, cancelLoadAnalysis:async()=>{cancelled++;},
+                read:async()=>new Uint8Array(512), resumePrefetch:async()=>{}, setLoadPrefetch:async()=>{},
+                finishLoadAnalysis:async()=>{generationCalls++;if(generationFails) {generationFails=false;throw Error('Generation failed');}return [{version:2,origin:{kind:'boot'},cid:'snapshot',unitBytes:65536,ranges:[[0,0],...Array(31).fill(null)]}];},
                 close:async()=>{closed++;},
             };
             Slop86Disk.create = async value => {options=value;return client;};
@@ -42,10 +42,10 @@ for(const [name, type] of Object.entries({chromium, webkit})) {
             const idle = async () => {for(let i=0;busy;i++){if(i>1000)throw Error('UI stuck');await new Promise(r=>setTimeout(r,1));}};
             const click = async id => {$(id).onclick();await idle();};
             $('autoboot').checked=false;$('login').dispatchEvent(new Event('submit', {cancelable:true}));await idle();await click('remote');
-            await click('analyze');check('declining replacement starts no analysis', started===0);
-            approved=true;await click('analyze');
-            check('failed boot cancels recording and allows retry', started===1 && cancelled===1 && !$('analyze').disabled && $('analyze').textContent==='Analyze boot');
-            await click('analyze');
+            await click('analyze');await click('analyze-boot');check('declining replacement starts no analysis', started===0);
+            approved=true;await click('analyze');await click('analyze-boot');
+            check('failed boot cancels recording and allows retry', started===1 && cancelled===1 && !$('analyze').disabled && $('analyze').textContent==='Analyze loads');
+            await click('analyze');await click('analyze-boot');
             check('successful boot enables Stop analyzing', $('analyze').textContent==='Stop analyzing' && !$('analyze').disabled);
             vmAdapter.fail(new Error('Transient disk access'));
             await new Promise(r=>setTimeout(r,0));
@@ -54,16 +54,16 @@ for(const [name, type] of Object.entries({chromium, webkit})) {
             await click('analyze');
             check('generation failure can be retried', !downloaded && $('analyze').textContent==='Stop analyzing' && !$('analyze').disabled && $('save').disabled);
             const before=stopped;await click('analyze');
-            check('retry exports without stopping VM', generationCalls===2 && stopped===before && downloaded.name==='01020304-boot-ranges.json');
+            check('retry exports without stopping VM', generationCalls===2 && stopped===before && downloaded.name==='01020304-load-profile.json');
             check('download is JSON', downloaded.blob.type==='application/json' && JSON.parse(await downloaded.blob.text())[0].cid==='snapshot');
-            check('finished session cannot be analyzed again', $('analyze').disabled);
+            check('finished session can choose a fresh starting point', !$('analyze').disabled);
             await click('close');check('closing identity resets controls', closed===1 && $('workspace').hidden);
-            $('autoboot').checked=false;$('login').dispatchEvent(new Event('submit', {cancelable:true}));await idle();await click('remote');await click('analyze');
+            $('autoboot').checked=false;$('login').dispatchEvent(new Event('submit', {cancelable:true}));await idle();await click('remote');await click('analyze');await click('analyze-boot');
             options.onAnalysis({error:'Analysis exceeded 200,000 distinct blocks. No partial profile was exported.'});
             await new Promise(r=>setTimeout(r,0));
-            check('overflow reports failure and releases analysis controls', $('status').textContent.includes('200,000') && $('analyze').textContent==='Analyze boot' && cancelled===2 && !$('save').disabled);
+            check('overflow reports failure and releases analysis controls', $('status').textContent.includes('200,000') && $('analyze').textContent==='Analyze loads' && cancelled===2 && !$('save').disabled);
             await click('close');
-            $('autoboot').checked=false;$('login').dispatchEvent(new Event('submit', {cancelable:true}));await idle();await click('remote');await click('analyze');await click('close');
+            $('autoboot').checked=false;$('login').dispatchEvent(new Event('submit', {cancelable:true}));await idle();await click('remote');await click('analyze');await click('analyze-boot');await click('close');
             check('identity can close during analysis', closed===3 && $('workspace').hidden);
             return checks;
         });
