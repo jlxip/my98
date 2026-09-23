@@ -25,6 +25,7 @@
             <label>Password <input class="input" id="disk-password" type="password" autocomplete="off" required></label>
             <label>Machine <input class="input" id="disk-machine" value="main" autocomplete="off" autocapitalize="none" spellcheck="false" required></label>
             <label class="boot-option"><input class="input" id="disk-only-localhost" type="checkbox" autocomplete="off"> Only localhost</label>
+            <label class="boot-option"><input class="input" id="disk-cold-login" type="checkbox" autocomplete="off"> Cold boot</label>
             <label class="boot-option"><input class="input" id="disk-autoboot" type="checkbox" checked> Boot</label>
             <button class="btn primary" type="submit" data-variant="primary">Log in</button>
         </form>
@@ -42,15 +43,22 @@
             <button id="disk-open" class="btn" data-variant="secondary">Open encrypted disk</button>
             <button id="disk-remote" class="btn" data-variant="secondary">Open remote disk</button>
             <p class="hint">A remote disk must already be published for this identity. Local saves are not uploaded.</p>
-            <button id="disk-load-state" class="btn" data-variant="secondary">Load state</button>
-            <button id="disk-boot" class="btn" data-variant="secondary">Boot disk</button>
-            <button id="disk-save" class="btn" data-variant="secondary">Save full disk after Windows shutdown</button>
-            <button id="disk-discard" class="btn" data-variant="secondary">Discard pending writes</button>
-            <button id="disk-download" class="btn" data-variant="secondary">Download full disk</button>
-            <button id="disk-analyze" class="btn" data-variant="secondary">Analyze boot</button>
-            <button id="disk-retry" class="btn" data-variant="secondary">Retry download</button>
-            <button id="disk-verify" class="btn" data-variant="secondary">Verify full disk</button>
-            <button id="disk-close" class="btn" data-variant="secondary">Close identity</button>
+            <div class="disk-action-row">
+                <button id="disk-boot" class="btn" data-variant="secondary">Boot</button>
+                <button id="disk-resume-state" class="btn" data-variant="secondary" disabled>Resume state</button>
+                <button id="disk-load-state" class="btn" data-variant="secondary">Load state</button>
+            </div>
+            <div class="disk-action-row">
+                <button id="disk-save" class="btn" data-variant="secondary">Save full disk after Windows shutdown</button>
+                <button id="disk-discard" class="btn" data-variant="secondary">Discard pending writes</button>
+                <button id="disk-download" class="btn" data-variant="secondary">Download full disk</button>
+            </div>
+            <div class="disk-action-row">
+                <button id="disk-analyze" class="btn" data-variant="secondary">Analyze boot</button>
+                <button id="disk-retry" class="btn" data-variant="secondary">Retry download</button>
+                <button id="disk-verify" class="btn" data-variant="secondary">Verify full disk</button>
+                <button id="disk-close" class="btn" data-variant="secondary">Close identity</button>
+            </div>
         </div>
         <button id="disk-resume" hidden class="btn" data-variant="secondary">Retry and resume</button>
         <button id="disk-cancel" hidden class="btn" data-variant="secondary">Cancel operation</button>

@@ -16,6 +16,7 @@ export function setupDisk(host) {
         $("only-localhost").disabled ||= !!state;
         for(const id of ["boot","save","download","discard","verify"]) $(id).disabled ||= !state;
         $("boot").disabled ||= active || !!adapter?.failed;
+        $("resume-state").disabled ||= !state?.remote?.stateCid || active || analyzing || !!adapter?.failed;
         $("save").disabled ||= !active || !!adapter?.failed;
         $("download").disabled ||= !!state?.dirty_bytes;
         $("analyze").textContent = analyzing ? "Stop analyzing" : "Analyze boot";
@@ -64,7 +65,11 @@ export function setupDisk(host) {
             try {const identity=await candidate.unlock(username,password,machine);client=candidate;$("identity").textContent=identity.ipnsName;message("Identity unlocked. Create a disk, open a .my98 file, or find your remote disk.");}
             catch(error){await candidate.close().catch(()=>{});throw error;}
             finally {username=password=machine="";}
-            if(autoBoot) { await openRemote(); await boot(); }
+            if(autoBoot) {
+                await openRemote();
+                if(state.remote?.stateCid && !$("cold-login").checked) await stateOperation(false,{published:true});
+                else await boot();
+            }
         });
     };
     $("create").onclick=()=>run("Choosing image…",async()=>{
@@ -106,6 +111,7 @@ export function setupDisk(host) {
         } finally {capturing=false;syncControls(true);}
     }
     $("remote").onclick=()=>run("Finding remote disk…",openRemote);
+    $("cold-login").checked=false;
     async function boot(analyze = false) {
         message("Booting encrypted disk…");
         if(state.size%512)throw new Error("The image is preserved exactly, but its length does not allow booting it as an HDD.");
@@ -121,10 +127,10 @@ export function setupDisk(host) {
             throw error;
         }
     }
-    async function stateOperation(save) {
-        let file;
+    async function stateOperation(save, published) {
+        let file=published;
         if(!save) {
-            [file]=await host.pickFiles();if(!file)return;
+            if(!file) {[file]=await host.pickFiles();if(!file)return;}
             if(host.hasSession()&&!window.confirm("Replace the current session with this state? Changes made since it was saved will be lost."))return;
         }
         stateAbort=new AbortController();syncControls(true);
@@ -139,13 +145,14 @@ export function setupDisk(host) {
                 adapter=result.adapter;state=result.description;active=true;prepared=false;
                 message("State restored. Pending disk writes were replaced by the saved state.");
             }
-        } catch(error) {message(error.message,true);throw error;}
+        } catch(error) {if(published && error.code!=="CANCELLED") error.message=error.message.replace(/[.!?]$/,"")+". Retry Resume state or select Boot to start from the base disk.";message(error.message,true);throw error;}
         finally {stateAbort=undefined;state=await client.describe();}
     }
     $("load-state").onclick=()=>run("Restoring state…",()=>stateOperation(false));
     if(stateLoadButton) stateLoadButton.onclick=$("load-state").onclick;
     if(stateSaveButton) stateSaveButton.onclick=()=>run("Saving state…",()=>stateOperation(true));
     if(stateCancelButton) stateCancelButton.onclick=()=>stateAbort?.abort();
+    $("resume-state").onclick=()=>run("Restoring published state…",()=>stateOperation(false,{published:true}));
     $("boot").onclick=()=>run("Booting encrypted disk…",()=>boot());
     $("analyze").onclick=()=>run(analyzing ? "Generating boot ranges…" : "Starting boot analysis…",async()=>{
         if(!analyzing) { await boot(true); return; }
@@ -177,7 +184,7 @@ export function setupDisk(host) {
         if(!window.confirm("Close the identity? Pending changes and the prepared download for this session will be lost."))return;
         if(active)await host.stop();adapter?.dispose();adapter=undefined;await host.close();active=false;
         await client.close();client=state=undefined;prepared=false;analyzing=false;analysisError=undefined;$("identity").textContent="";
-        $("password").value="";$("autoboot").checked=true;$("empty-size").value="1024";
+        $("password").value="";$("autoboot").checked=true;$("cold-login").checked=false;$("empty-size").value="1024";
         message("");
     });
     return {syncControls};

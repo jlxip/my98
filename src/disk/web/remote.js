@@ -65,7 +65,7 @@ export class RemoteDisk {
     }
     // Called only after the encrypted header has been authenticated by the Vault.
     startPrefetch() {
-        if(this.closed || !this.entry) return;
+        if(this.closed || !this.entry || this.stateDownloads) return;
         if(!this.coverage) {
             this.coverage = new Uint8Array(Math.ceil((this.size - HEADER) / RECORD));
             this.completedUnits = 0;
@@ -377,7 +377,7 @@ export class RemoteDisk {
             await this.prepareGateway(resolved.rootCid, controller.signal);
             await this.openPath(resolved.path.slice(6), controller.signal);
             check(controller.signal);
-            this.remote = {...resolved, cid:this.entry.cid.toString(), gateway:this.gateway};
+            this.remote = {...resolved, cid:this.entry.cid.toString(), ...(this.stateCid ? {stateCid:this.stateCid} : {}), gateway:this.gateway};
             return this;
         } catch(error) {
             this.discoveryController?.abort();
@@ -392,7 +392,7 @@ export class RemoteDisk {
             if(typeof cid !== 'string') throw new Error();
             const parsed = CID.parse(cid);
             if(![0x70, 0x55, 0x00].includes(parsed.code)) throw new Error();
-        } catch { throw fail('INVALID_CID', 'Expected a file CID without a URL or path.'); }
+        } catch { throw fail('INVALID_CID', 'Expected a publication or disk CID without a URL or path.'); }
         check(signal);
         if(this.closed) throw fail('CANCELLED','Disk closed');
         const controller = new AbortController();
@@ -401,7 +401,7 @@ export class RemoteDisk {
         try {
             await this.prepareGateway(cid, controller.signal);
             await this.openPath(cid, controller.signal);check(controller.signal);
-            this.remote = {path:'/ipfs/' + this.entry.cid.toString(), rootCid:cid, cid:this.entry.cid.toString(), gateway:this.gateway};
+            this.remote = {path:'/ipfs/' + cid, rootCid:cid, cid:this.entry.cid.toString(), ...(this.stateCid ? {stateCid:this.stateCid} : {}), gateway:this.gateway};
             return this;
         } catch(error) {this.discoveryController?.abort();throw error;}
         finally {
@@ -458,12 +458,58 @@ export class RemoteDisk {
     async openPath(path, signal) {
         check(signal);
         this.entry = await exporter(path, this, {signal, blockReadConcurrency:1});
+        this.stateCid = undefined;
+        if(this.entry.type === 'directory') {
+            const entries = new Map();
+            for await(const entry of this.entry.entries({signal, blockReadConcurrency:1})) {
+                if(entries.size >= 2 || !['disk.my98','state.my98state'].includes(entry.name) || entries.has(entry.name)) throw fail('UNSUPPORTED_FORMAT', 'Unsupported publication directory.');
+                entries.set(entry.name,entry);
+            }
+            if(entries.size !== 2) throw fail('UNSUPPORTED_FORMAT', 'Incomplete publication directory.');
+            this.entry = await exporter(entries.get('disk.my98').cid,this,{signal,blockReadConcurrency:1});
+            const state = entries.get('state.my98state');
+            this.stateCid = state.cid.toString();
+        }
         check(signal);
         if(!['file','raw','identity'].includes(this.entry.type)) throw fail('UNSUPPORTED_FORMAT', 'The reference does not identify a file.');
         const size = this.entry.type === 'file' ? this.entry.unixfs.fileSize() : this.entry.size;
         if(size < 198n || size > BigInt(MAX_FILE)) throw fail('CORRUPTION', 'Invalid encrypted file size.');
         this.size = Number(size);
         return this;
+    }
+    async downloadState(signal, progress) {
+        check(signal);
+        if(!this.stateCid) throw fail('INVALID_STATE','No state is published for this disk.');
+        const resume = this.prefetchState === 'running';
+        this.stateDownloads = (this.stateDownloads || 0) + 1;
+        if(resume) this.prefetchState = 'suspended';
+        try {
+            await this.prefetchLoop;
+            check(signal);
+            const remote = this;
+            // Do not retain another full encrypted state in the disk block cache.
+            const store = {async *get(cid, options) {
+                const key=cid.toV1().toString(), retained=remote.blocks.has(key);
+                try {yield* remote.get(cid,{...options,signal,priority:'demand'});}
+                finally {if(!retained && remote.blocks.has(key)) {remote.cacheBytes-=remote.blocks.get(key).length;remote.blocks.delete(key);}}
+            }};
+            const entry=await exporter(this.stateCid,store,{signal,blockReadConcurrency:1});
+            if(!['file','raw','identity'].includes(entry.type)) throw fail('INVALID_STATE','Published state is not a file.');
+            const total=Number(entry.type==='file'?entry.unixfs.fileSize():entry.size);
+            if(!Number.isSafeInteger(total) || total<12 || total>1024*1024*1024+65536) throw fail('INVALID_STATE','Invalid published state size.');
+            const parts=[];let size=0;
+            for await(const bytes of entry.content({signal,blockReadConcurrency:this.concurrency})) {
+                check(signal);size+=bytes.length;
+                if(size>total) throw fail('INVALID_STATE','Published state exceeds its declared size.');
+                parts.push(new Blob([bytes]));progress?.(size,total);
+            }
+            check(signal);
+            if(size!==total) throw fail('INVALID_STATE','Incomplete published state.');
+            return new Blob(parts,{type:'application/octet-stream'});
+        } finally {
+            this.stateDownloads--;
+            if(resume) this.startPrefetch();
+        }
     }
     async read(offset, length, signal, priority = 'demand', retainOutput = true) {
         check(signal);

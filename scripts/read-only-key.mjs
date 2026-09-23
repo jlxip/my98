@@ -68,7 +68,7 @@ async function extract({Vault, RemoteDisk}, credentials) {
         first = await vault.read(0, Math.min(state.size, 512));
         check(); key = vault.export_read_key();
         const readKey = 'my98-ro-v1.' + Buffer.from(key.buffer, key.byteOffset, key.byteLength).toString('base64url');
-        return {cid:remote.remote.cid, readKey};
+        return {cid:remote.remote.cid, readKey, ...(remote.remote.stateCid ? {publicationCid:remote.remote.rootCid} : {})};
     } finally {
         password.fill(0); key?.fill(0); first?.fill(0);
         remote?.close(); vault?.free();

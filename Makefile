@@ -4,9 +4,12 @@
 hooks:
 	git config --local core.hooksPath .githooks
 
-.PHONY: seedbox-test seedbox-integration seedbox-renewal-integration
+.PHONY: seedbox-test seedbox-integration seedbox-renewal-integration seedbox-state-integration
 seedbox-test:
 	PYTHONDONTWRITEBYTECODE=1 python3 scripts/seedbox_test.py
+
+seedbox-state-integration:
+	PYTHONDONTWRITEBYTECODE=1 python3 scripts/seedbox_state_integration.py
 
 seedbox-renewal-integration:
 	PYTHONDONTWRITEBYTECODE=1 python3 scripts/seedbox_renewal_integration.py
@@ -117,6 +120,8 @@ site-test: site
 	node scripts/run-browser-test.mjs tests/pages/resolution.mjs
 	node scripts/run-browser-test.mjs tests/pages/discovery.mjs
 	node scripts/run-browser-test.mjs tests/pages/boot-analysis.mjs
+	node scripts/run-browser-test.mjs tests/pages/published-state.mjs
+	node scripts/run-browser-test.mjs tests/pages/published-state-network.mjs
 	node scripts/run-browser-test.mjs tests/pages/state-api.mjs
 	node scripts/run-browser-test.mjs tests/pages/state-large.mjs
 	node scripts/run-browser-test.mjs tests/pages/state.mjs
@@ -128,6 +133,8 @@ site-test: site
 .PHONY: state-test
 state-test: site
 	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo build --manifest-path src/disk/Cargo.toml --locked --release --example compat
+	node scripts/run-browser-test.mjs tests/pages/published-state.mjs
+	node scripts/run-browser-test.mjs tests/pages/published-state-network.mjs
 	node scripts/run-browser-test.mjs tests/pages/state-api.mjs
 	node scripts/run-browser-test.mjs tests/pages/state-large.mjs
 	node scripts/run-browser-test.mjs tests/pages/state.mjs

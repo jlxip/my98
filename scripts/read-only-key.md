@@ -10,7 +10,11 @@ python3 scripts/read-only-key.py [--gateway URL]
 Requires Python 3 and Node.js 24 or later. The command never installs or builds
 anything automatically. Enter username, hidden password and machine (`main` by
 default). Prompts, progress and errors go to stderr. On success stdout is exactly
-one JSON object with `cid` and `readKey`; failures return a nonzero status without
+one JSON object with `cid` and `readKey`. When a state is published it also includes
+`publicationCid`, the directory containing the base disk and its state; `cid`
+continues to identify the disk file. Pass `publicationCid` as the `cid` argument
+to `openReadOnly` to discover the state, then use `prepareState({published:true})`
+through the machine-state restoration API. Failures return a nonzero status without
 JSON. Ctrl-C cancels and closes the helper.
 
 The command verifies the published IPNS record, pins the file CID, authenticates

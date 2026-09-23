@@ -14,6 +14,7 @@ for(const [name, type] of Object.entries({chromium, webkit})) {
         await page.goto(server.url);
         await page.waitForFunction(() => !document.body.inert);
         assert.equal(await page.locator("#disk-autoboot").isChecked(), true);
+        assert.equal(await page.locator("#disk-cold-login").isChecked(), false);
         assert.equal(await page.locator("#disk-machine").inputValue(), "main");
         assert.equal(await page.locator("#disk-only-localhost").isChecked(), false);
         assert.equal(await page.locator("#disk-settings, #disk-gateway").count(), 0);
@@ -24,7 +25,7 @@ for(const [name, type] of Object.entries({chromium, webkit})) {
         const tabKey = name === "webkit" && process.platform === "darwin" ? "Alt+Tab" : "Tab";
         // Logical tab order, including checkbox and submit by keyboard.
         await page.locator("#disk-user").focus();
-        for(const id of ["disk-password", "disk-machine", "disk-only-localhost", "disk-autoboot"]) {
+        for(const id of ["disk-password", "disk-machine", "disk-only-localhost", "disk-cold-login", "disk-autoboot"]) {
             await page.keyboard.press(tabKey);
             assert.equal(await page.evaluate(() => document.activeElement.id), id);
         }
@@ -104,6 +105,7 @@ for(const [name, type] of Object.entries({chromium, webkit})) {
             check('remote failure preserves identity without boot',sequence()==='unlock,open' && !$('workspace').hidden && !$('remote').disabled && $('boot').disabled && $('status').textContent==='Remote unavailable');
             failAt='';$('remote').onclick();await idle();
             check('remote failure can be retried without logging in',sequence()==='unlock,open,open' && !$('boot').disabled);
+            check('disk without published state keeps resume disabled',$('resume-state').disabled);
             await close();
             failAt='boot';fill(true);submit();await idle();
             check('boot failure preserves authenticated disk',sequence()==='unlock,open,read,boot' && !$('boot').disabled && $('remote').disabled && $('status').textContent==='Boot failed');

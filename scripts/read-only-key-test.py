@@ -65,10 +65,10 @@ def session(gateway, mode):
         check(b"public compatibility password" not in transcript and b"incorrect-password" not in transcript,
               "password appeared on terminal")
         check(b"my98-ro-v1." not in transcript, "read key appeared on stderr")
-        if mode == "success":
+        if mode in ("success", "success-publication"):
             check(status == 0, "interactive export failed")
             result = json.loads(output)
-            check(set(result) == {"cid", "readKey"}, "unexpected stdout fields")
+            check(set(result) == ({"cid", "readKey", "publicationCid"} if mode == "success-publication" else {"cid", "readKey"}), "unexpected stdout fields")
             check(output.count(b"\n") == 1, "stdout contained extra output")
             check(result["readKey"].startswith("my98-ro-v1."), "missing read key")
         else:

@@ -133,7 +133,13 @@ async function execute(op,a) {
     }
     case "prepareState": {
         dropState();
-        const decoded=await decodeState(vault,a.input,{check,progress,signal:activeRequest.signal});
+        let input=a.input;
+        if(input && typeof input==='object' && input.published===true) {
+            const remote=sources.get(current);
+            if(!(remote instanceof RemoteDisk)) throw fail("INVALID_STATE","No published state for this disk");
+            input=await remote.downloadState(activeRequest.signal,(done,total)=>progress("download-state",done,total));check();
+        }
+        const decoded=await decodeState(vault,input,{check,progress,signal:activeRequest.signal});
         try {
             check();const candidate=vault.fork_state(decoded.overlay);
             const token=++stateSerial;

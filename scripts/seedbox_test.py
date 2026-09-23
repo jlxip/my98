@@ -485,6 +485,13 @@ class Publishing(unittest.TestCase):
         self.assertEqual(self.disk.read_bytes(), disk_bytes())
         self.assertEqual(self.published, [("my98", "a")])
 
+    def test_reserved_disk_source_is_not_deleted(self):
+        source = self.store.snapshot("one")
+        source.write_bytes(disk_bytes())
+        with self.assertRaisesRegex(s.Failure, "reserved"):
+            self.follow.publish(source, "my98", self.names)
+        self.assertEqual(source.read_bytes(), disk_bytes())
+
     def test_alternative_key_and_idempotent_subscription(self):
         self.publish("other")
         self.publish("other")
@@ -783,6 +790,151 @@ class PublicationAdapter(unittest.TestCase):
             store.initialize("peer")
             self.assertIsNone(store.publication("missing"))
 
+
+
+class StatePublishing(unittest.TestCase):
+    publish_ipns = Publishing.publish_ipns
+    publish = Publishing.publish
+    sync = Lifecycle.sync
+
+    def setUp(self):
+        Publishing.setUp(self)
+        self.directories = {}
+        self.parts = {}
+        self.kubo.canonical = lambda cid, fds=(): cid
+        self.kubo.call = self.call
+        self.kubo.remove_staging = lambda path, fds=(): self.directories.pop(path, None)
+        self.kubo.publication_parts = lambda cid, fds=(): (*self.parts.get(cid, (cid, None)), disk_bytes()[:198])
+        self.assertTrue(self.publish())
+        self.state = Path(self.tmp.name) / "session.my98state"
+        self.write_state(1)
+
+    def write_state(self, version):
+        header = json.dumps(dict(version=1, base=list(disk_bytes()[:198]), nonce=[version]*16, raw=100, packed=100)).encode()
+        self.state.write_bytes(b"MY98STAT" + s.struct.pack("<I", len(header)) + header + bytes([version])*162)
+
+    def import_disk(self, path, label=None, fds=()):
+        data = Path(path).read_bytes()
+        cid = "state-" + s.hashlib.sha256(data).hexdigest() if data[:8] == b"MY98STAT" else ("a" if data[-1] == 1 else "b")
+        if label is not None:
+            self.kubo.add(cid, label, fds)
+        return cid
+
+    def call(self, *args, **kwargs):
+        op = args[1]
+        if op == "mkdir":
+            self.directories.setdefault(args[-1], {})
+        elif op == "cp":
+            parent, child = args[-1].rsplit("/", 1)
+            self.directories[parent][child] = args[-2].removeprefix("/ipfs/")
+        elif op == "stat":
+            contents = self.directories[args[-1]]
+            disk, state = contents['disk.my98'], contents['state.my98state']
+            cid = 'bundle-' + disk + '-' + state
+            self.parts[cid] = (disk, state)
+            return cid
+        else:
+            raise AssertionError(args)
+
+    def publish_state(self):
+        return self.follow.publish_state(self.state, 'my98', self.names)
+
+    def test_replace_clear_and_new_disk(self):
+        self.assertTrue(self.publish_state());first = self.store.row('one')['current']
+        self.write_state(2);self.assertTrue(self.publish_state());second = self.store.row('one')['current']
+        self.assertNotEqual(first, second);self.assertNotIn(first,self.kubo.recursive)
+        self.assertEqual(set(self.kubo.recursive),{second})
+        self.assertEqual(self.directories,{})
+        self.assertTrue(self.follow.publish_state(None,'my98',self.names))
+        calls = len(self.published)
+        self.assertTrue(self.follow.publish_state(None,'my98',self.names));self.assertEqual(len(self.published),calls)
+        self.assertTrue(self.publish_state());self.disk.write_bytes(disk_bytes(2));self.assertTrue(self.publish())
+        self.assertEqual(self.store.row('one')['current'],'b')
+        self.assertEqual(set(self.kubo.recursive),{'b'})
+
+    def test_lost_publication_recovered_by_sync_and_restart(self):
+        self.publish_error='after'
+        with self.assertRaises(s.Failure): self.publish_state()
+        root=self.store.publication('one')['cid']
+        self.assertIn('a',self.kubo.recursive);self.assertTrue(self.directories)
+        self.store=s.Store(self.tmp.name);self.store.initialize('peer');self.follow=s.Follower(self.store,self.kubo)
+        self.assertTrue(self.sync());self.assertEqual(self.store.row('one')['current'],root)
+        self.assertIsNone(self.store.publication('one'));self.assertEqual(self.directories,{})
+
+    def test_failed_publication_requires_same_content(self):
+        self.publish_error='before'
+        with self.assertRaises(s.Failure): self.publish_state()
+        root=self.store.publication('one')['cid']
+        self.assertFalse(self.sync());self.assertIn('a',self.kubo.recursive)
+        self.write_state(2)
+        with self.assertRaisesRegex(s.Failure,'Another publication'):self.publish_state()
+        self.assertEqual(self.store.publication('one')['cid'],root);self.assertIn(root,self.kubo.recursive)
+        self.write_state(1);self.publish_error=None;self.assertTrue(self.publish_state())
+        self.assertEqual(self.store.row('one')['current'],root)
+
+    def test_death_during_preparation_cleaned_by_sync(self):
+        original=self.kubo.call
+        def interrupted(*args,**kwargs):
+            value=original(*args,**kwargs)
+            if args[1]=='cp':raise RuntimeError('process died')
+            return value
+        with mock.patch.object(self.kubo,'call',side_effect=interrupted):
+            with self.assertRaises(RuntimeError):self.publish_state()
+        self.assertTrue(self.directories);self.assertIsNone(self.store.publication('one'))
+        self.assertTrue(self.sync());self.assertEqual(self.directories,{})
+        self.assertEqual(self.store.row('one')['current'],'a')
+
+    def test_pin_failure_keeps_draft_until_retry(self):
+        original=self.kubo.add
+        def failed(cid,*args,**kwargs):
+            if cid.startswith('bundle-'):raise s.Failure('pin interrupted')
+            return original(cid,*args,**kwargs)
+        with mock.patch.object(self.kubo,'add',side_effect=failed):
+            with self.assertRaises(s.Failure):self.publish_state()
+        self.assertTrue(self.directories);self.assertIn('a',self.kubo.recursive)
+        self.assertFalse(self.sync());self.assertTrue(self.publish_state());self.assertEqual(self.directories,{})
+
+    def test_failure_after_commit_retries_staging_cleanup(self):
+        with mock.patch.object(self.kubo,'remove_staging',side_effect=lambda path,fds=(): (_ for _ in ()).throw(s.Failure('cleanup failed'))):
+            # First clear sees no journal; the failure occurs after successful commit.
+            with self.assertRaises(s.Failure):self.publish_state()
+        self.assertTrue(self.store.row('one')['current'].startswith('bundle-'))
+        self.assertIsNone(self.store.publication('one'));self.assertTrue(self.sync());self.assertEqual(self.directories,{})
+
+    def test_bad_container_preserves_base_and_publication(self):
+        valid=self.state.read_bytes()
+        for data in [valid[:-1],valid+b'x',b'BADMAGIC'+valid[8:]]:
+            self.state.write_bytes(data)
+            with self.assertRaises(s.Failure):self.publish_state()
+            self.assertEqual(self.store.row('one')['current'],'a')
+            self.assertIsNone(self.store.publication('one'))
+        self.state.write_bytes(valid)
+        with self.assertRaisesRegex(s.Failure,'different base'):s.validate_state(self.state,bytes(198))
+
+    def test_mutation_during_snapshot_is_rejected(self):
+        copy=s.shutil.copyfileobj
+        def changed(src,dst,*args):
+            copy(src,dst,*args)
+            with self.state.open('ab') as handle:handle.write(b'x')
+        with mock.patch.object(s.shutil,'copyfileobj',side_effect=changed):
+            with self.assertRaisesRegex(s.Failure,'changed'):self.publish_state()
+        self.assertIsNone(self.store.publication('one'));self.assertEqual(self.store.row('one')['current'],'a')
+
+    def test_reserved_state_source_is_not_deleted(self):
+        source=self.store.snapshot('one');data=self.state.read_bytes();source.write_bytes(data)
+        with self.assertRaisesRegex(s.Failure,'reserved'):
+            self.follow.publish_state(source,'my98',self.names)
+        self.assertEqual(source.read_bytes(),data)
+
+    def test_name_lock_rejects_parallel_state_publication(self):
+        with self.store.lock('name:one'):
+            with self.assertRaises(s.Busy):self.publish_state()
+        self.assertEqual(self.store.row('one')['current'],'a')
+
+    def test_foreign_root_pin_is_not_removed(self):
+        self.assertTrue(self.publish_state());root=self.store.row('one')['current']
+        self.kubo.recursive[root]='someone-else'
+        self.assertTrue(self.follow.publish_state(None,'my98',self.names));self.assertIn(root,self.kubo.recursive)
 
 if __name__ == "__main__":
     unittest.main()

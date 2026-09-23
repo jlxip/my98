@@ -75,6 +75,51 @@ def validate_disk(path):
         raise Failure("Invalid .my98 logical or physical size")
 
 
+def validate_state(path, base):
+    """Structural validation only; the browser authenticates the encrypted records."""
+    with Path(path).open("rb") as handle:
+        info = os.fstat(handle.fileno())
+        prefix = handle.read(12)
+        if not stat.S_ISREG(info.st_mode) or len(prefix) != 12 or prefix[:8] != b"MY98STAT":
+            raise Failure("Unsupported .my98state file")
+        length = struct.unpack_from("<I", prefix, 8)[0]
+        if not 1 <= length <= 4096:
+            raise Failure("Invalid state header length")
+        try:
+            header = json.loads(handle.read(length))
+        except (ValueError, UnicodeError) as exc:
+            raise Failure("Invalid state header") from exc
+    limit = 1 << 30
+    if (not isinstance(header, dict) or type(header.get("version")) is not int or header["version"] != 1 or
+            type(header.get("raw")) is not int or not 4 <= header["raw"] <= limit or
+            type(header.get("packed")) is not int or not 1 <= header["packed"] <= limit):
+        raise Failure("Unsupported state size or version")
+    for key, size in (("base", 198), ("nonce", 16)):
+        value = header.get(key)
+        if not isinstance(value, list) or len(value) != size or any(type(v) is not int or not 0 <= v <= 255 for v in value):
+            raise Failure("Invalid state " + key)
+    if bytes(header["base"]) != base:
+        raise Failure("State belongs to a different base disk")
+    packed = header["packed"]
+    if info.st_size != 12 + length + packed + ((packed + 1048575) // 1048576) * 62 or info.st_size > limit + 65536:
+        raise Failure("Truncated state or trailing bytes")
+
+
+def snapshot_file(source, target):
+    if Path(source).resolve() == target.resolve():
+        raise Failure("Source uses the reserved snapshot path")
+    with Path(source).open("rb") as src, target.open("wb") as dest:
+        before = os.fstat(src.fileno())
+        if not stat.S_ISREG(before.st_mode):
+            raise Failure("Source must be a regular file")
+        shutil.copyfileobj(src, dest, 1024 * 1024)
+        dest.flush()
+        os.fsync(dest.fileno())
+        after = os.fstat(src.fileno())
+        if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+            raise Failure("Source changed while being copied")
+
+
 def find_ipfs(explicit=None):
     if explicit:
         return os.path.expanduser(explicit)
@@ -358,6 +403,45 @@ class Kubo:
             args.append("--pin-name=" + label)
         return self.canonical(self.call(*args, "--", str(path), timeout=1800, fds=fds), fds)
 
+    def publication_parts(self, cid, fds=()):
+        try:
+            return self._publication_parts(cid, fds)
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
+            raise Failure("Invalid publication metadata returned by Kubo") from exc
+
+    def _publication_parts(self, cid, fds=()):
+        path = "/ipfs/" + cid
+        info = json.loads(self.call("files", "stat", "--enc=json", "--", path, fds=fds))
+        if info["Type"] == "directory":
+            links = json.loads(self.call("dag", "get", "--", path, fds=fds)).get("Links") or []
+            if len(links) != 2 or {link["Name"] for link in links} != {"disk.my98", "state.my98state"}:
+                raise Failure("Unsupported publication directory")
+            parts = {link["Name"]: self.canonical(link["Hash"]["/"], fds) for link in links}
+            for child in parts.values():
+                if json.loads(self.call("files", "stat", "--enc=json", "--", "/ipfs/" + child, fds=fds))["Type"] != "file":
+                    raise Failure("Publication entries must be files")
+            disk, state = parts["disk.my98"], parts["state.my98state"]
+        elif info["Type"] == "file":
+            disk, state = cid, None
+        else:
+            raise Failure("Unsupported publication root")
+        header = self.call("cat", "--length=198", "--", "/ipfs/" + disk, fds=fds, binary=True)
+        if len(header) != 198 or header[:8] != b"SLOPDSK\0":
+            raise Failure("Publication does not contain a my98 disk")
+        version, chunk, size = struct.unpack_from("<IIQ", header, 8)
+        actual = json.loads(self.call("files", "stat", "--enc=json", "--", "/ipfs/" + disk, fds=fds))["Size"]
+        if version != 1 or chunk != 65536 or not 1 <= size <= 1 << 40 or actual != 198 + size + ((size + chunk - 1) // chunk) * 62:
+            raise Failure("Invalid published disk")
+        return disk, state, header
+
+    def remove_staging(self, path, fds=()):
+        # ls of the parent distinguishes an already removed path from RPC failure.
+        parent, leaf = path.rsplit("/", 1)
+        self.call("files", "mkdir", "-p", "--", parent, fds=fds)
+        entries = json.loads(self.call("files", "ls", "--enc=json", "--", parent, fds=fds)).get("Entries") or []
+        if any(entry["Name"] == leaf for entry in entries):
+            self.call("files", "rm", "-r", "--", path, fds=fds)
+
     def publish(self, key, cid, fds=()):
         sequence = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H%M%S")
         self.call("name", "publish", "--key=" + key, "--sequence=" + sequence,
@@ -419,6 +503,7 @@ class Store:
                 CREATE TABLE IF NOT EXISTS publications (
                     name TEXT PRIMARY KEY, cid TEXT NOT NULL, key TEXT NOT NULL,
                     stage TEXT NOT NULL, error TEXT);
+                CREATE TABLE IF NOT EXISTS staging (name TEXT PRIMARY KEY, path TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS pins (
                     cid TEXT PRIMARY KEY, owned INTEGER NOT NULL, error TEXT);
             """)
@@ -525,6 +610,14 @@ class Follower:
     def __init__(self, store, kubo):
         self.store, self.kubo = store, kubo
 
+    def clear_staging(self, name, fds=()):
+        with self.store.db() as db:
+            row = db.execute("SELECT path FROM staging WHERE name=?", (name,)).fetchone()
+        if row:
+            self.kubo.remove_staging(row[0], fds)
+            with self.store.db() as db:
+                db.execute("DELETE FROM staging WHERE name=?", (name,))
+
     def renew_current(self, name, fds):
         row = self.store.row(name)
         if (not row["enabled"] or row["seen_sequence"] is None or
@@ -575,8 +668,10 @@ class Follower:
                         with self.store.lock("cid:" + cid) as cid_fd:
                             self.ensure_pin(cid, (name_fd, cid_fd))
                             self.store.commit_publication(name, cid)
+                        self.clear_staging(name, (name_fd,))
                         self.renew_current(name, (name_fd,))
                         return True
+                    self.clear_staging(name, (name_fd,))
                     if not row["enabled"]:
                         self.store.update(name, current=None, pending=None, error=None)
                         return True
@@ -691,20 +786,10 @@ class Follower:
         with self.store.lock("name:" + name) as name_fd:
             self.add_name(name, names_path)
             snapshot = self.store.snapshot(name)
-            if Path(source).resolve() == snapshot.resolve():
+            if source is not None and Path(source).resolve() == snapshot.resolve():
                 raise Failure("Source uses the reserved snapshot path")
             try:
-                # The name lock also protects this recoverable scratch filename.
-                with Path(source).open("rb") as src, snapshot.open("wb") as dest:
-                    before = os.fstat(src.fileno())
-                    if not stat.S_ISREG(before.st_mode):
-                        raise Failure("Disk must be a regular file")
-                    shutil.copyfileobj(src, dest, 1024 * 1024)
-                    dest.flush()
-                    os.fsync(dest.fileno())
-                    after = os.fstat(src.fileno())
-                    if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
-                        raise Failure("Source disk changed while being copied")
+                snapshot_file(source, snapshot)
                 validate_disk(snapshot)
                 cid = self.kubo.import_disk(snapshot, fds=(name_fd,))
                 pending = self.store.publication(name)
@@ -735,6 +820,76 @@ class Follower:
                 snapshot.unlink(missing_ok=True)
         return self.cleanup()
 
+
+    def publish_state(self, source, key, names_path):
+        name = self.kubo.key_name(key)
+        with self.store.lock("name:" + name) as name_fd:
+            fds = (name_fd,)
+            self.add_name(name, names_path)
+            snapshot = self.store.snapshot(name)
+            if source is not None and Path(source).resolve() == snapshot.resolve():
+                raise Failure("Source uses the reserved snapshot path")
+            try:
+                pending = self.store.publication(name)
+                root = pending["cid"] if pending else self.resolve(name, fds)
+                # Retain the resolved base while preparing a new root, also after failure.
+                if not pending:
+                    self.store.update(name, pending=root)
+                with self.store.lock("cid:" + root) as root_fd:
+                    self.ensure_pin(root, (*fds, root_fd))
+                disk, old_state, header = self.kubo.publication_parts(root, fds)
+                if source is None:
+                    cid = disk
+                    if old_state is None and not pending:
+                        self.store.update(name, current=disk, pending=None, error=None)
+                        self.clear_staging(name, fds)
+                        print("No published state.")
+                        return self.cleanup()
+                else:
+                    snapshot_file(source, snapshot)
+                    validate_state(snapshot, header)
+                    state_cid = self.kubo.import_disk(snapshot, fds=fds)
+                    # Reconstruct a deterministic wrapper; never remove a pending
+                    # publication's scratch protection until its root is pinned.
+                    self.clear_staging(name, fds)
+                    path = "/my98-seedbox-" + self.store.label.split(":", 1)[1] + "/" + hashlib.sha256(name.encode()).hexdigest()
+                    with self.store.db() as db:
+                        db.execute("INSERT OR REPLACE INTO staging VALUES (?,?)", (name, path))
+                    self.kubo.call("files", "mkdir", "-p", "--", path, fds=fds)
+                    self.kubo.call("files", "cp", "--", "/ipfs/" + disk, path + "/disk.my98", fds=fds)
+                    with self.store.lock("cid:" + state_cid) as state_fd:
+                        inherited = (*fds, state_fd)
+                        self.ensure_pin(state_cid, inherited, snapshot)
+                        self.kubo.call("files", "cp", "--", "/ipfs/" + state_cid, path + "/state.my98state", fds=inherited)
+                    cid = self.kubo.canonical(self.kubo.call("files", "stat", "--hash", "--", path, fds=fds), fds)
+                if pending and pending["cid"] != cid:
+                    raise Failure("Another publication is uncertain; retry its original content first")
+                with self.store.db() as db:
+                    db.execute("INSERT INTO publications VALUES (?,?,?,'adding',NULL) "
+                               "ON CONFLICT(name) DO UPDATE SET error=NULL", (name, cid, key))
+                with self.store.lock("cid:" + cid) as cid_fd:
+                    inherited = (*fds, cid_fd)
+                    self.ensure_pin(cid, inherited)
+                    with self.store.db() as db:
+                        db.execute("UPDATE publications SET stage='publishing' WHERE name=?", (name,))
+                    self.kubo.publish(key, cid, inherited)
+                    with self.store.db() as db:
+                        db.execute("UPDATE publications SET stage='confirming' WHERE name=?", (name,))
+                    self.store.update(name, last_check=now())
+                    if self.resolve(name, inherited) != cid:
+                        raise Failure("Publication awaiting IPNS confirmation; retry the same content")
+                    self.store.commit_publication(name, cid)
+                    self.store.update(name, renewed_sequence=self.store.row(name)["seen_sequence"], renewed_at=now())
+                self.clear_staging(name, fds)
+                print("Published: " + cid, flush=True)
+            except (Failure, OSError, sqlite3.Error, Busy) as exc:
+                self.store.update(name, error=str(exc))
+                with self.store.db() as db:
+                    db.execute("UPDATE publications SET error=? WHERE name=?", (str(exc), name))
+                raise
+            finally:
+                snapshot.unlink(missing_ok=True)
+        return self.cleanup()
 
     def adopt_legacy(self, legacy, key, names_path):
         """One-time adoption with cron paused; legacy must be retired afterwards.
@@ -996,23 +1151,23 @@ def setup_cron(store, kubo, names_path):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, epilog="Examples: seedbox.py login; seedbox.py add k51...; "
-        "seedbox.py sync; seedbox.py publish disk.my98. Run sync from cron every minute. "
+        "seedbox.py sync; seedbox.py publish disk.my98; seedbox.py publish-state session.my98state; seedbox.py clear-state. Run sync from cron every minute. "
         "Use one state directory per Kubo node. This tool never runs GC. "
         "setup-cron installs sync every minute for the current user, preserves unrelated entries, "
         "and refuses manual seedbox entries. It cannot detect arbitrary wrappers or atomically "
         "exclude other crontab editors. Paths/options cannot contain newlines or %. "
         "It does not install/start cron or Kubo; keep the script and executables at their current paths.")
-    parser.add_argument("command", choices=("login", "add", "sync", "status", "publish", "setup-cron"))
-    parser.add_argument("target", nargs="?", help="Public IPNS key for add; disk file for publish")
+    parser.add_argument("command", choices=("login", "add", "sync", "status", "publish", "publish-state", "clear-state", "setup-cron"))
+    parser.add_argument("target", nargs="?", help="Public IPNS key for add; disk file for publish; state file for publish-state")
     parser.add_argument("--key", default="my98", help="Existing Kubo publication key (default: my98)")
     parser.add_argument("--names", help="Names file (default: STATE/names.txt)")
     parser.add_argument("--state", default="~/.local/my98", help="State directory (default: ~/.local/my98)")
     parser.add_argument("--api", default="/ip4/127.0.0.1/tcp/5001", help="Kubo API multiaddress")
     parser.add_argument("--ipfs", help="Kubo executable (default: automatic, including IPFS Desktop)")
     args = parser.parse_args(argv)
-    if args.command in ("add", "publish") and not args.target:
-        parser.error(args.command + " requires " + ("a public IPNS key" if args.command == "add" else "a disk file"))
-    if args.command in ("login", "sync", "status", "setup-cron") and args.target:
+    if args.command in ("add", "publish", "publish-state") and not args.target:
+        parser.error(args.command + " requires " + {"add":"a public IPNS key", "publish":"a disk file", "publish-state":"a state file"}[args.command])
+    if args.command in ("login", "sync", "status", "clear-state", "setup-cron") and args.target:
         parser.error(args.command + " does not accept a target")
     os.umask(0o077)
     try:
@@ -1041,6 +1196,8 @@ def main(argv=None):
             print(("Added: " if added else "Already following: ") + name)
             print("Run sync to replicate now; otherwise the next scheduled sync will pick it up.")
             return 0
+        if args.command in ("publish-state", "clear-state"):
+            return 0 if follower.publish_state(args.target, args.key, names_path) else 1
         if args.command == "publish":
             return 0 if follower.publish(args.target, args.key, names_path) else 1
         return 0 if follower.sync(lambda: kubo.names(names_path)) else 1
