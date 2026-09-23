@@ -74,11 +74,12 @@ def run():
         # Do not emit partial or unexpected helper output.
         try:
             result = json.loads(output)
-            valid = (isinstance(result, dict) and set(result) in ({"cid", "readKey"}, {"cid", "readKey", "publicationCid"})
+            valid = (isinstance(result, dict) and set(result) in ({"ipnsName", "cid", "readKey"}, {"ipnsName", "cid", "readKey", "publicationCid"})
+                     and isinstance(result["ipnsName"], str) and bool(result["ipnsName"])
                      and ("publicationCid" not in result or isinstance(result["publicationCid"], str) and bool(result["publicationCid"]))
                      and isinstance(result["cid"], str) and bool(result["cid"])
                      and isinstance(result["readKey"], str)
-                     and re.fullmatch(r"my98-ro-v1\.[A-Za-z0-9_-]{64}", result["readKey"]))
+                     and re.fullmatch(r"my98-ro-v2\.[A-Za-z0-9_-]{85}[AQgw]", result["readKey"]))
         except (ValueError, TypeError):
             valid = False
         if not valid:

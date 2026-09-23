@@ -239,21 +239,7 @@ impl Identity {
     }
     pub fn open_disk(&self, envelope: &[u8]) -> Result<Disk> {
         self.check()?;
-        let bytes = Zeroizing::new(unseal(
-            &self.metadata_key,
-            DESCRIPTOR,
-            &ZERO_NONCE,
-            &self.public_key,
-            envelope,
-        )?);
-        if bytes.len() != 48 {
-            return Err(AUTH.into());
-        }
-        Ok(Disk {
-            id: bytes[..16].try_into().unwrap(),
-            key: Zeroizing::new(bytes[16..].try_into().unwrap()),
-            active: true,
-        })
+        open_descriptor(&self.metadata_key, &self.public_key, envelope)
     }
     pub fn close(&mut self) {
         self.signing_seed.zeroize();
@@ -265,6 +251,55 @@ impl Drop for Identity {
     fn drop(&mut self) {
         self.close();
     }
+}
+
+impl Identity {
+    /// Stable reading capability. Never contains the signing seed or Argon2 master.
+    pub fn export_read_key(&self) -> Result<Zeroizing<Vec<u8>>> {
+        self.check()?;
+        let mut bytes = Zeroizing::new(Vec::with_capacity(64));
+        bytes.extend_from_slice(&self.public_key);
+        bytes.extend_from_slice(self.metadata_key.as_ref());
+        Ok(bytes)
+    }
+}
+
+/// Identity-wide decryption only; deliberately has no signing operations.
+pub struct ReadCapability {
+    public_key: [u8; 32],
+    metadata_key: Zeroizing<[u8; 32]>,
+}
+impl ReadCapability {
+    pub fn from_bytes(bytes: Vec<u8>) -> Result<Self> {
+        let bytes = Zeroizing::new(bytes);
+        if bytes.len() != 64 {
+            return Err("Read key must contain exactly 64 bytes".into());
+        }
+        let public_key = bytes[..32].try_into().unwrap();
+        VerifyingKey::from_bytes(&public_key).map_err(|_| "Invalid public key".to_owned())?;
+        Ok(Self {
+            public_key,
+            metadata_key: Zeroizing::new(bytes[32..].try_into().unwrap()),
+        })
+    }
+    pub fn public_key(&self) -> &[u8; 32] {
+        &self.public_key
+    }
+    pub fn open_disk(&self, envelope: &[u8]) -> Result<Disk> {
+        open_descriptor(&self.metadata_key, &self.public_key, envelope)
+    }
+}
+
+fn open_descriptor(key: &[u8; 32], public_key: &[u8; 32], envelope: &[u8]) -> Result<Disk> {
+    let bytes = Zeroizing::new(unseal(key, DESCRIPTOR, &ZERO_NONCE, public_key, envelope)?);
+    if bytes.len() != 48 {
+        return Err(AUTH.into());
+    }
+    Ok(Disk {
+        id: bytes[..16].try_into().unwrap(),
+        key: Zeroizing::new(bytes[16..].try_into().unwrap()),
+        active: true,
+    })
 }
 
 #[wasm_bindgen]

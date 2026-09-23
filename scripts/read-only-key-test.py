@@ -64,13 +64,13 @@ def session(gateway, mode):
         check(stage == 3, "missing interactive prompts")
         check(b"public compatibility password" not in transcript and b"incorrect-password" not in transcript,
               "password appeared on terminal")
-        check(b"my98-ro-v1." not in transcript, "read key appeared on stderr")
+        check(b"my98-ro-v2." not in transcript, "read key appeared on stderr")
         if mode in ("success", "success-publication"):
             check(status == 0, "interactive export failed")
             result = json.loads(output)
-            check(set(result) == ({"cid", "readKey", "publicationCid"} if mode == "success-publication" else {"cid", "readKey"}), "unexpected stdout fields")
+            check(set(result) == ({"ipnsName", "cid", "readKey", "publicationCid"} if mode == "success-publication" else {"ipnsName", "cid", "readKey"}), "unexpected stdout fields")
             check(output.count(b"\n") == 1, "stdout contained extra output")
-            check(result["readKey"].startswith("my98-ro-v1."), "missing read key")
+            check(result["readKey"].startswith("my98-ro-v2."), "missing read key")
         else:
             check(status == (130 if mode == "cancel" else 1), "incorrect failure status")
             check(not output, "partial JSON on failure")

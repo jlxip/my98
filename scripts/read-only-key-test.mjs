@@ -38,7 +38,7 @@ function failed(result, name) {
     assert.notEqual(result.code, 0, name);
     assert.equal(result.stdout, '', name + ': no partial output');
     assert(!result.stderr.includes(credentials.password), name + ': password redacted');
-    assert(!result.stderr.includes('my98-ro-v1.'), name + ': key redacted');
+    assert(!result.stderr.includes('my98-ro-v2.'), name + ': key redacted');
     ok(name);
 }
 await init({module_or_path:await readFile('build/disk/pkg/slop86_disk_bg.wasm')});
@@ -50,9 +50,9 @@ try {
     const result = await run(login);
     assert.equal(result.code, 0, result.stderr);
     const exported = JSON.parse(result.stdout);
-    assert.deepEqual(Object.keys(exported).sort(), ['cid','readKey']);
+    assert.deepEqual(Object.keys(exported).sort(), ['cid','ipnsName','readKey']);
     assert.equal(exported.cid, f.cid1);
-    assert.match(exported.readKey, /^my98-ro-v1\.[A-Za-z0-9_-]{64}$/);
+    assert.match(exported.readKey, /^my98-ro-v2\.[A-Za-z0-9_-]{85}[AQgw]$/);
     assert.equal(result.stdout.split('\n').length, 2);
     assert(!result.stderr.includes(exported.readKey));
     assert(f.requests.filter(r=>r.path.startsWith('/ipfs/')).length <= 3, 'only header/first block path fetched');

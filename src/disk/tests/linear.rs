@@ -414,12 +414,13 @@ fn cancellation_after_async_read_never_commits() {
 fn read_only_capability_overlay_and_owner_guards() {
     let io = Memory::default();
     let mut owner = engine();
-    assert!(owner.export_read_key().is_err());
+    assert_eq!(owner.export_read_key().unwrap().len(), 64);
     let plain = support::bytes(CHUNK * 3 + 7);
     create(&mut owner, &io, plain.clone());
     futures::executor::block_on(async {
         assert!(!owner.describe().unwrap().read_only);
         let key = owner.export_read_key().unwrap();
+        let original_state = owner.seal_state(b"state fixture", vec![1, 2, 3]).unwrap();
         let total = io.bytes("base").len() as u64;
         io.reset();
         let mut reader = Engine::open_read_only(&io, "base".into(), total, key.to_vec())
@@ -486,7 +487,7 @@ fn read_only_capability_overlay_and_owner_guards() {
             .unwrap();
         assert_eq!(reader.read(&io, 0, 1).await.unwrap(), plain[..1]);
         owner.write(&io, 0, &[99]).await.unwrap();
-        assert!(owner.export_read_key().is_err());
+        assert_eq!(owner.export_read_key().unwrap().len(), 64);
         assert!(owner.begin_save(&io).await.unwrap());
         let mut new = owner.header().unwrap();
         while let Some(record) = owner.next(&io).await.unwrap() {
@@ -495,17 +496,31 @@ fn read_only_capability_overlay_and_owner_guards() {
         io.put("saved", new.clone());
         owner.accept(&io, "saved".into(), new.len() as u64).unwrap();
         let new_key = owner.export_read_key().unwrap();
-        assert_ne!(*key, *new_key);
+        assert_eq!(*key, *new_key);
         assert!(
             Engine::open_read_only(&io, "saved".into(), new.len() as u64, key.to_vec())
                 .await
-                .is_err()
+                .is_ok()
         );
         let mut new_reader =
             Engine::open_read_only(&io, "saved".into(), new.len() as u64, new_key.to_vec())
                 .await
                 .unwrap();
         assert_eq!(new_reader.read(&io, 0, 1).await.unwrap(), [99]);
+        let new_state = owner.seal_state(b"state fixture", vec![4, 5, 6]).unwrap();
+        assert_eq!(
+            new_reader.open_state(b"state fixture", &new_state).unwrap(),
+            [4, 5, 6]
+        );
+        assert_eq!(
+            reader
+                .open_state(b"state fixture", &original_state)
+                .unwrap(),
+            [1, 2, 3]
+        );
+        assert!(new_reader
+            .open_state(b"state fixture", &original_state)
+            .is_err());
         assert_eq!(reader.read(&io, 0, 1).await.unwrap(), plain[..1]);
     });
 }
@@ -518,7 +533,7 @@ fn read_only_rejects_bad_keys_headers_and_records() {
     futures::executor::block_on(async {
         let base = io.bytes("base");
         let key = owner.export_read_key().unwrap();
-        for length in [0, 16, 32, 47, 49] {
+        for length in [0, 16, 32, 48, 63, 65] {
             io.reset();
             assert_eq!(
                 Engine::open_read_only(&io, "base".into(), base.len() as u64, vec![0; length])
@@ -530,23 +545,27 @@ fn read_only_rejects_bad_keys_headers_and_records() {
             );
             assert_eq!(io.count(), 0);
         }
-        for pos in [0, 16, 47] {
+        for pos in [0, 16, 32, 63] {
             let mut bad = key.to_vec();
             bad[pos] ^= 1;
-            assert_eq!(
-                Engine::open_read_only(&io, "base".into(), base.len() as u64, bad)
-                    .await
-                    .err()
-                    .unwrap()
-                    .code,
-                "CORRUPTION"
-            );
+            let failure = Engine::open_read_only(&io, "base".into(), base.len() as u64, bad)
+                .await
+                .err()
+                .unwrap();
+            assert!(matches!(
+                failure.code,
+                "INVALID_READ_KEY" | "CORRUPTION" | "AUTHENTICATION_FAILED"
+            ));
         }
         for pos in [
             0,
             8,
             12,
             16,
+            24, // descriptor
+            133,
+            134, // signature
+            HEADER - 1,
             HEADER,
             HEADER + 46,
             HEADER + CHUNK + OVERHEAD - 1,
@@ -580,8 +599,7 @@ fn read_only_rejects_bad_keys_headers_and_records() {
             reader.read(&io, CHUNK as u64, 1).await.unwrap_err().code,
             "CORRUPTION"
         );
-        // Header signatures are checked by owner opening. In this mode the caller
-        // supplies a CID-authenticated source, not an identity public key.
+        // A valid CID alone must not authenticate an unsigned replacement header.
         let mut changed_signature = base.clone();
         changed_signature[197] ^= 1;
         io.put("cid-verified", changed_signature);
@@ -592,7 +610,7 @@ fn read_only_rejects_bad_keys_headers_and_records() {
             key.to_vec()
         )
         .await
-        .is_ok());
+        .is_err());
     });
 }
 

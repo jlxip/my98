@@ -1,4 +1,4 @@
-import {Slop86Disk, DiskBuffer} from '/build/disk/web/client.js';
+import {Slop86Disk, DiskBuffer, readOnlyPublicKey} from '/build/disk/web/client.js';
 
 export async function runReadOnly(f) {
     const checks = [];
@@ -14,24 +14,28 @@ export async function runReadOnly(f) {
     try {
         owner = await Slop86Disk.create();
         await owner.unlock('disk fixtures', 'public compatibility password', 'main');
-        await rejects('export needs an open disk', ()=>owner.exportReadOnlyKey(), 'OPERATION_FAILED');
+        const beforeOpen = await owner.exportReadOnlyKey();
         const owned = await owner.open(file);
         check('owner state remains writable', owned.readOnly === false);
         const readKey = await owner.exportReadOnlyKey();
-        check('versioned 48-byte capability', /^my98-ro-v1\.[A-Za-z0-9_-]{64}$/.test(readKey) && readKey.length === 75);
+        check('versioned stable 64-byte capability', /^my98-ro-v2\.[A-Za-z0-9_-]{85}[AQgw]$/.test(readKey) && readKey.length === 97 && beforeOpen === readKey);
+        check('public identity matches capability', hex(readOnlyPublicKey(readKey)) === hex(new Uint8Array(f.identity.publicKey)));
         await owner.write(7, new Uint8Array([99]));
-        await rejects('dirty owner cannot export', ()=>owner.exportReadOnlyKey(), 'OPERATION_FAILED');
+        check('dirty owner exports the same key', await owner.exportReadOnlyKey() === readKey);
         await owner.discardWrites();
         check('discard preserves original capability', await owner.exportReadOnlyKey() === readKey);
+        await owner.write(7,new Uint8Array([98]));
+        await owner.save();
+        check('saved disk uses the same stable capability', await owner.exportReadOnlyKey() === readKey);
         await rejects('owner cannot switch mode in place', ()=>owner.openReadOnly({cid:f.cid0, readKey}), 'OPERATION_FAILED');
         await owner.close(); owner = undefined;
         const options = {cid:f.cid0, readKey, gateway:f.endpoint, prefetch:{enabled:false}};
         c = await Slop86Disk.create();
         const networkBefore = await window.gatewayRequestCount();
-        for(const bad of ['', 'my98-ro-v2.'+'A'.repeat(64), readKey+'=', readKey+'\n', readKey.slice(1), readKey.slice(0,-1)+'!', null]) {
+        for(const bad of ['', 'my98-ro-v1.'+'A'.repeat(64), 'my98-ro-v2.'+'A'.repeat(64), readKey.slice(0,-1)+'B', readKey+'=', readKey+'\n', readKey.slice(1), readKey.slice(0,-1)+'!', null]) {
             await rejects('malformed key rejected', ()=>c.openReadOnly({...options, readKey:bad}), 'INVALID_READ_KEY');
         }
-        for(const readKey of [null, 'not bytes', new Uint8Array(47)]) {
+        for(const readKey of [null, 'not bytes', new Uint8Array(48), new Uint8Array(63)]) {
             await rejects('worker validates capability bytes', ()=>c.call('openReadOnly',{...options,readKey}), 'INVALID_READ_KEY');
         }
         for(const cid of ['', '/ipfs/'+f.cid0, f.cid0+'/file', 'https://example.com/'+f.cid0, ' '+f.cid0, 'k51-invalid', f.ipnsName, null]) {
@@ -39,9 +43,9 @@ export async function runReadOnly(f) {
         }
         check('invalid inputs cause no requests', await window.gatewayRequestCount() === networkBefore);
         await rejects('directory CID rejected', ()=>c.openReadOnly({...options,cid:f.directoryCid}), 'UNSUPPORTED_FORMAT');
-        for(const pos of [11, 40]) {
+        for(const pos of [54, 80]) {
             const wrong = readKey.slice(0,pos) + (readKey[pos] === 'A' ? 'B' : 'A') + readKey.slice(pos+1);
-            await rejects('wrong capability rejected before open', ()=>c.openReadOnly({...options, readKey:wrong}), 'CORRUPTION');
+            await rejects('wrong capability rejected before open', ()=>c.openReadOnly({...options, readKey:wrong}), 'AUTHENTICATION_FAILED');
             await rejects('failed open leaves no disk', ()=>c.describe(), 'OPERATION_FAILED');
         }
         for(const cid of [f.cid0, f.cid1]) {

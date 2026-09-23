@@ -1,3 +1,19 @@
+function decodeReadKey(readKey) {
+    const invalid = message => Object.assign(new Error(message), {code:'INVALID_READ_KEY'});
+    if(typeof readKey === 'string' && readKey.startsWith('my98-ro-v1.'))
+        throw invalid('This read key is outdated. Export a new read-only key.');
+    if(typeof readKey !== 'string' || !/^my98-ro-v2\.[A-Za-z0-9_-]{85}[AQgw]$/.test(readKey))
+        throw invalid('Invalid read key');
+    return Uint8Array.from(atob(readKey.slice(11).replaceAll('-', '+').replaceAll('_', '/')+'=='), c=>c.charCodeAt(0));
+}
+
+/** Public identity bound to a v2 capability; never returns its decryption key. */
+export function readOnlyPublicKey(readKey) {
+    const bytes = decodeReadKey(readKey);
+    try { return bytes.slice(0,32); }
+    finally { bytes.fill(0); }
+}
+
 export class Slop86Disk {
     static async create({ workerUrl = new URL("./worker.js", import.meta.url), onProgress, onAnalysis } = {}) {
         const client = new Slop86Disk(workerUrl, onProgress, onAnalysis);
@@ -51,14 +67,11 @@ export class Slop86Disk {
     openRemote({gateway, servers, onlyLocalhost = false, prefetch} = {}) {return this.call("openRemote", {gateway,servers,onlyLocalhost,prefetch});}
     async exportReadOnlyKey() {
         const bytes = await this.call("exportReadOnlyKey");
-        try { return "my98-ro-v1." + btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_"); }
+        try { return "my98-ro-v2." + btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, ''); }
         finally { bytes.fill(0); }
     }
     async openReadOnly({cid, readKey, gateway, servers, onlyLocalhost = false, prefetch} = {}) {
-        if(typeof readKey !== "string" || readKey.length !== 75 || !/^my98-ro-v1\.[A-Za-z0-9_-]{64}$/.test(readKey)) {
-            throw Object.assign(new Error("Invalid read key"), {code:"INVALID_READ_KEY"});
-        }
-        const bytes = Uint8Array.from(atob(readKey.slice(11).replaceAll("-", "+").replaceAll("_", "/")), c=>c.charCodeAt(0));
+        const bytes = decodeReadKey(readKey);
         try { return await this.call("openReadOnly", {cid, readKey:bytes, gateway, servers, onlyLocalhost, prefetch}, [bytes.buffer]); }
         finally { if(bytes.byteLength) bytes.fill(0); }
     }

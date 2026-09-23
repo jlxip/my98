@@ -58,7 +58,7 @@ async function execute(op,a) {
     }
     if(op === "openReadOnly") {
         if(vault) throw fail("OPERATION_FAILED", "Close the current disk or identity first");
-        if(!(a.readKey instanceof Uint8Array) || a.readKey.length !== 48) throw fail("INVALID_READ_KEY", "Invalid read key");
+        if(!(a.readKey instanceof Uint8Array) || a.readKey.length !== 64) throw fail("INVALID_READ_KEY", "Invalid read key");
         const remote = new RemoteDisk({gateway:a.gateway, servers:a.servers, onlyLocalhost:a.onlyLocalhost, prefetch:a.prefetch, onNetwork:(bytes, calls)=>{networkBytes+=bytes;networkRequests+=calls;}});
         let id, candidate;
         try {

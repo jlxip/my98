@@ -9,6 +9,8 @@ export interface EndpointStats {url:string;active:number;validBytes:number;failu
 export interface RemoteStats {endpoints:EndpointStats[];discovery:DiscoveryStats;rangeProfile?:{ranges:number;units:number;completedUnits:number};retainedBytes:number;coveredBytes:number;totalBytes:number;completedUnits:number;totalUnits:number;inFlight:number;queued:number;prefetchState:'idle'|'running'|'paused'|'stopped'|'complete'|'closed';prefetchError?:{code:string;message:string};policy:string;concurrency:number;traceDropped:number;}
 export interface DiskTraceEvent {type:string;unit?:number;policy?:string;time:number;offset?:number;length?:number;ms?:number;cid?:string;gateway?:string;priority?:string;hit?:boolean;bytes?:number;code?:string;}
 export interface QueryServer {url:string;resolution:'gateway'|'routing'|false;discovery:boolean;}
+/** Extract the public identity from a v2 credential, validating its encoding. */
+export function readOnlyPublicKey(readKey:string):Uint8Array;
 export class Slop86Disk {
  static create(options?:{workerUrl?:URL|string;onProgress?:(progress:{phase:string;completed:number;total:number;readBytes:number;readCalls:number})=>void;onAnalysis?:(event:{type:'analysis';error:string})=>void}):Promise<Slop86Disk>;
  unlock(username:string,password:string,machine:string):Promise<{ipnsName:string;publicKey:number[]}>;
@@ -16,9 +18,9 @@ export class Slop86Disk {
  createEmpty(sizeBytes:number):Promise<SavedDisk>;
  open(file:File|Blob):Promise<DiskState>;
  openRemote(options?:{gateway?:string;servers?:QueryServer[];onlyLocalhost?:boolean;prefetch?:PrefetchOptions}):Promise<DiskState>;
- /** Export a capability for the current clean disk version. Treat the returned string as a secret. */
+ /** Export a stable capability for the unlocked identity, including past/future disks. Treat as a secret. */
  exportReadOnlyKey():Promise<string>;
- /** Open a CID using a my98-ro-v1 capability, without unlocking an identity. Writes live only in RAM. */
+ /** Open a CID using a my98-ro-v2 capability, without signing material. Writes live only in RAM. */
  openReadOnly(options:{cid:string;readKey:string;gateway?:string;servers?:QueryServer[];onlyLocalhost?:boolean;prefetch?:PrefetchOptions}):Promise<DiskState>;
  describe():Promise<DiskState>;
  read(offset:number,length:number):Promise<Uint8Array>;

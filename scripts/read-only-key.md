@@ -10,7 +10,7 @@ python3 scripts/read-only-key.py [--gateway URL]
 Requires Python 3 and Node.js 24 or later. The command never installs or builds
 anything automatically. Enter username, hidden password and machine (`main` by
 default). Prompts, progress and errors go to stderr. On success stdout is exactly
-one JSON object with `cid` and `readKey`. When a state is published it also includes
+one JSON object with `ipnsName`, `cid` and `readKey`. When a state is published it also includes
 `publicationCid`, the directory containing the base disk and its state; `cid`
 continues to identify the disk file. Pass `publicationCid` as the `cid` argument
 to `openReadOnly` to discover the state, then use `prepareState({published:true})`
@@ -27,8 +27,13 @@ only that server for both resolution and download; it accepts HTTPS or loopback
 HTTP.
 It does not start Windows, write the disk or publish anything.
 
-The read key grants access to that disk version. After saving a new version,
-export again to obtain its matching CID and read key. Keep the resulting JSON
+The `my98-ro-v2` key grants access to all available past and future disks and states
+of the same identity (username, password and machine). It contains the public
+signing key and the separate metadata decryption key, never the signing seed or
+Argon2 master. Export once; subsequent disk saves do not change this credential.
+The previous `my98-ro-v1` format is rejected; export again to migrate. No disk or
+state conversion is needed. There is no independent revocation for a shared key:
+changing credentials creates a different identity and cannot revoke old copies. Keep the resulting JSON
 private if the disk contents are private. Credentials travel to the Node helper
 through stdin, never arguments or temporary files; mutable secret buffers are
 cleared on exit (Python/JavaScript immutable strings cannot be zeroized).

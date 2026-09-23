@@ -1,7 +1,7 @@
 //! Linear, independently authenticated disk records. No network or persistent storage.
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use slop86_crypto::{derive_identity, verify, Disk, Identity};
+use slop86_crypto::{derive_identity, verify, Disk, Identity, ReadCapability};
 use std::collections::{BTreeMap, HashMap};
 use zeroize::Zeroizing;
 
@@ -120,14 +120,14 @@ fn parse_header(id: &Identity, b: &[u8], total: u64) -> Result<(Disk, u64)> {
             "Credentials are incorrect or the encrypted descriptor is damaged",
         )
     })?;
-    if !verify(
-        &id.public_key().map_err(operation)?,
-        &signed(&b[..134]),
-        &b[134..],
-    ) {
+    verify_header(&id.public_key().map_err(operation)?, b)?;
+    Ok((disk, size))
+}
+fn verify_header(public_key: &[u8], b: &[u8]) -> Result<()> {
+    if !verify(public_key, &signed(&b[..134]), &b[134..]) {
         return Err(corrupt("Invalid disk header signature"));
     }
-    Ok((disk, size))
+    Ok(())
 }
 struct Cache {
     values: HashMap<u64, (Zeroizing<Vec<u8>>, u64)>,
@@ -288,20 +288,10 @@ impl Engine {
             .ok_or_else(|| error("READ_ONLY", "Read-only disk has no owner identity"))
     }
     pub fn export_read_key(&self) -> Result<Zeroizing<Vec<u8>>> {
-        self.identity()?;
-        let image = self
-            .image
-            .as_ref()
-            .ok_or_else(|| operation("No disk open".into()))?;
-        if !image.dirty.is_empty() || self.build.is_some() {
-            return Err(operation(
-                "Save or discard pending writes before exporting a read key".into(),
-            ));
-        }
-        image.disk.export_read_key().map_err(operation)
+        self.identity()?.export_read_key().map_err(operation)
     }
     /// The caller must authenticate the entire source's content-addressed path.
-    /// Unlike owner opening, this does not verify the identity's header signature.
+    /// The identity-wide capability authenticates the header signature and descriptor.
     /// The candidate is committed only after its first data record authenticates.
     pub async fn open_read_only(
         io: &dyn Io,
@@ -309,10 +299,18 @@ impl Engine {
         total: u64,
         read_key: Vec<u8>,
     ) -> Result<Self> {
-        let disk = Disk::from_read_key(read_key)
+        let capability = ReadCapability::from_bytes(read_key)
             .map_err(|_| error("INVALID_READ_KEY", "Invalid read key"))?;
         let b = exact(io, &source, 0, total.min(HEADER as u64) as usize).await?;
         let size = header_size(&b, total)?;
+        verify_header(capability.public_key(), &b)?;
+        let disk = capability.open_disk(&b[24..134]).map_err(|_| {
+            error(
+                "AUTHENTICATION_FAILED",
+                "Read key cannot authenticate the disk descriptor",
+            )
+        })?;
+        drop(capability);
         let mut image = Image {
             source,
             size,

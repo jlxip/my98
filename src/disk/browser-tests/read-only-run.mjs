@@ -32,7 +32,7 @@ try {
                 await page.locator('#plain').setInputFiles(small.source);
             };
             await page.goto(url); await inputs();
-            const args={endpoint:f.endpoint,cid0:f.cid0,cid1:f.cid1,directoryCid:f.directoryCid,ipnsName:f.identity.ipnsName,sha256:small.sha256,original17:bytes[17]};
+            const args={endpoint:f.endpoint,cid0:f.cid0,cid1:f.cid1,directoryCid:f.directoryCid,identity:f.identity,ipnsName:f.identity.ipnsName,sha256:small.sha256,original17:bytes[17]};
             const result=await page.evaluate(async f=>(await import('/disk/browser-tests/read-only.mjs')).runReadOnly(f),args);
             await page.reload(); await inputs();
             const boot=await page.evaluate(async f=>(await import('/disk/browser-tests/read-only.mjs')).bootReadOnly(f),args);

@@ -274,7 +274,7 @@ fn machine_namespace_is_unambiguous_and_literal() {
 }
 
 #[test]
-fn read_capability_roundtrip_and_validation() {
+fn internal_disk_capability_roundtrip_and_validation() {
     let owner = identity();
     let disk = owner.create_disk().unwrap();
     let key = disk.export_read_key().unwrap();
@@ -297,4 +297,36 @@ fn read_capability_roundtrip_and_validation() {
     reader.close();
     assert!(reader.export_read_key().is_err());
     assert!(reader.open_unit(&[0; 12], &encrypted).is_err());
+}
+
+#[test]
+fn stable_read_capability_opens_multiple_disks() {
+    let mut owner = identity().clone();
+    let bytes = owner.export_read_key().unwrap();
+    assert_eq!(bytes.len(), 64);
+    assert_eq!(&bytes[..32], owner.public_key().unwrap());
+    let reader = ReadCapability::from_bytes(bytes.to_vec()).unwrap();
+    assert_eq!(reader.public_key().as_slice(), owner.public_key().unwrap());
+    let mut ids = Vec::new();
+    for value in [1, 2] {
+        let disk = owner.create_disk().unwrap();
+        ids.push(disk.id().unwrap());
+        let descriptor = owner.seal_descriptor(&disk).unwrap();
+        let encrypted = disk.seal_unit(&[0; 12], vec![value]).unwrap();
+        let read_disk = reader.open_disk(&descriptor).unwrap();
+        assert_eq!(read_disk.open_unit(&[0; 12], &encrypted).unwrap(), [value]);
+        assert_eq!(*bytes, *owner.export_read_key().unwrap());
+        let mut wrong = bytes.to_vec();
+        wrong[32] ^= 1;
+        assert!(ReadCapability::from_bytes(wrong)
+            .unwrap()
+            .open_disk(&descriptor)
+            .is_err());
+    }
+    assert_ne!(ids[0], ids[1]);
+    for length in [0, 32, 48, 63, 65] {
+        assert!(ReadCapability::from_bytes(vec![0; length]).is_err());
+    }
+    owner.close();
+    assert!(owner.export_read_key().is_err());
 }
