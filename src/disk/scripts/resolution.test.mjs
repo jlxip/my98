@@ -123,3 +123,39 @@ test('RemoteDisk cancellation while resolving prevents any block read',async t=>
     const f=await fixture(t,[{hang:true}]),remote=new RemoteDisk({gateway:f.servers[0].url,onlyLocalhost:true});
     const p=remote.open(identity);await new Promise(r=>setTimeout(r,50));remote.close();await rejected(p,'CANCELLED');assert.equal(f.seen.length,1);
 });
+
+
+test('progressive candidates arrive before the global deadline; every endpoint starts together',async t=>{
+    const expiry=future(),f=await fixture(t,[{bytes:await record(1n,'/ipfs/'+cid,expiry),delay:10},
+        {bytes:await record(3n,'/ipfs/'+other,expiry),delay:90},{bytes:await record(2n,'/ipfs/'+cid,expiry),delay:130},
+        {hang:true},{hang:true},{hang:true}]);
+    const candidates=[],start=performance.now();
+    const result=await resolveIpns(identity,{servers:f.servers,deadlineMs:220,onCandidate:r=>candidates.push({...r,at:performance.now()-start})});
+    assert.deepEqual(candidates.map(c=>c.sequence),['1','3']);assert.equal(result.rootCid,other);
+    assert(candidates[0].at<150);assert(performance.now()-start<450);assert.equal(f.peak,6);
+    await new Promise(r=>setTimeout(r,30));assert.equal(f.active,0);
+});
+test('progressive renewal of the same CID notifies without changing the target',async t=>{
+    const first=new Date(Date.now()+60000).toISOString(),last=future();
+    const f=await fixture(t,[{bytes:await record(2n,'/ipfs/'+cid,first)}, {bytes:await record(2n,'/ipfs/'+cid,last),delay:30}]);
+    const seen=[];await resolveIpns(identity,{servers:f.servers,deadlineMs:1000,onCandidate:r=>seen.push(r)});
+    assert.equal(seen.length,2);assert(seen.every(r=>r.rootCid===cid));
+});
+test('progressive resolution closes early, ignores late data, and rejects conflicts',async t=>{
+    const expires=future(),f=await fixture(t,[{bytes:await record(1n,'/ipfs/'+cid,expires)},{bytes:await record(2n,'/ipfs/'+other,expires),delay:200}]);
+    const seen=[];const r=await resolveIpns(identity,{servers:f.servers,deadlineMs:70,onCandidate:r=>seen.push(r)});
+    assert.equal(r.rootCid,cid);await new Promise(r=>setTimeout(r,220));assert.equal(seen.length,1);
+    const g=await fixture(t,[{bytes:await record(2n,'/ipfs/'+cid,expires)},{bytes:await record(2n,'/ipfs/'+other,expires),delay:20}]);
+    await rejected(resolveIpns(identity,{servers:g.servers,deadlineMs:500,onCandidate:()=>{}}),'CORRUPTION');
+    const h=await fixture(t,[{bytes:await record()}]);const start=performance.now();
+    await resolveIpns(identity,{servers:h.servers,deadlineMs:1000});assert(performance.now()-start<500);
+});
+test('progressive cancellation, expiration and unsupported newer records never fall back',async t=>{
+    const f=await fixture(t,[{bytes:await record(1n)},{hang:true}]),controller=new AbortController();
+    const p=resolveIpns(identity,{servers:f.servers,deadlineMs:1000,signal:controller.signal,onCandidate:()=>controller.abort()});
+    await rejected(p,'CANCELLED');
+    const g=await fixture(t,[{bytes:await record(2n,'/ipfs/'+other,new Date(Date.now()+150).toISOString())},{bytes:await record(1n),delay:250}]);
+    await rejected(resolveIpns(identity,{servers:g.servers,deadlineMs:500,onCandidate:()=>{}}),'CORRUPTION');
+    const h=await fixture(t,[{bytes:await record()},{bytes:await record(2n,'/ipns/'+identity.ipnsName),delay:20}]);
+    await rejected(resolveIpns(identity,{servers:h.servers,deadlineMs:1000,onCandidate:()=>{}}),'UNSUPPORTED_FORMAT');
+});

@@ -543,12 +543,21 @@ export class RemoteDisk {
         this.size = Number(size);
         return this;
     }
-    async downloadState(signal, progress) {
+    async openStateStream(signal, progress) {
         check(signal);
         if(!this.stateCid) throw fail('INVALID_STATE','No state is published for this disk.');
         const resume = this.prefetchState === 'running';
+        const controller=new AbortController(), external=signal;
+        const abort=()=>finish();external?.addEventListener('abort',abort,{once:true});
+        signal=controller.signal;
         this.stateDownloads = (this.stateDownloads || 0) + 1;
         if(resume) this.prefetchState = 'suspended';
+        let iterator,finished=false;
+        const finish=()=>{
+            if(finished)return;finished=true;controller.abort();
+            external?.removeEventListener('abort',abort);this.stateDownloads--;
+            if(resume)this.startPrefetch();
+        };
         try {
             await this.prefetchLoop;
             check(signal);
@@ -563,19 +572,32 @@ export class RemoteDisk {
             if(!['file','raw','identity'].includes(entry.type)) throw fail('INVALID_STATE','Published state is not a file.');
             const total=Number(entry.type==='file'?entry.unixfs.fileSize():entry.size);
             if(!Number.isSafeInteger(total) || total<12 || total>1024*1024*1024+65536) throw fail('INVALID_STATE','Invalid published state size.');
-            const parts=[];let size=0;
-            for await(const bytes of entry.content({signal,blockReadConcurrency:this.concurrency})) {
-                check(signal);size+=bytes.length;
-                if(size>total) throw fail('INVALID_STATE','Published state exceeds its declared size.');
-                parts.push(new Blob([bytes]));progress?.(size,total);
-            }
-            check(signal);
-            if(size!==total) throw fail('INVALID_STATE','Incomplete published state.');
+            iterator=entry.content({signal,blockReadConcurrency:this.concurrency})[Symbol.asyncIterator]();
+            let size=0;
+            const stream=new ReadableStream({
+                async pull(output) {
+                    try {
+                        check(signal);const {done,value}=await iterator.next();check(signal);
+                        if(done) {
+                            if(size!==total)throw fail('INVALID_STATE','Incomplete published state.');
+                            finish();output.close();return;
+                        }
+                        size+=value.length;
+                        if(size>total)throw fail('INVALID_STATE','Published state exceeds its declared size.');
+                        progress?.(size,total);output.enqueue(value);
+                    } catch(error) {finish();output.error(error);await iterator.return?.().catch(()=>{});}
+                },
+                async cancel() {finish();await iterator.return?.().catch(()=>{});},
+            },new ByteLengthQueuingStrategy({highWaterMark:0}));
+            return {size:total,stream};
+        } catch(error) {finish();throw error;}
+    }
+    // Preserve the collecting API for callers explicitly asking for a file.
+    async downloadState(signal, progress) {
+        const {stream}=await this.openStateStream(signal,progress),reader=stream.getReader(),parts=[];
+        try {for(;;) {const {done,value}=await reader.read();if(done)break;parts.push(new Blob([value]));}
             return new Blob(parts,{type:'application/octet-stream'});
-        } finally {
-            this.stateDownloads--;
-            if(resume) this.startPrefetch();
-        }
+        } finally {await reader.cancel().catch(()=>{});reader.releaseLock();}
     }
     async read(offset, length, signal, priority = 'demand', retainOutput = true) {
         check(signal);

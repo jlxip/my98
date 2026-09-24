@@ -43,32 +43,23 @@ async function roundtrip(moduleURL,{size,expected,fileHash}) {
         ok(decoded.stateSha256===fileHash,'incremental encrypted file fingerprint');
     };
     await verify();
-    // Inject cancellation/read errors during each section, after decompression.
-    // The check must interrupt further reads and a subsequent load must work.
-    const nativeRead=Blob.prototype.arrayBuffer;
+    // Cancel/fail while the decompressor feeds the final state/overlay buffers.
+    // These checks follow the public stream/progress contract, not Blob internals.
     for(const section of ["state","overlay"]) for(const kind of ["cancel","read-error"]) {
-        let decompressing=false,readBytes=0,triggered=false;
+        let produced=0,triggered=false;
         const failure=Object.assign(new Error(kind),{code:kind==="cancel"?"CANCELLED":"READ_FAILED"});
-        Blob.prototype.arrayBuffer=async function() {
-            const part=await nativeRead.call(this);
-            if(decompressing && this.size>65536) {
-                readBytes+=this.size;
-                if(readBytes>(section==="state"?0:size)) {
-                    triggered=true;
-                    if(kind==="read-error")throw failure;
+        let caught;
+        try {await decodeState(vault,file,{
+            check:()=>{if(triggered)throw failure;},
+            progress:(phase,bytes)=>{
+                if(phase!=="decompress")return;produced=bytes;
+                if(bytes>(section==="state"?65536:size+65536)) {
+                    triggered=true;if(kind==="read-error")throw failure;
                 }
-            }
-            return part;
-        };
-        try {
-            let caught;
-            try {await decodeState(vault,file,{
-                check:()=>{if(triggered)throw failure;},
-                progress:phase=>{if(phase==="decompress")decompressing=true;},
-            });} catch(error) {caught=error;}
-            ok(caught===failure,section+" "+kind+" propagated");
-            ok(readBytes<2*size,section+" "+kind+" stops before completing sections");
-        } finally {Blob.prototype.arrayBuffer=nativeRead;}
+            },
+        });} catch(error) {caught=error;}
+        ok(caught===failure,section+" "+kind+" propagated: "+caught?.message);
+        ok(triggered && produced<2*size,section+" "+kind+" stops before completing sections: "+produced);
     }
     await verify();
     return {checks,stateBytes:size,overlayBytes:size,packedBytes:file.size};
@@ -88,7 +79,7 @@ try {for(const [name,type] of Object.entries({chromium,webkit})) {
         const result=await page.evaluate(async ({source,fixture})=>{
             const moduleURL=new URL("/build/state/state-format.js",location.href).href;
             const url=URL.createObjectURL(new Blob([
-                `(${source})(${JSON.stringify(moduleURL)},${JSON.stringify(fixture)}).then(result=>postMessage({result}),error=>postMessage({error:String(error.stack||error)}));`,
+                `(${source})(${JSON.stringify(moduleURL)},${JSON.stringify(fixture)}).then(result=>postMessage({result}),error=>postMessage({error:String(error.message)+"\\n"+String(error.stack||error)}));`,
             ],{type:"text/javascript"}));
             const worker=new Worker(url,{type:"module"});
             try {return await new Promise((resolve,reject)=>{

@@ -16,7 +16,7 @@ const originFor = kind => {
     throw fail('OPERATION_FAILED','Restore a state before selecting its load profile');
 };
 let sequence = Promise.resolve(), cancelEpoch = 0, activeEpoch = 0, cancelView;
-let readBytes = 0, readCalls = 0, progressAt = 0, initError;
+let readBytes = 0, readCalls = 0, progressAt = new Map(), initError;
 const fail = (code, message) => Object.assign(new Error(message), {code});
 const describe = () => ({...JSON.parse(vault.describe()), ...(sources.get(current)?.remote ? {remote:sources.get(current).remote} : {})});
 const source = value => { const id = `source:${++sourceId}`; sources.set(id, value instanceof RemoteDisk ? value : {size:value.size, blob:value, read:async(offset,length)=>new Uint8Array(await value.slice(offset,offset+length).arrayBuffer())}); return id; };
@@ -32,8 +32,8 @@ globalThis.slopDiskRead = async (id, offset, length) => {
     readBytes += length; readCalls++; return bytes;
 };
 function progress(phase, completed, total) {
-    if(performance.now() - progressAt > 100 || completed === total) {
-        progressAt = performance.now(); self.postMessage({type:"progress", phase, completed, total, readBytes, readCalls, networkBytes, networkRequests});
+    if(performance.now() - (progressAt.get(phase)??-Infinity) > 100 || completed === total) {
+        progressAt.set(phase,performance.now()); self.postMessage({type:"progress", phase, completed, total, readBytes, readCalls, networkBytes, networkRequests});
     }
 }
 const yieldEvents = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -156,7 +156,7 @@ async function execute(op,a) {
         if(input && typeof input==='object' && input.published===true) {
             const remote=sources.get(current);
             if(!(remote instanceof RemoteDisk)) throw fail("INVALID_STATE","No published state for this disk");
-            input=await remote.downloadState(activeRequest.signal,(done,total)=>progress("download-state",done,total));check();
+            input=await remote.openStateStream(activeRequest.signal,(done,total)=>progress("download-state",done,total));check();
         }
         const decoded=await decodeState(vault,input,{check,progress,signal:activeRequest.signal});
         try {
@@ -236,7 +236,7 @@ self.onmessage = ({data}) => {
     if(data.op === "configure") {cancelView=data.buffer ? new Int32Array(data.buffer):undefined;return;}
     sequence=sequence.then(async()=>{
         const {id,op,args,epoch}=data;
-        try {await ready;if(initError)throw initError;activeEpoch=epoch;activeRequest=new AbortController();progressAt=-Infinity;check();const result=await execute(op,args);
+        try {await ready;if(initError)throw initError;activeEpoch=epoch;activeRequest=new AbortController();progressAt.clear();check();const result=await execute(op,args);
             self.postMessage({id,ok:true,result},result instanceof Uint8Array?[result.buffer]:result?.state instanceof ArrayBuffer?[result.state]:[]);
         }catch(error) {
             if(globalThis.slopDiskCancelled()) {vault?.cancel();error=fail("CANCELLED","Operation cancelled");}

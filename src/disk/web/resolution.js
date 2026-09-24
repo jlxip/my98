@@ -57,9 +57,31 @@ async function request(server, name, signal, onNetwork) {
     }
 }
 
-/** Resolve only the signed reference. No disk blocks, credentials or persistent state. */
-export async function resolveIpns(identity, {servers, onlyLocalhost = false, gateway, signal, onNetwork} = {}) {
+const compare = (a,b) => a.record.sequence !== b.record.sequence ? (a.record.sequence > b.record.sequence ? -1 : 1) :
+    a.expires !== b.expires ? (a.expires > b.expires ? -1 : 1) : a.index-b.index;
+function result(identity, candidate) {
+    const {record}=candidate;let rootCid;
+    try {
+        if(!record.value.startsWith('/ipfs/'))throw Error();
+        rootCid=CID.parse(record.value.slice(6).split('/')[0]).toString();
+    } catch {throw fail('UNSUPPORTED_FORMAT','The newest IPNS record must reference an IPFS file.');}
+    return {ipnsName:identity.ipnsName,path:record.value,rootCid,sequence:record.sequence.toString(),resolutionServer:candidate.server};
+}
+function bestCandidate(candidates) {
+    const best=[...candidates].sort(compare)[0];
+    if(best && candidates.some(c=>c.record.sequence===best.record.sequence && c.expires===best.expires && c.record.value!==best.record.value))
+        throw fail('CORRUPTION','Conflicting IPNS records have the same sequence and expiration.');
+    return best;
+}
+/** Optional progressive mode queries all endpoints within one global deadline.
+ * onCandidate is synchronous; it schedules work without delaying resolution.
+ * The promise still supplies the final choice (or rejects on conflict/expiry).
+ */
+export async function resolveIpns(identity, {servers, onlyLocalhost = false, gateway, signal, onNetwork, onCandidate, deadlineMs} = {}) {
     check(signal);
+    const progressive=onCandidate!==undefined || deadlineMs!==undefined;
+    if(onCandidate!==undefined && typeof onCandidate!=='function')throw new TypeError('Expected a candidate callback');
+    if(progressive && (!Number.isFinite(deadlineMs??TIMEOUT) || (deadlineMs??TIMEOUT)<=0))throw new TypeError('Expected a positive resolution deadline');
     const local = dataGateway(gateway, onlyLocalhost);
     const endpoints = resolutionServers(onlyLocalhost ? [{url:local,resolution:'gateway',discovery:false}] : servers);
     let key, name;
@@ -69,26 +91,45 @@ export async function resolveIpns(identity, {servers, onlyLocalhost = false, gat
         if(!key.toCID().equals(parsed)) throw Error();
         name = identity.ipnsName;
     } catch {throw fail('CORRUPTION', 'IPNS name does not match the public key.');}
-    const candidates = [], failures = new Array(endpoints.length);let next = 0;
+    const candidates = [], failures = new Array(endpoints.length);let next = 0,notified,fatal,closed=false;
+    const round=new AbortController(),abort=()=>round.abort();
+    signal?.addEventListener('abort',abort,{once:true});
+    const deadline=progressive?performance.now()+(deadlineMs??TIMEOUT):Infinity;
+    const timer=progressive?setTimeout(()=>{closed=true;round.abort();},deadlineMs??TIMEOUT):undefined;
     async function worker() {
-        while(next < endpoints.length) {
+        while(next < endpoints.length && !closed) {
             check(signal);
             const index = next++, server = endpoints[index];
             try {
-                const bytes = await request(server, name, signal, onNetwork);
+                const bytes = await request(server, name, round.signal, onNetwork);
                 try {await validate(key, bytes);}
                 catch {throw fail('CORRUPTION', 'Invalid, expired or incorrectly signed record');}
                 check(signal);
+                if(closed || performance.now()>=deadline)return;
                 const record = unmarshalIPNSRecord(bytes), expires = expiration(record.validity);
+                if(expires<=BigInt(Date.now())*1000000n)throw fail('CORRUPTION','Record expired during resolution');
                 candidates.push({record, expires, index, server:server.url});
+                if(progressive) {
+                    try {
+                        const best=bestCandidate(candidates);
+                        if(!notified || compare(best,notified)<0) {
+                            const value=result(identity,best);notified=best;
+                            onCandidate?.(value);
+                        }
+                    } catch(error) {fatal=error;closed=true;round.abort();}
+                }
             } catch(error) {
                 check(signal);failures[index] = {code:error.code || 'CORRUPTION', message:String(error.message).slice(0,100)};
             }
         }
     }
-    await Promise.all(Array.from({length:Math.min(CONCURRENCY, endpoints.length)}, worker));
+    try {
+    await Promise.all(Array.from({length:progressive?endpoints.length:Math.min(CONCURRENCY, endpoints.length)}, worker));
     check(signal);
+    if(fatal)throw fatal;
     const now = BigInt(Date.now()) * 1000000n;
+    // Never roll back a candidate already offered to a progressive consumer.
+    if(notified && notified.expires<=now)throw fail('CORRUPTION','Selected IPNS record expired during resolution');
     const valid = candidates.filter(candidate => {
         if(candidate.expires > now) return true;
         failures[candidate.index] = {code:'CORRUPTION', message:'Record expired during resolution'};
@@ -99,17 +140,7 @@ export async function resolveIpns(identity, {servers, onlyLocalhost = false, gat
         const code = errors.some(e=>e.code === 'CORRUPTION') ? 'CORRUPTION' : 'IO_ERROR';
         throw fail(code, 'No valid IPNS record found. ' + errors.map((e,i)=>`Server ${i+1}: ${e.message}`).join('; '));
     }
-    valid.sort((a,b) => a.record.sequence !== b.record.sequence ? (a.record.sequence > b.record.sequence ? -1 : 1) :
-        a.expires !== b.expires ? (a.expires > b.expires ? -1 : 1) : a.index-b.index);
-    const best = valid[0], record = best.record;
-    if(valid.some(c => c.record.sequence === record.sequence && c.expires === best.expires && c.record.value !== record.value)) {
-        throw fail('CORRUPTION', 'Conflicting IPNS records have the same sequence and expiration.');
-    }
-    let rootCid;
-    try {
-        if(!record.value.startsWith('/ipfs/')) throw Error();
-        rootCid = CID.parse(record.value.slice(6).split('/')[0]).toString();
-    } catch {throw fail('UNSUPPORTED_FORMAT', 'The newest IPNS record must reference an IPFS file.');}
     check(signal);
-    return {ipnsName:name, path:record.value, rootCid, sequence:record.sequence.toString(), resolutionServer:best.server};
+    return result(identity,bestCandidate(valid));
+    } finally {closed=true;clearTimeout(timer);round.abort();signal?.removeEventListener('abort',abort);}
 }
