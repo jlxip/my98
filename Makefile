@@ -73,6 +73,7 @@ resolution-test: disk
 	node --test src/disk/scripts/resolution.test.mjs
 	node --test src/disk/scripts/network.test.mjs
 	node --test src/disk/scripts/state-stream.test.mjs
+	node --test src/disk/scripts/car.test.mjs
 
 resolution-test-browser: site
 	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo build --manifest-path src/disk/Cargo.toml --locked --release --example compat
@@ -114,6 +115,7 @@ site-test: site
 	node --test scripts/run-browser-test.test.mjs
 	node --test src/disk/scripts/network.test.mjs
 	node --test src/disk/scripts/state-stream.test.mjs
+	node --test src/disk/scripts/car.test.mjs
 	node --test src/disk/scripts/resolution.test.mjs
 	node --test src/disk/scripts/discovery.test.mjs
 	node --test src/disk/scripts/parallel.test.mjs
@@ -130,6 +132,7 @@ site-test: site
 	node scripts/run-browser-test.mjs tests/pages/load-profiles.mjs
 	node scripts/run-browser-test.mjs tests/pages/published-state.mjs
 	node scripts/run-browser-test.mjs tests/pages/published-state-network.mjs
+	node scripts/run-browser-test.mjs tests/pages/car-stream.mjs
 	node scripts/run-browser-test.mjs tests/pages/state-api.mjs
 	node scripts/run-browser-test.mjs tests/pages/state-large.mjs
 	node scripts/run-browser-test.mjs tests/pages/state.mjs
@@ -142,9 +145,11 @@ site-test: site
 state-test: site
 	node --test src/disk/scripts/network.test.mjs
 	node --test src/disk/scripts/state-stream.test.mjs
+	node --test src/disk/scripts/car.test.mjs
 	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo build --manifest-path src/disk/Cargo.toml --locked --release --example compat
 	node scripts/run-browser-test.mjs tests/pages/published-state.mjs
 	node scripts/run-browser-test.mjs tests/pages/published-state-network.mjs
+	node scripts/run-browser-test.mjs tests/pages/car-stream.mjs
 	node scripts/run-browser-test.mjs tests/pages/state-api.mjs
 	node scripts/run-browser-test.mjs tests/pages/state-large.mjs
 	node scripts/run-browser-test.mjs tests/pages/state.mjs

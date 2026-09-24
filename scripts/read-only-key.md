@@ -23,6 +23,8 @@ verified state blocks with opening the base disk. `prepareState({published:true}
 consumes that same stream; closing or cancelling releases unused preloaded data.
 The default remains false for clients that only need the disk. This does not
 relax authentication or commit the state before restoration checks finish.
+Published states automatically use [parallel CAR transport](state-transport.md)
+when available, with verified raw-block fallback.
 
 The directory may additionally contain optional [load profiles](load-profiles.md).
 They do not change credential export or state authentication. Consumers can select

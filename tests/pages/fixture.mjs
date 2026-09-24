@@ -1,3 +1,4 @@
+import {carBytes} from '../../src/disk/scripts/car-fixture.mjs';
 import { createServer } from "node:http";
 import { execFileSync } from "node:child_process";
 import { readFile, writeFile, mkdir, mkdtemp, rm } from "node:fs/promises";
@@ -10,7 +11,7 @@ import { createIPNSRecord, marshalIPNSRecord } from "ipns";
 
 // An actual signed IPNS record and content-addressed raw block on a second origin.
 // Small enough to test the packaged client without a Kubo installation or public network.
-export async function diskFixture({isolated=false} = {}) {
+export async function diskFixture({isolated=false,car=false} = {}) {
     let directory = resolve("build/pages-tests"); await mkdir(directory, { recursive: true });
     if(isolated) directory=await mkdtemp(directory+"/fixture-");
     const source = directory + "/fixture.img", file = directory + "/fixture.my98";
@@ -46,7 +47,7 @@ export async function diskFixture({isolated=false} = {}) {
         record=marshalIPNSRecord(await createIPNSRecord(signer,"/ipfs/"+root,++sequence,3600000,{v1Compatible:false}));
         return {publicationCid:root.toString(),stateCid:stateCid.toString(),diskCid:baseCid.toString(),profilesCid:profilesCid?.toString()};
     }
-    const requests = [];
+    const requests = [],carRequests=[],carBehavior={};
     const server = createServer((req, res) => {
         const url = new URL(req.url, "http://localhost"); requests.push(url.pathname);
         res.setHeader("Access-Control-Allow-Origin", "*");
@@ -54,14 +55,23 @@ export async function diskFixture({isolated=false} = {}) {
         if(req.method === "OPTIONS") { res.writeHead(204).end(); return; }
         if(url.pathname === "/ipns/" + identity.ipnsName) res.writeHead(200, { "Content-Type": "application/vnd.ipfs.ipns-record" }).end(record);
         else if(blocks.has(url.pathname.slice(6)) && url.pathname.startsWith("/ipfs/")) {
-            const id=url.pathname.slice(6),send=()=>res.writeHead(200,{"Content-Type":"application/vnd.ipld.raw"}).end(blocks.get(id));
+            const id=url.pathname.slice(6),send=()=>{
+                if(car&&url.searchParams.get('format')==='car') {
+                    try {const [first,last]=url.searchParams.get('entity-bytes').split(':').map(Number);
+                        const bytes=carBytes(blocks,CID.parse(id),first,last-first+1);carRequests.push(url.href);
+                        if(carBehavior.corrupt)bytes[bytes.length-1]^=1;
+                        const respond=()=>res.writeHead(200,{'Content-Type':'application/vnd.ipld.car'}).end(bytes);
+                        if(carBehavior.delay){const timer=setTimeout(()=>{timers.delete(timer);respond();},carBehavior.delay);timers.add(timer);}else respond();
+                    } catch {res.writeHead(400).end();}
+                } else res.writeHead(200,{"Content-Type":"application/vnd.ipld.raw"}).end(blocks.get(id));
+            };
             if(delays.has(id)) {const timer=setTimeout(()=>{timers.delete(timer);send();},delays.get(id));timers.add(timer);}
             else send();
         }
         else res.writeHead(404).end();
     });
     await new Promise(r => server.listen(0, "127.0.0.1", r));
-    return { ...packed, requests, publishState, blocks, delays, diskCid:cid, gateway: `http://127.0.0.1:${server.address().port}`,
+    return { ...packed, requests, carRequests, carBehavior, publishState, blocks, delays, diskCid:cid, gateway: `http://127.0.0.1:${server.address().port}`,
         verify(path, expected = source) { run("verify", path, expected); },
         async close() { for(const timer of timers)clearTimeout(timer);server.closeAllConnections(); await new Promise(r => server.close(r)); if(isolated)await rm(directory,{recursive:true,force:true}); },
     };

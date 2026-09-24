@@ -8,6 +8,7 @@ import {discoverProviders} from './discovery.js';
 import {dataGateway, gatewayURL} from './network-config.js';
 export {DEFAULT_GATEWAY, gatewayURL} from './network-config.js';
 import {exporter} from 'ipfs-unixfs-exporter';
+import {parallelCarState} from './state-car.js';
 
 const BLOCK_LIMIT = 4 * 1024 * 1024;
 const STATE_WINDOW = 2 * 1024 * 1024;
@@ -18,7 +19,7 @@ const fail = (code, message) => Object.assign(new Error(message), {code});
 const check = signal => { if(signal?.aborted) throw fail('CANCELLED', 'Operation cancelled'); };
 
 export class RemoteDisk {
-    constructor({gateway, servers, onlyLocalhost = false, onNetwork, timeoutMs = 30000, prefetch = {}, preloadState = false, onStateProgress} = {}) {
+    constructor({gateway, servers, onlyLocalhost = false, onNetwork, timeoutMs = 30000, prefetch = {}, preloadState = false, onStateProgress, stateTransport = 'auto'} = {}) {
         if(typeof onlyLocalhost !== 'boolean') throw fail('IO_ERROR', 'Invalid Only localhost option.');
         this.directGateway = gateway != null || onlyLocalhost;
         this.gateway = this.directGateway ? dataGateway(gateway, onlyLocalhost) : undefined;
@@ -30,6 +31,8 @@ export class RemoteDisk {
         this.discovery = {state:'idle',providers:0,verifiedProviders:0,verifiedEndpoints:0};
         this.resolutionController = undefined;
         this.onNetwork = onNetwork;
+        if(!['auto','blocks'].includes(stateTransport))throw fail('OPERATION_FAILED','Invalid state transport');
+        this.stateTransport=stateTransport;this.carActive=0;
         this.preloadState = preloadState;
         this.onStateProgress = onStateProgress;
         this.timeoutMs = timeoutMs;
@@ -69,6 +72,7 @@ export class RemoteDisk {
             loadProfile:this.load ? {...this.load, selected:this.load.selected ? {cid:this.load.selected.cid,origin:this.load.selected.origin} : undefined,
                 status:this.load.selected && this.rangeOrder?.stats().completedUnits===this.rangeOrder?.stats().units ? 'complete' : this.load.status} : undefined,
             endpoints:[...this.endpoints.values()].map(({url,active,window,rescues,probationUntil,validBytes,failures,rate,cooldownUntil,excluded})=>({url,active,window,rescues,probationUntil,validBytes,failures,bytesPerMs:rate,cooldownUntil,excluded})),
+            stateTransport:this.stateTransfer ? {...this.stateTransfer,active:this.carActive} : undefined,
             discovery:{...this.discovery}, policy:this.policy, concurrency:this.concurrency, traceDropped:this.traceDropped};
     }
     // Called only after the encrypted header has been authenticated by the Vault.
@@ -243,6 +247,26 @@ export class RemoteDisk {
         const url=gatewayURL(value);
         if(!this.endpoints.has(url)) this.endpoints.set(url,{url,active:0,window:2,credits:0,rescues:0,stalls:0,recovery:0,probationUntil:0,penalizedAt:0,latency:0,growAfter:0,dataSamples:0,attempts:0,validBytes:0,failures:0,consecutive:0,rate:0,cooldownUntil:0,excluded:false});
     }
+    async acquireCarRequest(signal) {
+        const available=()=>this.carActive<Math.min(4,this.concurrency-1) &&
+            this.carActive+[...this.endpoints.values()].reduce((n,e)=>n+e.active,0)<this.concurrency-1;
+        while(!available()) {
+            check(signal);if(this.closed)throw fail('CANCELLED','Disk closed');
+            await new Promise(resolve=>{
+                const wake=()=>{this.admissionWaiters.delete(wake);signal?.removeEventListener('abort',wake);resolve();};
+                this.admissionWaiters.add(wake);signal?.addEventListener('abort',wake,{once:true});if(signal?.aborted)wake();
+            });
+        }
+        check(signal);if(this.closed)throw fail('CANCELLED','Disk closed');this.carActive++;
+        let released=false;
+        return ()=>{if(released)return;released=true;this.carActive--;this.schedule();this.notifyAdmission();};
+    }
+    carCandidates() {
+        const now=Date.now();
+        return [...this.endpoints.values()].filter(e=>!e.excluded&&!e.carDisabled&&e.cooldownUntil<=now)
+            .sort((a,b)=>(a.probationUntil>now)-(b.probationUntil>now)||(b.carVerified?1:0)-(a.carVerified?1:0)||b.rate-a.rate)
+            .map(e=>e.url);
+    }
     slowAfter(endpoint) { return Math.max(endpoint.dataSamples?250:750,Math.min(2000,3*endpoint.latency)); }
     reduceWindow(endpoint) {
         // Keep the proven two-slot baseline while reducing speculative growth.
@@ -275,7 +299,7 @@ export class RemoteDisk {
         clearTimeout(this.scheduleTimer);
         if(this.closed) return;
         const now=Date.now(), jobs=[...this.jobs.values()];
-        let active=[...this.endpoints.values()].reduce((n,e)=>n+e.active,0), wakeAt=Infinity;
+        let active=this.carActive+[...this.endpoints.values()].reduce((n,e)=>n+e.active,0), wakeAt=Infinity;
         const foreground=this.demandReads || jobs.some(j=>j.priority!=='background');
         const order={demand:0,state:1,background:2};
         jobs.sort((a,b)=>order[a.priority]-order[b.priority]);
@@ -389,6 +413,7 @@ export class RemoteDisk {
             if(job.attempt===attempt)job.attempt=undefined;
             endpoint.active--;
             if(!this.closed) this.schedule();
+            this.notifyAdmission();
         }
     }
     async waitForJob(job, signal, priority) {
@@ -705,8 +730,37 @@ export class RemoteDisk {
             // Give it bounded lookahead beyond the actual network budget so a
             // slow head block does not leave the other download slots idle.
             const concurrency=2*this.concurrency;
+            this.stateTransfer={mode:'blocks',lanes:0,bytes:0,fallback:false};
+            const transfer=this.stateTransfer;
             iterator=(async function*() {
-                for(let offset=0;offset<total;offset+=STATE_RANGE) {
+                let received=0;
+                if(remote.stateTransport==='auto'&&remote.concurrency>1&&total>=1048576&&entry.type==='file'&&entry.node?.Links?.length) {
+                    try {
+                        for await(const bytes of parallelCarState({cid:CID.parse(remote.stateCid),size:total,signal,
+                            lanes:Math.min(4,remote.concurrency-1),candidates:()=>remote.carCandidates(),
+                            discovering:()=>remote.discovery.state==='running',acquire:s=>remote.acquireCarRequest(s),
+                            timeoutMs:remote.timeoutMs,onNetwork:remote.onNetwork,
+                            onEvent:(type,detail)=>remote.traceEvent(type,detail),
+                            failed:(gateway,error)=>{
+                                const endpoint=remote.endpoints.get(gateway);if(endpoint)endpoint.carDisabled=true;
+                                remote.traceEvent('car-error',{gateway,code:error.code||'IO_ERROR'});
+                            },
+                            onSelected:(gateway,lanes)=>{
+                                const endpoint=remote.endpoints.get(gateway);if(endpoint)endpoint.carVerified=true;
+                                Object.assign(transfer,{mode:'car',gateway,lanes});
+                            },
+                        })) {received+=bytes.length;transfer.bytes=received;yield bytes;}
+                        return;
+                    } catch(error) {
+                        check(signal);
+                        Object.assign(transfer,{mode:'blocks',fallback:true,fallbackAt:received,reason:error.code||'IO_ERROR'});
+                        remote.traceEvent('car-fallback',{offset:received,code:transfer.reason});
+                    }
+                }
+                // Only bytes already emitted count as a checkpoint. Discard
+                // unconsumed CAR queues, then resume the verified raw reader at
+                // that exact offset without restarting decryption or gzip.
+                for(let offset=received;offset<total;offset+=STATE_RANGE) {
                     check(signal);
                     yield* entry.content({signal,offset,length:Math.min(STATE_RANGE,total-offset),blockReadConcurrency:concurrency});
                 }

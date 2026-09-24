@@ -129,7 +129,7 @@ fn unit_nonce(unit: &[u8]) -> Result<[u8; 12]> {
 #[derive(Clone)]
 pub struct Identity {
     signing_seed: Zeroizing<[u8; 32]>,
-    metadata_key: Zeroizing<[u8; 32]>,
+    master_key: Zeroizing<[u8; 32]>,
     public_key: [u8; 32],
     active: bool,
 }
@@ -165,7 +165,7 @@ pub fn derive_identity(username: &str, password: Vec<u8>, machine: &str) -> Resu
         .hash_password_into_with_memory(&password, &salt[..16], master.as_mut(), &mut memory)
         .map_err(|_| "Key derivation failed".to_owned())?;
     let signing_seed = expand(master.as_ref(), b"slop86/keys/v1", b"slop86/signing/v1");
-    let metadata_key = expand(
+    let master_key = expand(
         master.as_ref(),
         b"slop86/keys/v1",
         b"slop86/identity-metadata/v1",
@@ -175,7 +175,7 @@ pub fn derive_identity(username: &str, password: Vec<u8>, machine: &str) -> Resu
         .to_bytes();
     Ok(Identity {
         signing_seed,
-        metadata_key,
+        master_key,
         public_key,
         active: true,
     })
@@ -230,7 +230,7 @@ impl Identity {
         bytes.extend_from_slice(&disk.id);
         bytes.extend_from_slice(disk.key.as_ref());
         seal(
-            &self.metadata_key,
+            &self.master_key,
             DESCRIPTOR,
             &ZERO_NONCE,
             &self.public_key,
@@ -239,11 +239,11 @@ impl Identity {
     }
     pub fn open_disk(&self, envelope: &[u8]) -> Result<Disk> {
         self.check()?;
-        open_descriptor(&self.metadata_key, &self.public_key, envelope)
+        open_descriptor(&self.master_key, &self.public_key, envelope)
     }
     pub fn close(&mut self) {
         self.signing_seed.zeroize();
-        self.metadata_key.zeroize();
+        self.master_key.zeroize();
         self.active = false;
     }
 }
@@ -259,7 +259,7 @@ impl Identity {
         self.check()?;
         let mut bytes = Zeroizing::new(Vec::with_capacity(64));
         bytes.extend_from_slice(&self.public_key);
-        bytes.extend_from_slice(self.metadata_key.as_ref());
+        bytes.extend_from_slice(self.master_key.as_ref());
         Ok(bytes)
     }
 }
@@ -267,7 +267,7 @@ impl Identity {
 /// Identity-wide decryption only; deliberately has no signing operations.
 pub struct ReadCapability {
     public_key: [u8; 32],
-    metadata_key: Zeroizing<[u8; 32]>,
+    master_key: Zeroizing<[u8; 32]>,
 }
 impl ReadCapability {
     pub fn from_bytes(bytes: Vec<u8>) -> Result<Self> {
@@ -279,14 +279,14 @@ impl ReadCapability {
         VerifyingKey::from_bytes(&public_key).map_err(|_| "Invalid public key".to_owned())?;
         Ok(Self {
             public_key,
-            metadata_key: Zeroizing::new(bytes[32..].try_into().unwrap()),
+            master_key: Zeroizing::new(bytes[32..].try_into().unwrap()),
         })
     }
     pub fn public_key(&self) -> &[u8; 32] {
         &self.public_key
     }
     pub fn open_disk(&self, envelope: &[u8]) -> Result<Disk> {
-        open_descriptor(&self.metadata_key, &self.public_key, envelope)
+        open_descriptor(&self.master_key, &self.public_key, envelope)
     }
 }
 

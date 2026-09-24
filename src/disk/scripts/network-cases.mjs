@@ -26,7 +26,7 @@ async function fixture(count=48) {
  return {blocks,leaves,state,disk,publication};
 }
 function remoteFor(f,{providers=1,behavior=()=>({ms:8}),preloadState=false}={}) {
- const remote=new RemoteDisk({gateway:'https://p0.example',prefetch:{enabled:false,trace:true},preloadState});
+ const remote=new RemoteDisk({gateway:'https://p0.example',prefetch:{enabled:false,trace:true},preloadState,stateTransport:'blocks'});
  for(let i=1;i<providers;i++)remote.addEndpoint('https://p'+i+'.example');
  const calls=[];let active=0,peak=0;
  remote.request=async(path,type,limit,signal,gateway,timeout,onProgress)=>{

@@ -10,7 +10,7 @@ export interface LoadProfileStats {origin:LoadOrigin;scope:"none"|"profile"|"dis
 export interface PrefetchOptions {enabled?:boolean;policy?:'auto'|'sequential'|'demand'|'head-demand'|'fresh-demand'|'nearby'|'streams'|'ranges';bootProfile?:BootRangeProfile;concurrency?:1|2|3|4|5|6|7|8;trace?:boolean;}
 export interface DiscoveryStats {state:'idle'|'skipped'|'running'|'complete'|'limited'|'failed'|'cancelled';providers:number;verifiedProviders:number;verifiedEndpoints:number;endpointsTested?:number;receivedBytes?:number;limits?:string[];failures?:{stage:string;target:string;code:string;message:string}[];error?:{code:string;message:string};}
 export interface EndpointStats {url:string;active:number;validBytes:number;failures:number;bytesPerMs:number;cooldownUntil:number;excluded:boolean;}
-export interface RemoteStats {loadProfile?:LoadProfileStats;endpoints:EndpointStats[];discovery:DiscoveryStats;rangeProfile?:{ranges:number;units:number;completedUnits:number};retainedBytes:number;coveredBytes:number;totalBytes:number;completedUnits:number;totalUnits:number;inFlight:number;queued:number;prefetchState:'idle'|'running'|'paused'|'stopped'|'suspended'|'complete'|'closed';prefetchError?:{code:string;message:string};policy:string;concurrency:number;traceDropped:number;}
+export interface RemoteStats {stateTransport?:{mode:"blocks"|"car";lanes:number;bytes:number;fallback:boolean;gateway?:string;fallbackAt?:number;reason?:string;active:number};loadProfile?:LoadProfileStats;endpoints:EndpointStats[];discovery:DiscoveryStats;rangeProfile?:{ranges:number;units:number;completedUnits:number};retainedBytes:number;coveredBytes:number;totalBytes:number;completedUnits:number;totalUnits:number;inFlight:number;queued:number;prefetchState:'idle'|'running'|'paused'|'stopped'|'suspended'|'complete'|'closed';prefetchError?:{code:string;message:string};policy:string;concurrency:number;traceDropped:number;}
 export interface DiskTraceEvent {type:string;unit?:number;policy?:string;time:number;offset?:number;length?:number;ms?:number;cid?:string;gateway?:string;priority?:string;hit?:boolean;bytes?:number;code?:string;}
 export interface QueryServer {url:string;resolution:'gateway'|'routing'|false;discovery:boolean;}
 /** Extract the public identity from a v2 credential, validating its encoding. */
@@ -25,7 +25,7 @@ export class Slop86Disk {
  /** Export a stable capability for the unlocked identity, including past/future disks. Treat as a secret. */
  exportReadOnlyKey():Promise<string>;
  /** Open a CID using a my98-ro-v2 capability, without signing material. Writes live only in RAM. */
- openReadOnly(options:{cid:string;readKey:string;gateway?:string;servers?:QueryServer[];onlyLocalhost?:boolean;prefetch?:PrefetchOptions}):Promise<DiskState>;
+ openReadOnly(options:{cid:string;readKey:string;gateway?:string;servers?:QueryServer[];onlyLocalhost?:boolean;prefetch?:PrefetchOptions;preloadState?:boolean;stateTransport?:"auto"|"blocks"}):Promise<DiskState>;
  describe():Promise<DiskState>;
  read(offset:number,length:number):Promise<Uint8Array>;
  write(offset:number,bytes:Uint8Array):Promise<DiskState>;

@@ -147,7 +147,7 @@ fn descriptor_recovery_wrong_identity_and_closing() {
     assert!(wrong.sign(b"x").is_err());
     assert!(wrong.create_disk().is_err());
     assert!(wrong.signing_seed.iter().all(|b| *b == 0));
-    assert!(wrong.metadata_key.iter().all(|b| *b == 0));
+    assert!(wrong.master_key.iter().all(|b| *b == 0));
     let mut recovered = recovered;
     recovered.close();
     assert!(recovered.key.iter().all(|b| *b == 0));

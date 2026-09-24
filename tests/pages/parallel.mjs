@@ -20,6 +20,7 @@ const root=CID.createV1(0x70,await sha256.digest(rootBytes));blocks.set(root.toS
 const whole=new Uint8Array(chunks.length*chunks[0].bytes.length);chunks.forEach((c,i)=>whole.set(c.bytes,i*c.bytes.length));
 const expected=Buffer.from((await sha256.digest(whole)).digest).toString('hex');
 const peers=await Promise.all([0,1].map(async i=>CID.createV1(0x72,await sha256.digest(new Uint8Array([i]))).toString()));
+let stalledProvider;
 let mode='normal',providers=2,requests=[],active=[0,0],peak=[0,0],next=[0,0];const timers=new Set();
 const gateway=createServer((req,res)=>{
     res.setHeader('Access-Control-Allow-Origin','*');res.setHeader('Access-Control-Allow-Headers','Accept');
@@ -30,7 +31,8 @@ const gateway=createServer((req,res)=>{
     active[p]++;peak[p]=Math.max(peak[p],active[p]);let timer;
     res.once('close',()=>{active[p]--;clearTimeout(timer);timers.delete(timer);});
     const isRoot=cid===root.toString();
-    if(!isRoot && mode==='stall' && p===0) {res.writeHead(200,{'Content-Type':'application/vnd.ipld.raw'});res.flushHeaders();return;}
+    // Stall the first data provider selected, regardless of discovery completion order.
+    if(!isRoot && mode==='stall' && p===(stalledProvider??=p)) {res.writeHead(200,{'Content-Type':'application/vnd.ipld.raw'});res.flushHeaders();return;}
     if(!source || (!isRoot && (mode==='missing' || (mode==='partial' && p===0)))) {res.writeHead(404).end();return;}
     const bytes=source.slice();if(!isRoot && mode==='corrupt' && p===0)bytes[0]^=1;
     if(!isRoot && mode==='trickle' && p===0) {
@@ -51,7 +53,7 @@ const base='http://127.0.0.1:'+gateway.address().port;
 const banner=`const realFetch=globalThis.fetch.bind(globalThis);globalThis.fetch=(url,options)=>{const u=new URL(url);if(/^p[01]\\.example\\.com$/.test(u.hostname))return realFetch(${JSON.stringify(base)}+'/'+u.hostname.slice(0,2)+u.pathname+u.search,options);if(u.hostname!=='127.0.0.1')throw Error('Unexpected external request');return realFetch(url,options);};`;
 await build({entryPoints:['src/disk/web/remote.js'],bundle:true,format:'esm',platform:'browser',target:'es2022',banner:{js:banner},outfile:repo+'build/disk/web/parallel-remote.js'});
 const results=[];
-const reset=(n,m='normal')=>{providers=n;mode=m;requests=[];next=[0,0];peak=[0,0];};
+const reset=(n,m='normal')=>{providers=n;mode=m;stalledProvider=undefined;requests=[];next=[0,0];peak=[0,0];};
 try {
  for(const [name,type] of Object.entries({chromium,webkit})) {
     const browser=await type.launch();
@@ -99,21 +101,31 @@ try {
                 }finally{r.close();}
             },{...args,mode:m}));
             assert.equal(faults.at(-1).state,m==='missing'?'paused':'complete');
-            if(m==='corrupt')assert.ok(faults.at(-1).stats.endpoints[0].excluded);
+            if(m==='corrupt')assert.ok(faults.at(-1).stats.endpoints.find(e=>e.url==='https://p0.example.com').excluded);
         }
+        const rescues=[];
+        // Exercise both discovery completion orders; neither provider has a data sample.
+        for(const firstProvider of [0,1]) {
         reset(2,'stall');
         const rescue=await page.evaluate(async args=>{
             const {RemoteDisk}=await import('/build/disk/web/parallel-remote.js');
             const r=new RemoteDisk({servers:args.servers,prefetch:{enabled:false,trace:true}});
             try {
                 await r.openCid(args.cid);await r.discoveryTask;
+                r.endpoints=new Map([...r.endpoints].sort(([a],[b])=>args.firstProvider===0?a.localeCompare(b):b.localeCompare(a)));
                 const start=performance.now(),bytes=await r.read(0,65536);
                 return {ms:performance.now()-start,size:bytes.length,trace:r.trace,stats:r.stats()};
             }finally{r.close();}
-        },args);
+        },{...args,firstProvider});
+        assert.equal(stalledProvider,firstProvider);
         assert.equal(rescue.size,65536);assert.ok(rescue.ms>=700&&rescue.ms<2500,`${name} rescue ${rescue.ms}`);
         assert.equal(rescue.trace.filter(e=>e.type==='fetch-rescue').length,1);
-        assert.ok(rescue.stats.endpoints[1].validBytes>0);
+        const failedGateway=`https://p${firstProvider}.example.com`,healthyGateway=`https://p${1-firstProvider}.example.com`;
+        assert.deepEqual(rescue.trace.filter(e=>e.type==='fetch-start').map(e=>e.gateway),[failedGateway,healthyGateway]);
+        assert.equal(rescue.trace.find(e=>e.type==='fetch-rescue').gateway,failedGateway);
+        assert.ok(rescue.stats.endpoints.find(e=>e.url===healthyGateway).validBytes>0);
+        rescues.push({firstProvider,...rescue});
+        }
         reset(2,'trickle');
         const trickle=await page.evaluate(async args=>{
             const {RemoteDisk}=await import('/build/disk/web/parallel-remote.js');
@@ -141,9 +153,9 @@ try {
             }finally{r.close();}
         },args);
         assert.equal(errors.length,0,errors.join('\n'));
-        results.push({browser:name,speedup,oneMedianMs:median(1),twoMedianMs:median(2),runs,faults,rescue,trickle,demand,errors});
+        results.push({browser:name,speedup,oneMedianMs:median(1),twoMedianMs:median(2),runs,faults,rescues,trickle,demand,errors});
         await writeFile(out+'/browser-results.json',JSON.stringify(results,null,2));
-        console.log(`${name}: speedup ${speedup.toFixed(2)}x; rescue ${rescue.ms.toFixed(1)} ms; trickle rescue ${trickle.ms.toFixed(1)} ms; demand ${demand.ms.toFixed(1)} ms; 10 downloads and 6 fault/priority scenarios PASS`);
+        console.log(`${name}: speedup ${speedup.toFixed(2)}x; rescue ${rescues.map(r=>r.ms.toFixed(1)).join('/')} ms; trickle rescue ${trickle.ms.toFixed(1)} ms; demand ${demand.ms.toFixed(1)} ms; 10 downloads and 7 fault/priority scenarios PASS`);
     }finally{await browser.close();}
  }
 }finally{for(const t of timers)clearTimeout(t);gateway.closeAllConnections();site.closeAllConnections();await Promise.all([new Promise(r=>gateway.close(r)),new Promise(r=>site.close(r))]);}
