@@ -56,4 +56,4 @@ for the selected scope; required disk read errors still stop the VM for retry.
 my98 selects the origin before starting background full download. jlxip.net shows
 its restored homepage immediately, requests only its state profile, and extends
 to the complete disk on **Exit The Matrix**. Early interactions may still wait
-for data. No persistence across visits or new loading bar is provided.
+for data. Persistence is opt-in for read-only consumers; see `persistent-cache.md`. No new loading bar is provided.

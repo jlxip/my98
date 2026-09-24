@@ -65,7 +65,7 @@ async function execute(op,a) {
     if(op === "openReadOnly") {
         if(vault) throw fail("OPERATION_FAILED", "Close the current disk or identity first");
         if(!(a.readKey instanceof Uint8Array) || a.readKey.length !== 64) throw fail("INVALID_READ_KEY", "Invalid read key");
-        const remote = new RemoteDisk({gateway:a.gateway, servers:a.servers, onlyLocalhost:a.onlyLocalhost, prefetch:a.prefetch, preloadState:a.preloadState, stateTransport:a.stateTransport,
+        const remote = new RemoteDisk({gateway:a.gateway, servers:a.servers, onlyLocalhost:a.onlyLocalhost, prefetch:a.prefetch, preloadState:a.preloadState, stateTransport:a.stateTransport, persistentCache:a.persistentCache,
             onStateProgress:(received,total)=>progress("download-state",received,total), onNetwork:(bytes, calls)=>{networkBytes+=bytes;networkRequests+=calls;}});
         let id, candidate;
         try {
@@ -162,6 +162,7 @@ async function execute(op,a) {
         const decoded=await decodeState(vault,input,{check,progress,signal:activeRequest.signal});
         try {
             check();const candidate=vault.fork_state(decoded.overlay);
+            void input?.validated?.();
             const token=++stateSerial;
             stateCandidate={vault:candidate,token,revision:describe().revision,source:current,origin:{kind:'state',sha256:decoded.stateSha256}};
             return {token,metadata:decoded.metadata,state:decoded.state,size:describe().size};

@@ -9,6 +9,9 @@ import {dataGateway, gatewayURL} from './network-config.js';
 export {DEFAULT_GATEWAY, gatewayURL} from './network-config.js';
 import {exporter} from 'ipfs-unixfs-exporter';
 import {parallelCarState} from './state-car.js';
+import {cachedStateContent} from './cached-state.js';
+import {PersistentCache} from './persistent-cache.js';
+import {ProfileCacheSelection} from './profile-cache.js';
 
 const BLOCK_LIMIT = 4 * 1024 * 1024;
 const STATE_WINDOW = 2 * 1024 * 1024;
@@ -19,7 +22,7 @@ const fail = (code, message) => Object.assign(new Error(message), {code});
 const check = signal => { if(signal?.aborted) throw fail('CANCELLED', 'Operation cancelled'); };
 
 export class RemoteDisk {
-    constructor({gateway, servers, onlyLocalhost = false, onNetwork, timeoutMs = 30000, prefetch = {}, preloadState = false, onStateProgress, stateTransport = 'auto'} = {}) {
+    constructor({gateway, servers, onlyLocalhost = false, onNetwork, timeoutMs = 30000, prefetch = {}, preloadState = false, onStateProgress, stateTransport = 'auto', persistentCache = {}} = {}) {
         if(typeof onlyLocalhost !== 'boolean') throw fail('IO_ERROR', 'Invalid Only localhost option.');
         this.directGateway = gateway != null || onlyLocalhost;
         this.gateway = this.directGateway ? dataGateway(gateway, onlyLocalhost) : undefined;
@@ -33,6 +36,7 @@ export class RemoteDisk {
         this.onNetwork = onNetwork;
         if(!['auto','blocks'].includes(stateTransport))throw fail('OPERATION_FAILED','Invalid state transport');
         this.stateTransport=stateTransport;this.carActive=0;
+        this.persistent=new PersistentCache(persistentCache);
         this.preloadState = preloadState;
         this.onStateProgress = onStateProgress;
         this.timeoutMs = timeoutMs;
@@ -64,7 +68,7 @@ export class RemoteDisk {
     }
     stats() {
         const jobs = [...this.jobs.values()];
-        return {retainedBytes:this.cacheBytes, coveredBytes:this.coveredBytes || 0, totalBytes:this.size || 0,
+        return {persistentCache:this.persistent.stats(),retainedBytes:this.cacheBytes, coveredBytes:this.coveredBytes || 0, totalBytes:this.size || 0,
             completedUnits:this.completedUnits || 0, totalUnits:this.coverage?.length || 0,
             inFlight:jobs.filter(j=>j.state === 'active').length, queued:jobs.filter(j=>j.state === 'queued').length,
             prefetchState:this.prefetchState, prefetchError:this.prefetchError,
@@ -107,7 +111,7 @@ export class RemoteDisk {
         this.loadGeneration++;
         this.profileController?.abort();this.prefetchController?.abort();
         this.prefetchState='stopped';this.prefetchEnabled=false;
-        this.load=undefined;
+        this.load=undefined;this.profileSelection=undefined;
         this.startPrefetch(); // Establish coverage even when no speculation is requested.
         this.rangeOrder=this.adaptiveOrder=undefined;this.policy='demand';
         this.load={origin:{...origin},scope,status:scope==='none'?'disabled':'loading',needsReload:scope==='none'};
@@ -118,7 +122,8 @@ export class RemoteDisk {
         const timer=setTimeout(()=>controller.abort(),this.timeoutMs);
         this.profileTask=(async()=>{
             if(!this.profilesCid) {this.load.status='missing';return;}
-            const store={get:(cid,options)=>this.get(cid,{...options,signal:controller.signal,priority:'background'})};
+            const profileBlocks=new Map();
+            const store={get:async function*(cid,options){for await(const bytes of this.get(cid,{...options,signal:controller.signal,priority:'background',cacheKind:'loadProfile'})){profileBlocks.set(cid.toV1().toString(),bytes);yield bytes;}}.bind(this)};
             const entry=await exporter(this.profilesCid,store,{signal:controller.signal,blockReadConcurrency:1});
             if(!['file','raw','identity'].includes(entry.type))throw fail('INVALID_PROFILE','Load profiles must be a file.');
             const size=Number(entry.type==='file'?entry.unixfs.fileSize():entry.size);
@@ -137,6 +142,10 @@ export class RemoteDisk {
             if(selected) {
                 this.rangeOrder=new RangePrefetchOrder(matchingRanges({...selected,version:1},this.remote.cid,this.coverage.length),this.coverage);
                 this.policy='ranges';
+                if(this.persistent.options.loadProfile) {
+                    for(const [cid,bytes] of profileBlocks)this.persistent.put(CID.parse(cid),bytes,'loadProfile');
+                    this.profileSelection=new ProfileCacheSelection(this.remote.cid,this.size,this.rangeOrder.ranges,this.blocks,(cid,bytes)=>this.persistent.put(cid,bytes,'loadProfile'));
+                }
             }
         })().catch(error=>{
             if(generation!==this.loadGeneration)return;
@@ -497,15 +506,19 @@ export class RemoteDisk {
             signal?.removeEventListener('abort', abort);
         }
     }
-    async *get(cid, {signal, priority = 'demand'} = {}) {
+    async *get(cid, {signal, priority = 'demand', cacheKind = 'loadProfile'} = {}) {
         check(signal);
         if(this.closed) throw fail('CANCELLED','Disk closed');
         if(cid.code !== 0x55 && cid.code !== 0x70) throw fail('UNSUPPORTED_FORMAT', 'Only raw and UnixFS IPFS blocks are supported.');
         const epoch=this.epoch;
         const key = cid.toV1().toString();
+        if(this.stateCid && CID.parse(this.stateCid).toV1().toString()===key)cacheKind='state';
         let bytes = this.blocks.get(key);
         this.traceEvent('block',{cid:key,priority,hit:!!bytes});
-        if(bytes) {yield bytes;return;}
+        if(bytes) {this.cacheObserved(cid,bytes,cacheKind);yield bytes;return;}
+        if(this.persistent.options[cacheKind])bytes=await this.persistent.get(cid,cacheKind);check(signal);
+        if(epoch!==this.epoch||this.closed)throw fail('CANCELLED','Operation cancelled');
+        if(bytes) {if(!this.blocks.has(key)){this.blocks.set(key,bytes);this.cacheBytes+=bytes.length;}this.cacheObserved(cid,bytes,cacheKind);yield bytes;return;}
         if(cid.multihash.code === 0) {
             bytes = cid.multihash.digest;
             if(bytes.length > BLOCK_LIMIT) throw fail('UNSUPPORTED_FORMAT', 'IPFS block is too large.');
@@ -515,7 +528,7 @@ export class RemoteDisk {
             while(priority==='background' && !this.jobs.get(key)?.hasBackground && !this.blocks.has(key) && [...this.jobs.values()].filter(j=>j.hasBackground).length>=8) await this.admitBackground(signal,epoch);
             check(signal);
             if(epoch!==this.epoch || this.closed) throw fail('CANCELLED','Operation cancelled');
-            if(this.blocks.has(key)) {yield this.blocks.get(key);return;}
+            if(this.blocks.has(key)) {const ready=this.blocks.get(key);this.cacheObserved(cid,ready,cacheKind);yield ready;return;}
             let job=this.jobs.get(key);
             if(!job) {
                 job={key,cid,priority,epoch:this.epoch,state:'queued',hasBackground:priority==='background',tried:new Set(),controller:new AbortController(),waiters:new Set()};
@@ -530,7 +543,12 @@ export class RemoteDisk {
             bytes=await pending;
         }
         check(signal);
+        this.cacheObserved(cid,bytes,cacheKind);
         yield bytes;
+    }
+    cacheObserved(cid,bytes,kind) {
+        if(kind==='state')this.persistent.put(cid,bytes,'state');
+        else this.profileSelection?.observe(cid,bytes);
     }
     async open(identity, signal) {
         check(signal);
@@ -632,6 +650,7 @@ export class RemoteDisk {
         this.stateCid = undefined;
         this.profilesCid = undefined;
         if(this.entry.type === 'directory') {
+            this.stateCid=this.entry.node?.Links?.find(link=>link.Name==='state.my98state')?.Hash.toString();
             const entries = new Map();
             for await(const entry of this.entry.entries({signal, blockReadConcurrency:1})) {
                 if(entries.size >= 3 || !['disk.my98','state.my98state','load-profiles.json'].includes(entry.name) || entries.has(entry.name)) throw fail('UNSUPPORTED_FORMAT', 'Unsupported publication directory.');
@@ -710,7 +729,7 @@ export class RemoteDisk {
             const store = {async *get(cid, options) {
                 const key=cid.toV1().toString(), retained=remote.blocks.has(key);
                 if(stateBlocks.has(key)) {yield stateBlocks.get(key);return;}
-                try {for await(const bytes of remote.get(cid,{...options,signal,priority:priority()})) {
+                try {for await(const bytes of remote.get(cid,{...options,signal,priority:priority(),cacheKind:'state'})) {
                     // A range traversal can touch the boundary leaf twice.
                     // Keep a small local cache instead of redownloading it or
                     // retaining the complete encrypted file in the disk cache.
@@ -720,6 +739,9 @@ export class RemoteDisk {
                 }}
                 finally {if(!retained && remote.blocks.has(key)) {remote.cacheBytes-=remote.blocks.get(key).length;remote.blocks.delete(key);}}
             }};
+            // Capture before reading the root: a partial previous transfer is
+            // useful without a complete marker. Fetch only its missing blocks.
+            const cachedState=await this.persistent.hasStateRoot(this.stateCid);check(signal);
             const entry=await exporter(this.stateCid,store,{signal,blockReadConcurrency:1});
             if(!['file','raw','identity'].includes(entry.type)) throw fail('INVALID_STATE','Published state is not a file.');
             const total=Number(entry.type==='file'?entry.unixfs.fileSize():entry.size);
@@ -734,12 +756,20 @@ export class RemoteDisk {
             const transfer=this.stateTransfer;
             iterator=(async function*() {
                 let received=0;
-                if(remote.stateTransport==='auto'&&remote.concurrency>1&&total>=1048576&&entry.type==='file'&&entry.node?.Links?.length) {
+                if(cachedState) {yield* cachedStateContent(remote.stateCid,total,store,signal);return;}
+                if(!cachedState&&remote.stateTransport==='auto'&&remote.concurrency>1&&total>=1048576&&entry.type==='file'&&entry.node?.Links?.length) {
                     try {
                         for await(const bytes of parallelCarState({cid:CID.parse(remote.stateCid),size:total,signal,
                             lanes:Math.min(4,remote.concurrency-1),candidates:()=>remote.carCandidates(),
                             discovering:()=>remote.discovery.state==='running',acquire:s=>remote.acquireCarRequest(s),
                             timeoutMs:remote.timeoutMs,onNetwork:remote.onNetwork,
+                            onBlock:remote.persistent.options.state ? async(cid,bytes)=>{
+                                if(signal.aborted)return;
+                                remote.persistent.put(cid,bytes,'state');
+                                // Let IDB callbacks run between buffered CAR bursts;
+                                // never wait for a write or increase retained bytes.
+                                if(remote.persistent.queueBytes>=1048576)await new Promise(resolve=>setTimeout(resolve,0));
+                            } : undefined,
                             onEvent:(type,detail)=>remote.traceEvent(type,detail),
                             failed:(gateway,error)=>{
                                 const endpoint=remote.endpoints.get(gateway);if(endpoint)endpoint.carDisabled=true;
@@ -781,7 +811,7 @@ export class RemoteDisk {
                 },
                 async cancel() {finish();await iterator.return?.().catch(()=>{});},
             },new ByteLengthQueuingStrategy({highWaterMark:STATE_WINDOW}));
-            return {size:total,stream};
+            return {size:total,stream,validated:()=>this.persistent.complete(this.stateCid)};
         } catch(error) {finish();throw error;}
     }
     // Preserve the collecting API for callers explicitly asking for a file.
@@ -832,5 +862,5 @@ export class RemoteDisk {
         }
     }
     clearCache() {this.cancel();if(this.load)this.load.needsReload=true;this.blocks.clear();this.cacheBytes=0;this.headerCovered=false;this.coverage=undefined;this.adaptiveOrder=undefined;this.rangeOrder=undefined;this.completedUnits=this.coveredBytes=0;}
-    close() {this.closed=true;this.clearCache();this.providers.clear();this.endpoints.clear();this.prefetchState='closed';this.entry=undefined;}
+    close() {this.persistent.close();this.closed=true;this.clearCache();this.providers.clear();this.endpoints.clear();this.prefetchState='closed';this.entry=undefined;}
 }

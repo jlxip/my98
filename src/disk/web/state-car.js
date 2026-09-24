@@ -50,7 +50,7 @@ class CarReader {
 // Each visited child is named by its authenticated parent. Walk only the range
 // requested, in DFS order, and verify whole leaves before exposing their slices.
 // This handles raw leaves, protobuf leaves, inline data and nested UnixFS files.
-export async function* verifiedCarRange(source,{cid,size,offset,length,signal}) {
+export async function* verifiedCarRange(source,{cid,size,offset,length,signal,onBlock}) {
     const header=decodeCBOR(await source.section(L.header));
     if(header.version!==1||header.roots?.length!==1||!CID.asCID(header.roots[0])?.equals(cid))throw invalid('CAR root does not match the state');
     let blocks=0,proof=0,delivered=0;
@@ -63,6 +63,7 @@ export async function* verifiedCarRange(source,{cid,size,offset,length,signal}) 
         const digest=actual.multihash.code===0?bytes:actual.multihash.code===sha256.code?(await sha256.digest(bytes)).digest:undefined;
         check(signal);
         if(!digest||digest.length!==actual.multihash.digest.length||!digest.every((b,i)=>b===actual.multihash.digest[i]))throw invalid('CAR block does not match its CID');
+        if(onBlock)await onBlock(actual,bytes);
         if(actual.code===0x55) {
             if(bytes.length!==total)throw invalid('Invalid UnixFS leaf size');
             if(end>start)yield bytes.subarray(start,end);
@@ -88,7 +89,7 @@ export async function* verifiedCarRange(source,{cid,size,offset,length,signal}) 
     if(await source.section(L.block+512,true))throw invalid('Unexpected trailing CAR block');
 }
 
-export async function* fetchCarRange({cid,size,offset,length,gateway,signal,acquire,onNetwork,timeoutMs=30000,onEvent}) {
+export async function* fetchCarRange({cid,size,offset,length,gateway,signal,acquire,onNetwork,timeoutMs=30000,onEvent,onBlock}) {
     check(signal);
     const controller=new AbortController(),abort=()=>controller.abort();
     signal?.addEventListener('abort',abort,{once:true});
@@ -121,7 +122,7 @@ export async function* fetchCarRange({cid,size,offset,length,gateway,signal,acqu
         if(Number(response.headers.get('content-length'))>budget)throw invalid('CAR response exceeds its byte budget');
         reader=response.body.getReader();
         const source=new CarReader(reader,async operation=>{const item=await io(operation);check(signal);if(!item.done)onNetwork?.(item.value.length,0);return item;},budget);
-        yield* verifiedCarRange(source,{cid,size,offset,length,signal});
+        yield* verifiedCarRange(source,{cid,size,offset,length,signal,onBlock});
         onEvent?.('car-end',{gateway,offset,length});
     } finally {
         controller.abort();signal?.removeEventListener('abort',abort);
@@ -135,14 +136,14 @@ const wait=(ms,signal)=>new Promise((resolve,reject)=>{
     signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted)abort();
 });
 
-export async function* parallelCarState({cid,size,signal,lanes,candidates,discovering,failed,acquire,onNetwork,onEvent,timeoutMs,onSelected}) {
+export async function* parallelCarState({cid,size,signal,lanes,candidates,discovering,failed,acquire,onNetwork,onEvent,timeoutMs,onSelected,onBlock}) {
     const controller=new AbortController(),abort=()=>controller.abort();signal?.addEventListener('abort',abort,{once:true});
     const selectedSignal=controller.signal,probes=new Map(),tried=new Set(),readers=[];
     const count=Math.min(L.lanes,lanes,Math.ceil(size/1048576));
     const stride=Math.ceil(size/count/262144)*262144;
     const ranges=Array.from({length:count},(_,i)=>({offset:i*stride,length:Math.min(stride,size-i*stride)})).filter(r=>r.length>0);
     let failure,winner;
-    const make=(gateway,range,localSignal)=>fetchCarRange({cid,size,...range,gateway,signal:localSignal,acquire,onNetwork,onEvent,timeoutMs});
+    const make=(gateway,range,localSignal)=>fetchCarRange({cid,size,...range,gateway,signal:localSignal,acquire,onNetwork,onEvent,timeoutMs,onBlock});
     try {
         check(signal);
         const deadline=Date.now()+Math.min(L.selectionMs,timeoutMs);

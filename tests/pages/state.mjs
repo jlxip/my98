@@ -15,7 +15,9 @@ try {for(const [name,type] of Object.entries({chromium,webkit})) {
   await page.evaluate(async()=>{const {V86}=await import("./build/libv86.mjs"),run=V86.prototype.run;V86.prototype.run=function(){window.vm=this;return run.call(this);};
    const {Slop86Disk}=await import("./build/disk/web/client.js"),create=Slop86Disk.create;Slop86Disk.create=async function(...a){const d=await create.apply(this,a);window.disk=d;return d;};});
   await bootEncrypted(page,fixture.file);await page.evaluate(()=>document.querySelector("#exit-fullscreen").click());
-  await page.waitForFunction(()=>!document.querySelector("#pause").disabled);
+  // Wait for the fixture boot sector before probing RAM: the BIOS may still
+  // clear that memory after the UI enables Pause. The fixture halts after CLI.
+  await page.waitForFunction(()=>vm.v86.cpu.in_hlt[0] && vm.v86.cpu.instruction_pointer[0]===0x7c02);
   await page.locator("#pause").click();
   await page.evaluate(async()=>{vm.v86.cpu.mem8[0x70000]=41;await disk.write(10000,new Uint8Array([42]));window.oldVM=vm;});
   let download=page.waitForEvent("download",{timeout:60000});await page.locator("#save-state").click();
