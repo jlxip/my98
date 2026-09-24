@@ -17,6 +17,13 @@ to `openReadOnly` to discover the state, then use `prepareState({published:true}
 through the machine-state restoration API. Failures return a nonzero status without
 JSON. Ctrl-C cancels and closes the helper.
 
+Consumers that will immediately restore a published state may opt into
+`openReadOnly({cid,readKey,preloadState:true})`. This overlaps a bounded download of
+verified state blocks with opening the base disk. `prepareState({published:true})`
+consumes that same stream; closing or cancelling releases unused preloaded data.
+The default remains false for clients that only need the disk. This does not
+relax authentication or commit the state before restoration checks finish.
+
 The directory may additionally contain optional [load profiles](load-profiles.md).
 They do not change credential export or state authentication. Consumers can select
 `setLoadPrefetch({origin:"restored",scope:"profile"})` after restoration, before

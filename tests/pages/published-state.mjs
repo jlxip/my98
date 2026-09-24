@@ -38,7 +38,10 @@ for(const [name,type] of Object.entries({chromium,webkit})) {
    await p.evaluate(async gateway=>{
     const {V86}=await import('./build/libv86.mjs'),run=V86.prototype.run;
     V86.prototype.run=function(){window.vm=this;return run.call(this);};
-    const restore=V86.prototype.restore_state;V86.prototype.restore_state=async function(...args){await restore.apply(this,args);window.vm=this;};
+    const restore=V86.prototype.restore_state;V86.prototype.restore_state=async function(...args){
+     await restore.apply(this,args);window.vm=this;
+     (window.restoredMarkers??=[]).push(this.v86.cpu.mem8[0x70000]);
+    };
     const {Slop86Disk}=await import('./build/disk/web/client.js'),open=Slop86Disk.prototype.openRemote,create=Slop86Disk.create;
     Slop86Disk.prototype.openRemote=function(){return open.call(this,{gateway,servers:[{url:gateway,resolution:'gateway',discovery:false}],prefetch:{enabled:false}});};
     Slop86Disk.create=async function(...args){const d=await create.apply(this,args);window.disk=d;return d;};
@@ -73,6 +76,7 @@ for(const [name,type] of Object.entries({chromium,webkit})) {
   // Record from both the exact published origin and the same local file before its first run.
   const expectedHash=createHash('sha256').update(await readFile(path)).digest('hex');
   for(const origin of ['resume','file']) {
+   const beforeRestores=await p.evaluate(()=>restoredMarkers.length);
    await p.locator('#disk-analyze').click();
    if(origin==='resume')await p.screenshot({path:`build/published-state/${name}-analysis-options.png`});
    if(origin==='file') {
@@ -80,7 +84,10 @@ for(const [name,type] of Object.entries({chromium,webkit})) {
    }else await p.locator('#disk-analyze-resume').click();
    await p.waitForFunction(()=>document.querySelector('#disk-analyze').textContent==='Stop analyzing' && !document.querySelector('#disk-analyze').disabled);
    assert.equal(await p.evaluate(()=>vm.is_running()),true);
-   assert.equal(await p.evaluate(()=>vm.v86.cpu.mem8[0x70000]),41);
+   // The guest can overwrite scratch RAM as soon as analysis resumes it.
+   // Verify the fresh restoration before execution, not mutable running RAM.
+   const markers=await p.evaluate(()=>restoredMarkers);
+   assert.equal(markers.length,beforeRestores+1);assert.equal(markers.at(-1),41);
    assert.equal(await p.evaluate(async()=>(await disk.read(10000,1))[0]),42);
    const dl=p.waitForEvent('download');await p.locator('#disk-analyze').click();
    const target=`build/published-state/${name}-${origin}-load-profile.json`;await(await dl).saveAs(target);

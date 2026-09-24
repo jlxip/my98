@@ -70,9 +70,9 @@ export class Slop86Disk {
         try { return "my98-ro-v2." + btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, ''); }
         finally { bytes.fill(0); }
     }
-    async openReadOnly({cid, readKey, gateway, servers, onlyLocalhost = false, prefetch} = {}) {
+    async openReadOnly({cid, readKey, gateway, servers, onlyLocalhost = false, prefetch, preloadState = false} = {}) {
         const bytes = decodeReadKey(readKey);
-        try { return await this.call("openReadOnly", {cid, readKey:bytes, gateway, servers, onlyLocalhost, prefetch}, [bytes.buffer]); }
+        try { return await this.call("openReadOnly", {cid, readKey:bytes, gateway, servers, onlyLocalhost, prefetch, preloadState}, [bytes.buffer]); }
         finally { if(bytes.byteLength) bytes.fill(0); }
     }
     describe() {return this.call("describe");}

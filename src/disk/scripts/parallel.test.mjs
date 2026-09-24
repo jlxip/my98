@@ -29,7 +29,7 @@ async function fixture(t,{count=24,endpoints=4,concurrency=8,timeoutMs=30000}={}
     const get=async(i,priority='demand',signal)=>{for await(const b of remote.get(blocks[i].cid,{priority,signal}))return b;};
     return {remote,blocks,calls,get,setHandler:f=>handler=f,metrics:()=>({peak,perPeak})};
 }
-test('eight global slots, two per normalized endpoint, and one transfer per CID',async t=>{
+test('eight global slots, initially two per normalized endpoint, and one transfer per CID',async t=>{
     const f=await fixture(t);f.remote.addEndpoint('https://P0.example:443/');
     assert.equal(f.remote.endpoints.size,4);
     await Promise.all([...Array.from({length:20},(_,i)=>f.get(i)),f.get(0)]);
@@ -88,9 +88,18 @@ test('waiting for late discovery respects the total block deadline',async t=>{
     const f=await fixture(t,{endpoints:1,timeoutMs:80});f.remote.discovery.state='running';f.setHandler(()=>new Response(null,{status:404}));
     const start=Date.now();await assert.rejects(f.get(0),{code:'IO_ERROR'});assert.ok(Date.now()-start>=70 && Date.now()-start<500);assert.equal(f.calls.length,1);
 });
-test('stalled response body times out and fails over within five seconds',async t=>{
+test('stalled response body is rescued before the ordinary five-second timeout',async t=>{
     const f=await fixture(t,{endpoints:2});f.setHandler((u,b,options)=>u.host==='p0.example'?new Response(new ReadableStream({start(c){options.signal.addEventListener('abort',()=>c.error(new Error('aborted')),{once:true});}}),{headers:{'Content-Type':raw}}):new Response(b.bytes,{headers:{'Content-Type':raw}}));
-    const start=Date.now();await f.get(0);assert.ok(Date.now()-start>=4900 && Date.now()-start<6000);assert.equal(f.calls.length,2);
+    const start=Date.now();await f.get(0);assert.ok(Date.now()-start>=700 && Date.now()-start<2500);assert.equal(f.calls.length,2);
+    assert.equal(f.remote.trace.filter(e=>e.type==='fetch-rescue').length,1);
+});
+test('a response making steady progress is not rescued just for lasting longer than 750ms',async t=>{
+    const f=await fixture(t,{endpoints:2});
+    f.setHandler((u,b,options)=>new Response(new ReadableStream({async start(c){
+        for(let offset=0;offset<b.bytes.length;offset+=128){await sleep(110);if(options.signal.aborted){c.error(Error('aborted'));return;}c.enqueue(b.bytes.slice(offset,offset+128));}c.close();
+    }}),{headers:{'Content-Type':raw}}));
+    assert.deepEqual(await f.get(0),f.blocks[0].bytes);assert.equal(f.calls.length,1);
+    assert.equal(f.remote.trace.filter(e=>e.type==='fetch-rescue').length,0);
 });
 test('cancelled late responses do not refill the cache or update measurements',async t=>{
     const f=await fixture(t,{endpoints:1});let release;

@@ -30,9 +30,18 @@ const gateway=createServer((req,res)=>{
     active[p]++;peak[p]=Math.max(peak[p],active[p]);let timer;
     res.once('close',()=>{active[p]--;clearTimeout(timer);timers.delete(timer);});
     const isRoot=cid===root.toString();
+    if(!isRoot && mode==='stall' && p===0) {res.writeHead(200,{'Content-Type':'application/vnd.ipld.raw'});res.flushHeaders();return;}
     if(!source || (!isRoot && (mode==='missing' || (mode==='partial' && p===0)))) {res.writeHead(404).end();return;}
     const bytes=source.slice();if(!isRoot && mode==='corrupt' && p===0)bytes[0]^=1;
-    // Independent 8 MiB/s endpoint links. Two requests share each link's byte budget.
+    if(!isRoot && mode==='trickle' && p===0) {
+        res.writeHead(200,{'Content-Type':'application/vnd.ipld.raw','Content-Length':bytes.length});
+        let offset=0;const send=()=>{
+            res.write(bytes.subarray(offset,offset+4096));offset+=4096;
+            if(offset===bytes.length){res.end();return;}
+            timer=setTimeout(()=>{timers.delete(timer);send();},100);timers.add(timer);
+        };send();return;
+    }
+    // Independent 8 MiB/s endpoint links. Concurrent requests share each link's byte budget.
     const now=performance.now();next[p]=Math.max(now,next[p])+bytes.length/(8*1024*1024)*1000;
     timer=setTimeout(()=>{timers.delete(timer);res.writeHead(200,{'Content-Type':'application/vnd.ipld.raw'}).end(bytes);},Math.max(0,next[p]-now)+8);timers.add(timer);
 });
@@ -63,10 +72,19 @@ try {
                     const ms=performance.now()-start,stats=r.stats();
                     const bytes=await r.read(0,r.size);const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),v=>v.toString(16).padStart(2,'0')).join('');
                     if(hash!==args.expected)throw Error('File mismatch');if(stats.coveredBytes!==r.size)throw Error('Coverage mismatch');
-                    return {ms,stats,hash};
+                    return {ms,stats,hash,trace:r.trace};
                 }finally{r.close();}
             },args);
-            assert.ok(peak.every(x=>x<=2));assert.ok(result.stats.endpoints.filter(e=>e.validBytes>0).length===n);
+            const live=new Map();let total=0,maxTotal=0;
+            for(const e of result.trace) {
+                if(e.type==='fetch-start') {
+                    live.set(e.gateway,(live.get(e.gateway)||0)+1);total++;maxTotal=Math.max(maxTotal,total);
+                    assert.ok(live.get(e.gateway)<=e.window,'provider stays within its learned allowance');
+                    assert.ok(total<=8,'global budget remains eight');
+                } else if(e.type==='fetch-end'||e.type==='fetch-error') {live.set(e.gateway,live.get(e.gateway)-1);total--;}
+            }
+            assert.ok(maxTotal>2,'healthy data transfers use more than two slots');
+            assert.ok(peak.every(x=>x<=8));assert.ok(result.stats.endpoints.filter(e=>e.validBytes>0).length===n);
             runs.push({providers:n,repeat,...result,peak:[...peak]});
         }
         const median=n=>runs.filter(r=>r.providers===n).map(r=>r.ms).sort((a,b)=>a-b)[2];const speedup=median(1)/median(2);assert.ok(speedup>=1.5,`${name} speedup ${speedup}`);
@@ -83,6 +101,35 @@ try {
             assert.equal(faults.at(-1).state,m==='missing'?'paused':'complete');
             if(m==='corrupt')assert.ok(faults.at(-1).stats.endpoints[0].excluded);
         }
+        reset(2,'stall');
+        const rescue=await page.evaluate(async args=>{
+            const {RemoteDisk}=await import('/build/disk/web/parallel-remote.js');
+            const r=new RemoteDisk({servers:args.servers,prefetch:{enabled:false,trace:true}});
+            try {
+                await r.openCid(args.cid);await r.discoveryTask;
+                const start=performance.now(),bytes=await r.read(0,65536);
+                return {ms:performance.now()-start,size:bytes.length,trace:r.trace,stats:r.stats()};
+            }finally{r.close();}
+        },args);
+        assert.equal(rescue.size,65536);assert.ok(rescue.ms>=700&&rescue.ms<2500,`${name} rescue ${rescue.ms}`);
+        assert.equal(rescue.trace.filter(e=>e.type==='fetch-rescue').length,1);
+        assert.ok(rescue.stats.endpoints[1].validBytes>0);
+        reset(2,'trickle');
+        const trickle=await page.evaluate(async args=>{
+            const {RemoteDisk}=await import('/build/disk/web/parallel-remote.js');
+            const r=new RemoteDisk({servers:args.servers,prefetch:{enabled:false,trace:true}});
+            try {
+                await r.openCid(args.cid);await r.discoveryTask;
+                // Obtain an actual verified data/throughput sample from p1
+                // before an untried p0 is selected for the blocking read.
+                const p0=r.endpoints.get('https://p0.example.com');p0.cooldownUntil=Date.now()+10000;
+                await r.read(262144,65536);p0.cooldownUntil=0;
+                const start=performance.now(),bytes=await r.read(0,65536);
+                return {ms:performance.now()-start,size:bytes.length,trace:r.trace,stats:r.stats()};
+            }finally{r.close();}
+        },args);
+        assert.equal(trickle.size,65536);assert.ok(trickle.ms>=700&&trickle.ms<2500,`${name} trickle rescue ${trickle.ms}`);
+        assert.equal(trickle.trace.filter(e=>e.type==='fetch-rescue').length,1);
         reset(2);
         const demand=await page.evaluate(async args=>{
             const {RemoteDisk}=await import('/build/disk/web/parallel-remote.js');const r=new RemoteDisk({servers:args.servers,prefetch:{trace:true}});
@@ -94,9 +141,9 @@ try {
             }finally{r.close();}
         },args);
         assert.equal(errors.length,0,errors.join('\n'));
-        results.push({browser:name,speedup,oneMedianMs:median(1),twoMedianMs:median(2),runs,faults,demand,errors});
+        results.push({browser:name,speedup,oneMedianMs:median(1),twoMedianMs:median(2),runs,faults,rescue,trickle,demand,errors});
         await writeFile(out+'/browser-results.json',JSON.stringify(results,null,2));
-        console.log(`${name}: speedup ${speedup.toFixed(2)}x; demand ${demand.ms.toFixed(1)} ms; 10 downloads and 4 fault/priority scenarios PASS`);
+        console.log(`${name}: speedup ${speedup.toFixed(2)}x; rescue ${rescue.ms.toFixed(1)} ms; trickle rescue ${trickle.ms.toFixed(1)} ms; demand ${demand.ms.toFixed(1)} ms; 10 downloads and 6 fault/priority scenarios PASS`);
     }finally{await browser.close();}
  }
 }finally{for(const t of timers)clearTimeout(t);gateway.closeAllConnections();site.closeAllConnections();await Promise.all([new Promise(r=>gateway.close(r)),new Promise(r=>site.close(r))]);}

@@ -67,9 +67,11 @@ discovery-test: disk
 discovery-test-browser: disk
 	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo run --manifest-path src/disk/Cargo.toml --locked --release --example compat
 	node scripts/run-browser-test.mjs tests/pages/discovery.mjs
+	node scripts/run-browser-test.mjs tests/pages/network-scheduler.mjs
 
 resolution-test: disk
 	node --test src/disk/scripts/resolution.test.mjs
+	node --test src/disk/scripts/network.test.mjs
 	node --test src/disk/scripts/state-stream.test.mjs
 
 resolution-test-browser: site
@@ -110,6 +112,7 @@ site-test: site
 	PYTHONDONTWRITEBYTECODE=1 python3 tests/server_test.py
 	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo run --manifest-path src/disk/Cargo.toml --locked --release --example compat
 	node --test scripts/run-browser-test.test.mjs
+	node --test src/disk/scripts/network.test.mjs
 	node --test src/disk/scripts/state-stream.test.mjs
 	node --test src/disk/scripts/resolution.test.mjs
 	node --test src/disk/scripts/discovery.test.mjs
@@ -122,6 +125,7 @@ site-test: site
 	node scripts/run-browser-test.mjs tests/pages/integration.mjs
 	node scripts/run-browser-test.mjs tests/pages/resolution.mjs
 	node scripts/run-browser-test.mjs tests/pages/discovery.mjs
+	node scripts/run-browser-test.mjs tests/pages/network-scheduler.mjs
 	node scripts/run-browser-test.mjs tests/pages/boot-analysis.mjs
 	node scripts/run-browser-test.mjs tests/pages/load-profiles.mjs
 	node scripts/run-browser-test.mjs tests/pages/published-state.mjs
@@ -136,6 +140,7 @@ site-test: site
 
 .PHONY: state-test
 state-test: site
+	node --test src/disk/scripts/network.test.mjs
 	node --test src/disk/scripts/state-stream.test.mjs
 	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo build --manifest-path src/disk/Cargo.toml --locked --release --example compat
 	node scripts/run-browser-test.mjs tests/pages/published-state.mjs
