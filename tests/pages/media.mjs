@@ -7,8 +7,13 @@ import { bootEncrypted } from "./encrypted.mjs";
 
 const output = "build/pages-tests";
 await mkdir(output, { recursive: true });
-const results = [], fixture = await diskFixture();
+const results = [], fixture = await diskFixture({isolated: true});
 async function pick(page, selector, file) {
+    // One media control: eject the current disc before choosing its replacement.
+    if(await page.locator(selector).getAttribute("data-icon") === "eject") {
+        await page.locator(selector).click();
+        await page.waitForFunction(selector => !document.querySelector(selector).disabled && document.querySelector(selector).dataset.icon !== "eject", selector);
+    }
     const chooser = page.waitForEvent("filechooser");
     await page.locator(selector).click();
     await (await chooser).setFiles(file);
@@ -36,7 +41,7 @@ for(const [name, type] of Object.entries({ chromium, webkit })) {
             };
         });
         await bootEncrypted(page, fixture.file);
-        await page.evaluate(() => document.querySelector("#exit-fullscreen").click());
+        await page.evaluate(() => document.querySelector("#fullscreen").click());
         await page.waitForFunction(() => !document.querySelector("#vm-view").classList.contains("expanded"));
         const iso = Buffer.from(await page.evaluate(async () => {
             const { generate } = await import("./slop86/src/iso9660.js");
@@ -69,7 +74,7 @@ for(const [name, type] of Object.entries({ chromium, webkit })) {
         ]) {
             await pick(page, "#insert-cdrom", upload(filename, bytes));
             assert.match(await page.locator("#session-status").textContent(), /image size is invalid/);
-            assert.equal(await page.locator("#cdrom-name").textContent(), "trailer.iso");
+            assert.equal(await page.locator("#cdrom-name").textContent(), "Empty");
         }
         await pick(page, "#insert-fda", upload("trailer.img", Buffer.concat([iso, Buffer.alloc(72)])));
         assert.match(await page.locator("#session-status").textContent(), /image size is invalid/);
@@ -93,7 +98,7 @@ for(const [name, type] of Object.entries({ chromium, webkit })) {
         }
         assert.deepEqual(errors, []);
         results.push({ browser: name, alignedISO: true, trailerISO: true, rejectedInvalid: 6, realImage, errors });
-        console.log(name + ": CD trailer, exact reads, invalid media preservation PASS");
+        console.log(name + ": CD trailer, exact reads, eject/insert and invalid media rejection PASS");
     } finally { await browser.close(); await server.close(); }
 }
 await writeFile(output + "/media.json", JSON.stringify(results, null, 2));

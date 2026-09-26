@@ -25,6 +25,7 @@
             <label>Password <input class="input" id="disk-password" type="password" autocomplete="off" required></label>
             <label>Machine <input class="input" id="disk-machine" value="main" autocomplete="off" autocapitalize="none" spellcheck="false" required></label>
             <label class="boot-option"><input class="input" id="disk-only-localhost" type="checkbox" autocomplete="off"> Only localhost</label>
+            <label class="boot-option"><input class="input" id="disk-cache-publication" type="checkbox" autocomplete="off"> Cache downloads in this browser</label>
             <label class="boot-option"><input class="input" id="disk-cold-login" type="checkbox" autocomplete="off"> Cold boot</label>
             <label class="boot-option"><input class="input" id="disk-autoboot" type="checkbox" checked> Boot</label>
             <button class="btn primary" type="submit" data-variant="primary">Log in</button>
@@ -71,6 +72,7 @@
         </div>
         <button id="disk-resume" hidden class="btn" data-variant="secondary">Retry and resume</button>
         <button id="disk-cancel" hidden class="btn" data-variant="secondary">Cancel operation</button>
+        <p id="disk-cache-notice" class="hint" role="status" hidden>Browser cache could not be completed. Downloads will continue normally.</p>
         <p id="disk-status" class="alert" role="status" aria-live="polite"></p>
         <p id="disk-notice" class="hint" hidden>Saving the disk downloads a complete disk. A state file requires its original base disk. Your password, pending changes and prepared download are lost when you close this page.</p>
         <p id="acceleration-status" class="alert" role="status" aria-live="polite"></p>
@@ -80,7 +82,13 @@
     </main>
     <main id="session" hidden>
         <header>
-            <div class="session-title"><strong>Windows 98</strong><span id="disk-name"></span><span id="ips">0 MIPS</span><button id="fullscreen" class="btn primary" data-variant="primary">Fullscreen</button></div>
+            <div class="session-title"><strong>Windows 98</strong><span id="disk-name"></span><div class="session-stats">
+                <div id="disk-progress" hidden role="progressbar" aria-label="Disk downloaded" aria-valuemin="0" aria-valuemax="100" title="Disk available in this session">
+                    <svg viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="17"/><circle cx="20" cy="20" r="17" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 20 20)"/></svg>
+                    <span aria-hidden="true"></span>
+                </div>
+                <span id="ips">0 MIPS</span>
+            </div><button id="fullscreen" class="btn" data-variant="secondary">Fullscreen</button></div>
             <div id="controls">
                 <fieldset><legend>Machine</legend>
                     <button id="pause" class="btn" data-variant="secondary">Pause</button><button id="reset" class="btn" data-variant="secondary">Reset</button>
@@ -88,16 +96,16 @@
                     <button id="ctrlaltdel" class="btn" data-variant="secondary">Ctrl+Alt+Del</button>
                 </fieldset>
                 <fieldset><legend>Input and output</legend>
-                    <button id="mute" class="btn" data-variant="secondary">Mute</button><button id="mouse" class="btn" data-variant="secondary">Capture mouse</button><button id="direct-pointer" class="btn" data-variant="secondary" role="switch" aria-checked="false">Direct pointer</button><button id="screenshot" class="btn" data-variant="secondary">Take screenshot</button>
+                    <button id="mute" class="btn" data-variant="secondary" aria-pressed="false">Mute</button><button id="direct-pointer" class="btn" data-variant="secondary" role="switch" aria-checked="false">Direct pointer</button><button id="screenshot" class="btn" data-variant="secondary">Take screenshot</button>
                 </fieldset>
                 <fieldset class="media"><legend>CD</legend><span id="cdrom-name">Empty</span>
-                    <button id="insert-cdrom" class="btn" data-variant="secondary">Insert CD</button><button id="eject-cdrom" class="btn" data-variant="secondary">Eject</button>
+                    <button id="insert-cdrom" class="btn" data-variant="secondary" aria-describedby="cdrom-name">Insert CD</button>
                 </fieldset>
                 <fieldset class="media"><legend>Floppy A</legend><span id="fda-name">Empty</span>
-                    <button id="insert-fda" class="btn" data-variant="secondary">Insert</button><button id="eject-fda" class="btn" data-variant="secondary">Eject</button><button id="download-fda" class="btn" data-variant="secondary">Download</button>
+                    <button id="insert-fda" class="btn" data-variant="secondary" aria-describedby="fda-name">Insert floppy A</button><button id="download-fda" class="btn" data-variant="secondary">Download</button>
                 </fieldset>
                 <fieldset class="media"><legend>Floppy B</legend><span id="fdb-name">Empty</span>
-                    <button id="insert-fdb" class="btn" data-variant="secondary">Insert</button><button id="eject-fdb" class="btn" data-variant="secondary">Eject</button><button id="download-fdb" class="btn" data-variant="secondary">Download</button>
+                    <button id="insert-fdb" class="btn" data-variant="secondary" aria-describedby="fdb-name">Insert floppy B</button><button id="download-fdb" class="btn" data-variant="secondary">Download</button>
                 </fieldset>
             </div>
             <p id="session-status" class="alert" role="status" aria-live="polite"></p>
@@ -110,7 +118,6 @@
                 <span id="touch-hint" class="touch-control">Slide to move · Tap to click</span>
                 <button id="touch-drag" class="btn touch-control" aria-pressed="false" title="Hold the left mouse button during the next swipe" data-variant="secondary">Drag</button>
                 <button id="touch-right" class="btn touch-control" data-variant="secondary">Right click</button>
-                <button id="exit-fullscreen" hidden class="btn" data-variant="secondary">Controls</button>
             </div>
         </div>
     </main>

@@ -1,3 +1,5 @@
+import { setControlIcon } from "./control-icons.js";
+
 // Touch uses the same PS/2 bus as V86's mouse adapter, without Pointer Lock.
 export function setupTouch({ display, view, drag, right, getMachine, focus })
 {
@@ -10,7 +12,7 @@ export function setupTouch({ display, view, drag, right, getMachine, focus })
     {
         dragArmed = value;
         drag.setAttribute("aria-pressed", String(value));
-        drag.textContent = value ? "Dragging…" : "Drag";
+        setControlIcon(drag, "hand", value ? "Release drag" : "Drag", "Hold the left mouse button during the next swipe");
     }
     function release()
     {
@@ -87,9 +89,10 @@ export function setupTouch({ display, view, drag, right, getMachine, focus })
     return { release };
 }
 
-export function setupFullscreen({ view, exitButton, fit, focus, status, release })
+export function setupFullscreen({ view, toggleButton, toolbar, fit, focus, status, release, change })
 {
     let expanded = false, native = false, revision = 0;
+    const home = toggleButton.parentNode, next = toggleButton.nextSibling;
     const fullscreenElement = () => document.fullscreenElement || document.webkitFullscreenElement;
     function resize()
     {
@@ -102,11 +105,15 @@ export function setupFullscreen({ view, exitButton, fit, focus, status, release 
     }
     function show(value)
     {
+        const changed = expanded !== value;
         expanded = value;
         view.classList.toggle("expanded", value);
         document.documentElement.classList.toggle("vm-expanded", value);
-        exitButton.hidden = !value;
+        if(value) toolbar.append(toggleButton);
+        else home.insertBefore(toggleButton, next);
+        setControlIcon(toggleButton, value ? "minimize" : "monitor", value ? "Exit fullscreen" : "Fullscreen");
         release();
+        if(changed) change(value);
         resize();
     }
     async function exitNative()
@@ -141,12 +148,12 @@ export function setupFullscreen({ view, exitButton, fit, focus, status, release 
             if(current === revision && expanded)
             {
                 const touch = matchMedia("(any-pointer: coarse)").matches || view.classList.contains("touch-input");
-                status("Windows fills the browser. " + (touch ? "Use Controls" : "Press Esc") + " to leave this view.");
+                status("Windows fills the browser. " + (touch ? "Use Exit fullscreen" : "Press Esc") + " to leave this view.");
             }
         }
         resize();
     }
-    exitButton.addEventListener("click", exit);
+    toggleButton.addEventListener("click", () => (expanded ? exit() : enter()).then(focus));
     for(const type of ["fullscreenchange", "webkitfullscreenchange"])
         document.addEventListener(type, () => {
             if(fullscreenElement() === view) native = true;

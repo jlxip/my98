@@ -11,6 +11,7 @@ import {exporter} from 'ipfs-unixfs-exporter';
 import {parallelCarState} from './state-car.js';
 import {cachedStateContent} from './cached-state.js';
 import {PersistentCache} from './persistent-cache.js';
+import {PublicationCache} from './publication-cache.js';
 import {ProfileCacheSelection} from './profile-cache.js';
 
 const BLOCK_LIMIT = 4 * 1024 * 1024;
@@ -22,7 +23,7 @@ const fail = (code, message) => Object.assign(new Error(message), {code});
 const check = signal => { if(signal?.aborted) throw fail('CANCELLED', 'Operation cancelled'); };
 
 export class RemoteDisk {
-    constructor({gateway, servers, onlyLocalhost = false, onNetwork, timeoutMs = 30000, prefetch = {}, preloadState = false, onStateProgress, stateTransport = 'auto', persistentCache = {}} = {}) {
+    constructor({gateway, servers, onlyLocalhost = false, onNetwork, timeoutMs = 30000, prefetch = {}, preloadState = false, onStateProgress, stateTransport = 'auto', persistentCache = {}, onCacheError} = {}) {
         if(typeof onlyLocalhost !== 'boolean') throw fail('IO_ERROR', 'Invalid Only localhost option.');
         this.directGateway = gateway != null || onlyLocalhost;
         this.gateway = this.directGateway ? dataGateway(gateway, onlyLocalhost) : undefined;
@@ -36,11 +37,13 @@ export class RemoteDisk {
         this.onNetwork = onNetwork;
         if(!['auto','blocks'].includes(stateTransport))throw fail('OPERATION_FAILED','Invalid state transport');
         this.stateTransport=stateTransport;this.carActive=0;
-        this.persistent=new PersistentCache(persistentCache);
+        if(persistentCache?.publication!==undefined && (Object.keys(persistentCache).some(k=>k!=='publication')||typeof persistentCache.publication!=='boolean'))throw new TypeError('Invalid publication cache options');
+        this.persistent=persistentCache?.publication ? new PublicationCache({onError:onCacheError}) : new PersistentCache(persistentCache?.publication===false ? {} : persistentCache);
         this.preloadState = preloadState;
         this.onStateProgress = onStateProgress;
         this.timeoutMs = timeoutMs;
         this.blocks = new Map();
+        this.persistent.retained=this.blocks;
         this.cacheBytes = 0;
         this.jobs = new Map();
         this.readControllers = new Set();
@@ -142,7 +145,7 @@ export class RemoteDisk {
             if(selected) {
                 this.rangeOrder=new RangePrefetchOrder(matchingRanges({...selected,version:1},this.remote.cid,this.coverage.length),this.coverage);
                 this.policy='ranges';
-                if(this.persistent.options.loadProfile) {
+                if(this.persistent.options.loadProfile && !this.persistent.options.publication) {
                     for(const [cid,bytes] of profileBlocks)this.persistent.put(CID.parse(cid),bytes,'loadProfile');
                     this.profileSelection=new ProfileCacheSelection(this.remote.cid,this.size,this.rangeOrder.ranges,this.blocks,(cid,bytes)=>this.persistent.put(cid,bytes,'loadProfile'));
                 }
@@ -506,19 +509,20 @@ export class RemoteDisk {
             signal?.removeEventListener('abort', abort);
         }
     }
-    async *get(cid, {signal, priority = 'demand', cacheKind = 'loadProfile'} = {}) {
+    async *get(cid, {signal, priority = 'demand', cacheKind = this.persistent.options.publication ? 'disk' : 'loadProfile'} = {}) {
         check(signal);
         if(this.closed) throw fail('CANCELLED','Disk closed');
         if(cid.code !== 0x55 && cid.code !== 0x70) throw fail('UNSUPPORTED_FORMAT', 'Only raw and UnixFS IPFS blocks are supported.');
         const epoch=this.epoch;
         const key = cid.toV1().toString();
         if(this.stateCid && CID.parse(this.stateCid).toV1().toString()===key)cacheKind='state';
+        else if(this.persistent.options.publication && this.profilesCid && CID.parse(this.profilesCid).toV1().toString()===key)cacheKind='loadProfile';
         let bytes = this.blocks.get(key);
         this.traceEvent('block',{cid:key,priority,hit:!!bytes});
-        if(bytes) {this.cacheObserved(cid,bytes,cacheKind);yield bytes;return;}
+        if(bytes) {await this.cacheObserved(cid,bytes,cacheKind);yield bytes;return;}
         if(this.persistent.options[cacheKind])bytes=await this.persistent.get(cid,cacheKind);check(signal);
         if(epoch!==this.epoch||this.closed)throw fail('CANCELLED','Operation cancelled');
-        if(bytes) {if(!this.blocks.has(key)){this.blocks.set(key,bytes);this.cacheBytes+=bytes.length;}this.cacheObserved(cid,bytes,cacheKind);yield bytes;return;}
+        if(bytes) {if(!this.blocks.has(key)){this.blocks.set(key,bytes);this.cacheBytes+=bytes.length;}await this.cacheObserved(cid,bytes,cacheKind);yield bytes;return;}
         if(cid.multihash.code === 0) {
             bytes = cid.multihash.digest;
             if(bytes.length > BLOCK_LIMIT) throw fail('UNSUPPORTED_FORMAT', 'IPFS block is too large.');
@@ -528,7 +532,7 @@ export class RemoteDisk {
             while(priority==='background' && !this.jobs.get(key)?.hasBackground && !this.blocks.has(key) && [...this.jobs.values()].filter(j=>j.hasBackground).length>=8) await this.admitBackground(signal,epoch);
             check(signal);
             if(epoch!==this.epoch || this.closed) throw fail('CANCELLED','Operation cancelled');
-            if(this.blocks.has(key)) {const ready=this.blocks.get(key);this.cacheObserved(cid,ready,cacheKind);yield ready;return;}
+            if(this.blocks.has(key)) {const ready=this.blocks.get(key);await this.cacheObserved(cid,ready,cacheKind);yield ready;return;}
             let job=this.jobs.get(key);
             if(!job) {
                 job={key,cid,priority,epoch:this.epoch,state:'queued',hasBackground:priority==='background',tried:new Set(),controller:new AbortController(),waiters:new Set()};
@@ -543,10 +547,11 @@ export class RemoteDisk {
             bytes=await pending;
         }
         check(signal);
-        this.cacheObserved(cid,bytes,cacheKind);
+        await this.cacheObserved(cid,bytes,cacheKind);
         yield bytes;
     }
     cacheObserved(cid,bytes,kind) {
+        if(this.persistent.options.publication)return kind==='state' ? this.persistent.putState(cid,bytes) : this.persistent.put(cid,bytes,kind);
         if(kind==='state')this.persistent.put(cid,bytes,'state');
         else this.profileSelection?.observe(cid,bytes);
     }
@@ -563,6 +568,7 @@ export class RemoteDisk {
                 gateway:this.gateway, signal:controller.signal, onNetwork:this.onNetwork});
             check(signal);check(controller.signal);
             if(epoch !== this.epoch || this.closed) throw fail('CANCELLED', 'Disk closed');
+            await this.persistent.bind?.(resolved);check(controller.signal);
             await this.prepareGateway(resolved.rootCid, controller.signal);
             await this.openPath(resolved.path.slice(6), controller.signal);
             check(controller.signal);
@@ -651,6 +657,7 @@ export class RemoteDisk {
         this.profilesCid = undefined;
         if(this.entry.type === 'directory') {
             this.stateCid=this.entry.node?.Links?.find(link=>link.Name==='state.my98state')?.Hash.toString();
+            this.profilesCid=this.entry.node?.Links?.find(link=>link.Name==='load-profiles.json')?.Hash.toString();
             const entries = new Map();
             for await(const entry of this.entry.entries({signal, blockReadConcurrency:1})) {
                 if(entries.size >= 3 || !['disk.my98','state.my98state','load-profiles.json'].includes(entry.name) || entries.has(entry.name)) throw fail('UNSUPPORTED_FORMAT', 'Unsupported publication directory.');
@@ -765,9 +772,11 @@ export class RemoteDisk {
                             timeoutMs:remote.timeoutMs,onNetwork:remote.onNetwork,
                             onBlock:remote.persistent.options.state ? async(cid,bytes)=>{
                                 if(signal.aborted)return;
-                                remote.persistent.put(cid,bytes,'state');
-                                // Let IDB callbacks run between buffered CAR bursts;
-                                // never wait for a write or increase retained bytes.
+                                if(remote.persistent.options.publication)await remote.persistent.putState(cid,bytes);
+                                else remote.persistent.put(cid,bytes,'state');
+                                // Let IDB callbacks run between buffered CAR bursts.
+                                // The bounded read-only cache remains best-effort;
+                                // full publication caching applies backpressure above.
                                 if(remote.persistent.queueBytes>=1048576)await new Promise(resolve=>setTimeout(resolve,0));
                             } : undefined,
                             onEvent:(type,detail)=>remote.traceEvent(type,detail),

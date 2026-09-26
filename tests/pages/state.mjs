@@ -14,7 +14,7 @@ try {for(const [name,type] of Object.entries({chromium,webkit})) {
   await page.goto(server.url);await page.waitForFunction(()=>!document.body.inert);
   await page.evaluate(async()=>{const {V86}=await import("./build/libv86.mjs"),run=V86.prototype.run;V86.prototype.run=function(){window.vm=this;return run.call(this);};
    const {Slop86Disk}=await import("./build/disk/web/client.js"),create=Slop86Disk.create;Slop86Disk.create=async function(...a){const d=await create.apply(this,a);window.disk=d;return d;};});
-  await bootEncrypted(page,fixture.file);await page.evaluate(()=>document.querySelector("#exit-fullscreen").click());
+  await bootEncrypted(page,fixture.file);await page.evaluate(()=>document.querySelector("#fullscreen").click());
   // Wait for the fixture boot sector before probing RAM: the BIOS may still
   // clear that memory after the UI enables Pause. The fixture halts after CLI.
   await page.waitForFunction(()=>vm.v86.cpu.in_hlt[0] && vm.v86.cpu.instruction_pointer[0]===0x7c02);
@@ -23,7 +23,7 @@ try {for(const [name,type] of Object.entries({chromium,webkit})) {
   let download=page.waitForEvent("download",{timeout:60000});await page.locator("#save-state").click();
   const saved=await download,path=`${dir}/${name}.my98state`;await saved.saveAs(path);
   await page.waitForFunction(()=>!document.querySelector("#save-state").disabled);
-  assert.equal(await page.locator("#pause").textContent(),"Resume");
+  assert.equal(await page.locator("#pause").getAttribute("aria-label"),"Resume");
   await page.evaluate(async()=>{vm.v86.cpu.mem8[0x70000]=77;await disk.write(10000,new Uint8Array([99]));});
   page.on("dialog",d=>d.accept());
   async function load(file) {const chooser=page.waitForEvent("filechooser");await page.locator("#load-state").click();await(await chooser).setFiles(file);await page.waitForFunction(()=>!document.querySelector("#load-state").disabled);}
@@ -46,14 +46,14 @@ try {for(const [name,type] of Object.entries({chromium,webkit})) {
   await page.waitForFunction(()=>!document.querySelector("#save-state").disabled);
   assert.match(await page.locator("#disk-status").textContent(),/Eject/);
   assert.equal(await page.locator("#fda-name").textContent(),"blank.img");
-  await page.locator("#eject-fda").click();
+  await page.locator("#insert-fda").click();
   await page.waitForFunction(()=>!document.querySelector("#save-state").disabled);
   // Running capture preserves run state; restoration starts that saved session running.
   download=page.waitForEvent("download",{timeout:60000});await page.locator("#save-state").click();
   const runningPath=`${dir}/${name}-running.my98state`;await(await download).saveAs(runningPath);
   await page.waitForFunction(()=>!document.querySelector("#save-state").disabled);
-  assert.equal(await page.locator("#pause").textContent(),"Pause");
-  await load(runningPath);assert.equal(await page.locator("#pause").textContent(),"Pause");
+  assert.equal(await page.locator("#pause").getAttribute("aria-label"),"Pause");
+  await load(runningPath);assert.equal(await page.locator("#pause").getAttribute("aria-label"),"Pause");
   // Failure while constructing a candidate must resume the original running VM.
   const snapshot=await readFile(runningPath);
   const rollback=await page.evaluate(async bytes=>{
@@ -92,7 +92,7 @@ try {for(const [name,type] of Object.entries({chromium,webkit})) {
   assert.match(await page.locator("#disk-status").textContent(),/cancelled/i);
   page.off("download",onCancelledDownload);
   assert.equal(cancelledDownloads.length,0,"Cancelled capture must not download a state");
-  assert.equal(await page.locator("#pause").textContent(),"Pause");
+  assert.equal(await page.locator("#pause").getAttribute("aria-label"),"Pause");
   assert.equal(await page.evaluate(async()=>(await disk.read(10000,1))[0]),42);
 
   await page.screenshot({path:`${dir}/${name}-desktop.png`,fullPage:true});

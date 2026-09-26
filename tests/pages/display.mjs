@@ -31,7 +31,7 @@ for(const [name, type] of Object.entries({ chromium, webkit })) {
             await page.evaluate(() => window.vm.stop());
             await page.waitForFunction(() => !window.vm.is_running());
             // Wait for the native exit as well as the application's layout change.
-            await page.evaluate(() => document.querySelector("#exit-fullscreen").click());
+            await page.evaluate(() => document.querySelector("#fullscreen").click());
             await page.waitForFunction(() =>
                 !document.querySelector("#vm-view").classList.contains("expanded") &&
                 !document.fullscreenElement && !document.webkitFullscreenElement);

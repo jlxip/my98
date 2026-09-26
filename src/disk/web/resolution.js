@@ -15,13 +15,14 @@ function expiration(value) {
     if(!match || !Number.isFinite(seconds)) throw fail('CORRUPTION', 'Invalid IPNS expiration.');
     return BigInt(seconds) * 1000000n + BigInt((match[2] || '').padEnd(9, '0'));
 }
-async function request(server, name, signal, onNetwork) {
+async function request(server, name, signal, onNetwork, timeoutMs) {
     check(signal);
     const controller = new AbortController();
     const abort = () => controller.abort();
     signal?.addEventListener('abort', abort, {once:true});
     let timedOut = false, reader;
-    const timer = setTimeout(() => {timedOut = true;controller.abort();}, TIMEOUT);
+    // A local Kubo may need a DHT lookup; keep it cancellable without a timer.
+    const timer = timeoutMs == null ? undefined : setTimeout(() => {timedOut = true;controller.abort();}, timeoutMs);
     const path = server.resolution === 'gateway' ? `/ipns/${name}?format=ipns-record` : `/routing/v1/ipns/${name}`;
     try {
         check(signal);onNetwork?.(0, 1);
@@ -101,7 +102,7 @@ export async function resolveIpns(identity, {servers, onlyLocalhost = false, gat
             check(signal);
             const index = next++, server = endpoints[index];
             try {
-                const bytes = await request(server, name, round.signal, onNetwork);
+                const bytes = await request(server, name, round.signal, onNetwork, onlyLocalhost ? undefined : TIMEOUT);
                 try {await validate(key, bytes);}
                 catch {throw fail('CORRUPTION', 'Invalid, expired or incorrectly signed record');}
                 check(signal);

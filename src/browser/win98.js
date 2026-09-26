@@ -3,11 +3,14 @@ import {captureMachineState, restoreMachineState, DEFAULT_CONFIG} from "./machin
 import { setupDisk } from "./disk-ui.js";
 import { setupTouch, setupFullscreen } from "./vm-input.js";
 import { setupDirectPointer } from "./direct-pointer.js";
+import { setupControlIcons, setControlIcon } from "./control-icons.js";
 
 const $ = id => document.getElementById(id);
 const media = { cdrom: null, fda: null, fdb: null };
 let emulator, diskName = "windows98.img", busy = false, muted = false;
 let diskBlocked = false;
+let directPreferred = false;
+setupControlIcons();
 let diskController, machineAdapter, machineConfig = {...DEFAULT_CONFIG};
 let compatibilityPromise;
 function compatibility() {
@@ -38,22 +41,25 @@ function updateControls()
 {
     document.querySelectorAll("button, input, select").forEach(element => element.disabled = busy);
     diskController?.syncControls(busy);
-    $("exit-fullscreen").disabled = false;
+    // Leaving fullscreen must remain available during a pending operation.
+    $("fullscreen").disabled = !screenView.expanded && busy;
     for(const id of ["touch-drag", "touch-right"]) $(id).disabled = busy || diskBlocked || !emulator?.is_running();
     if(busy || diskBlocked || !emulator?.is_running()) { touch.release(); direct.release(); }
-    $("direct-pointer").disabled = busy || diskBlocked || !emulator;
+    if(!busy && !diskBlocked && emulator && !screenView.expanded && directPreferred && !direct.enabled) direct.activate();
+    $("direct-pointer").disabled = busy || diskBlocked || !emulator || screenView.expanded;
     $("direct-pointer").setAttribute("aria-checked", String(direct.enabled));
     $("vm-view").classList.toggle("direct-input", direct.enabled);
-    $("mouse").disabled = busy || diskBlocked || direct.enabled;
     if(!emulator) return;
-    $("pause").textContent = emulator.is_running() ? "Pause" : "Resume";
-    $("mute").textContent = muted ? "Unmute" : "Mute";
-    $("mouse").textContent = document.pointerLockElement ? "Release mouse" : "Capture mouse";
+    setControlIcon($("pause"), emulator.is_running() ? "pause" : "play", emulator.is_running() ? "Pause" : "Resume");
+    setControlIcon($("mute"), "volume-x", muted ? "Unmute" : "Mute");
+    $("mute").setAttribute("aria-pressed", String(muted));
     for(const drive of Object.keys(media))
     {
         $(drive + "-name").textContent = media[drive] || "Empty";
         $(drive + "-name").title = media[drive] || "Empty";
-        $("eject-" + drive).disabled = busy || !media[drive];
+        const label = drive === "cdrom" ? "CD" : "floppy " + (drive === "fda" ? "A" : "B");
+        setControlIcon($("insert-" + drive), media[drive] ? "eject" : drive === "cdrom" ? "disc" : "save",
+            (media[drive] ? "Eject " : "Insert ") + label, media[drive] ? "Eject " + label + ": " + media[drive] : "Insert " + label);
         if(drive !== "cdrom") $("download-" + drive).disabled = busy || !media[drive];
     }
     if(diskBlocked) document.querySelectorAll("#controls button").forEach(button => button.disabled = true);
@@ -174,7 +180,7 @@ function fitScreen()
 
 function captureMouse()
 {
-    if(direct.enabled || document.pointerLockElement || busy || !emulator ||
+    if(!screenView.expanded || direct.enabled || document.pointerLockElement || busy || diskBlocked || !emulator ||
         !$("display").requestPointerLock || matchMedia("(pointer: coarse)").matches) return;
     emulator.mouse_set_enabled(true);
     try
@@ -188,8 +194,6 @@ function captureMouse()
 
 function fullscreen()
 {
-    // Fullscreen consumes activation; request desktop pointer lock first.
-    captureMouse();
     return screenView.enter();
 }
 
@@ -327,22 +331,30 @@ bind("pause", "", async () => {
     if(emulator.is_running()) await emulator.stop(); else emulator.run();
     status(emulator.is_running() ? "Windows is running." : "Machine paused.");
 });
-bind("reset", "", async () => {
-    if(!window.confirm("Reset Windows? Any work not saved within Windows will be lost."))
+function cancelReset()
+{
+    delete $("reset").dataset.confirm;
+    setControlIcon($("reset"), "rotate-cw", "Reset");
+}
+$("reset").addEventListener("click", () => {
+    if(busy || diskBlocked || !emulator) return;
+    if($("reset").dataset.confirm !== "true")
     {
-        status("Reset cancelled.");
+        // WebKit does not focus buttons on click; explicitly retain this confirmation.
+        $("reset").focus({preventScroll: true});
+        $("reset").dataset.confirm = "true";
+        setControlIcon($("reset"), "rotate-cw", "Confirm reset", "Reset Windows? Click again to confirm; unsaved work will be lost.");
+        status("Click Reset again to confirm. Unsaved work will be lost.");
         return;
     }
-    emulator.restart();
-    status("Machine reset.");
+    cancelReset();
+    action("", async () => { emulator.restart(); status("Machine reset."); });
 });
-// Fullscreen and pointer lock must run directly in a user gesture.
-$("fullscreen").onclick = () => fullscreen().then(focusScreen);
-$("mouse").onclick = () => {
-    if(document.pointerLockElement) document.exitPointerLock();
-    else captureMouse();
-    focusScreen();
-};
+$("reset").addEventListener("blur", cancelReset);
+window.addEventListener("blur", cancelReset);
+document.addEventListener("keydown", event => {
+    if(event.key === "Escape" && $("reset").dataset.confirm === "true") { cancelReset(); status("Reset cancelled."); }
+});
 bind("ctrlaltdel", "", async () => { emulator.keyboard_send_scancodes([0x1D, 0x38, 0x53, 0xD3, 0xB8, 0x9D]); });
 bind("mute", "", async () => {
     muted = !muted;
@@ -360,6 +372,13 @@ bind("screenshot", "Taking screenshot…", async () => {
 for(const drive of Object.keys(media))
 {
     bind("insert-" + drive, "Inserting media…", async () => {
+        if(media[drive])
+        {
+            await paused(() => emulator["eject_" + drive]());
+            media[drive] = null;
+            status("Media ejected.");
+            return;
+        }
         const files = await pickFiles(drive === "cdrom");
         if(!files.length) { status(""); return; }
         const file = files[0];
@@ -375,11 +394,6 @@ for(const drive of Object.keys(media))
         media[drive] = files.map(file => file.name).join(", ");
         status("Media inserted: " + media[drive]);
     });
-    bind("eject-" + drive, "Ejecting media…", async () => {
-        await paused(() => emulator["eject_" + drive]());
-        media[drive] = null;
-        status("Media ejected.");
-    });
     if(drive !== "cdrom") bind("download-" + drive, "Preparing download…", () => exportDisk(drive));
 }
 const direct = setupDirectPointer({
@@ -392,12 +406,22 @@ const touch = setupTouch({
     getMachine: () => busy || diskBlocked ? null : emulator, focus: focusScreen,
 });
 const screenView = setupFullscreen({
-    view: $("vm-view"), exitButton: $("exit-fullscreen"), fit: fitScreen, focus: focusScreen,
+    view: $("vm-view"), toggleButton: $("fullscreen"), toolbar: $("view-controls"), fit: fitScreen, focus: focusScreen,
     status, release: () => { touch.release(); direct.release(); },
+    change(expanded) {
+        if(expanded) {
+            direct.deactivate();
+            // Request lock before native fullscreen consumes the user gesture.
+            captureMouse();
+        }
+        else if(document.pointerLockElement) document.exitPointerLock();
+        updateControls();
+    },
 });
 $("direct-pointer").onclick = () => {
     touch.release();
-    if(direct.enabled) direct.deactivate(); else direct.activate();
+    directPreferred = !directPreferred;
+    if(!directPreferred) direct.deactivate();
     updateControls();
     status(direct.enabled ? "Direct pointer enabled." : "Direct pointer disabled.");
     focusScreen();
@@ -409,6 +433,8 @@ document.addEventListener("focusin", event => {
     if(emulator) emulator.keyboard_set_enabled($("display").contains(event.target));
 });
 document.addEventListener("pointerlockchange", () => {
+    // A delayed lock request must never capture the pointer after leaving fullscreen.
+    if(!screenView.expanded && document.pointerLockElement) { document.exitPointerLock(); return; }
     updateControls();
     focusScreen();
     status(document.pointerLockElement ? "Mouse captured. Press Esc to release it." : "Mouse released.");
@@ -446,7 +472,7 @@ diskController = setupDisk({
                 createMachine:(adapter,config)=>createMachine(adapter,config,container),
                 onDiskError:async error=>{diskBlocked=true;if(emulator)await emulator.stop();status(error.message,true);updateControls();},
             });
-            direct.deactivate();touch.release();
+            directPreferred=false;direct.deactivate();touch.release();
             if(previous)await previous.destroy().catch(()=>{});
             previousAdapter?.dispose();
             const text=container.querySelector("div"), canvas=container.querySelector("canvas");
@@ -468,6 +494,7 @@ diskController = setupDisk({
     },
     async stop() { if(emulator) await emulator.stop(); },
     async boot(adapter, name, {autoFullscreen = true} = {}) {
+        directPreferred = false;
         direct.deactivate();
         touch.release();
         if(emulator) { await emulator.destroy(); emulator = undefined; }
@@ -475,6 +502,7 @@ diskController = setupDisk({
         await start(adapter, name, autoFullscreen);
     },
     async close() {
+        directPreferred = false;
         direct.deactivate();
         touch.release();
         await screenView.exit();

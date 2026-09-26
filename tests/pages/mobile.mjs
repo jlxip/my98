@@ -52,7 +52,7 @@ for(const [name, type] of Object.entries({ chromium, webkit })) {
                 const layout = async () => page.evaluate(() => {
                     const view = document.querySelector("#vm-view").getBoundingClientRect();
                     const display = document.querySelector("#display").getBoundingClientRect();
-                    const exit = document.querySelector("#exit-fullscreen").getBoundingClientRect();
+                    const exit = document.querySelector("#fullscreen").getBoundingClientRect();
                     return { width: view.width, height: view.height, available: visualViewport.height,
                         displayHeight: display.height, exitBottom: exit.bottom, bottom: view.bottom, scroll: scrollY,
                         action: getComputedStyle(document.querySelector("#display")).touchAction };
@@ -131,14 +131,14 @@ for(const [name, type] of Object.entries({ chromium, webkit })) {
                 const landscape = await layout();
                 assert(landscape.displayHeight > 290 && landscape.exitBottom <= landscape.bottom);
                 await page.screenshot({ path: `${output}/${name}-${fullscreen}-landscape.png` });
-                await page.locator("#exit-fullscreen").tap();
+                await page.locator("#fullscreen").tap();
                 await page.waitForFunction(() => !document.querySelector("#vm-view").classList.contains("expanded"));
                 assert.equal(await page.evaluate(() => document.documentElement.classList.contains("vm-expanded")), false);
                 await page.locator("#fullscreen").tap();
-                await page.locator("#exit-fullscreen").waitFor({ state: "visible" });
-                await page.locator("#exit-fullscreen").tap();
+                await page.locator("#fullscreen").waitFor({ state: "visible" });
+                await page.locator("#fullscreen").tap();
                 await page.locator("#pause").tap();
-                await page.waitForFunction(() => document.querySelector("#pause").textContent === "Resume");
+                await page.waitForFunction(() => document.querySelector("#pause").getAttribute("aria-label") === "Resume");
                 assert.deepEqual(errors, []);
                 results.push({ browser: name, fullscreen, native, portrait, landscape, nativeTouchMove: !!cdp, errors });
                 console.log(`${name}/${fullscreen}: fullscreen, touch, drag, cancellation, rotation and controls PASS`);

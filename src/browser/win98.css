@@ -1,16 +1,8 @@
-/* Basecoat 1.0.2 Vega; local overrides define identity and emulator layout. */
+/* Basecoat 1.0.2 Vega colors; local overrides define typography and emulator layout. */
 :root {
     scroll-behavior: auto;
     color-scheme: dark; font: 14px/1.45 system-ui, sans-serif;
-    --background: #15171b; --foreground: #e8ebef;
-    --card: #1d2026; --card-foreground: #e8ebef;
-    --popover: #1d2026; --popover-foreground: #e8ebef;
-    --primary: #b8d2f9; --primary-foreground: #14243b;
-    --secondary: #282c33; --secondary-foreground: #e8ebef;
-    --muted: #282c33; --muted-foreground: #aeb7c5;
-    --accent: #363d47; --accent-foreground: #e8ebef;
-    --border: #414751; --input: #414751; --ring: #a7c6f9;
-    --destructive: #ffb7b0; --radius: 8px;
+    --radius: 8px;
     color: var(--foreground); background: var(--background);
 }
 [hidden] { display: none !important; }
@@ -18,7 +10,7 @@ body { margin: 0; }
 :focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
 #welcome { min-height: 100dvh; display: flex; padding: 32px 24px; }
 #disk-panel { width: min(100%, 360px); margin: auto; }
-#disk-brand { margin: 0 0 28px; text-align: center; color: #929ba8; font-size: 20px; font-weight: 500; letter-spacing: .13em; }
+#disk-brand { margin: 0 0 28px; text-align: center; color: var(--muted-foreground); font-size: 20px; font-weight: 500; letter-spacing: .13em; }
 #disk-login .input:not([type=checkbox]) { display: block; width: 100%; height: 44px; margin-top: 6px; font-size: 16px; }
 #disk-panel .boot-option { display: flex; align-items: center; gap: 8px; min-height: 32px; margin: 0; cursor: pointer; }
 #disk-login .boot-option:last-of-type { margin-bottom: 12px; }
@@ -36,35 +28,52 @@ body { margin: 0; }
 .hint { color: var(--muted-foreground); font-size: 13px; margin: 20px 0; }
 label { display: block; margin-bottom: 16px; }
 #session { height: 100dvh; display: flex; flex-direction: column; }
-header { flex: 0 0 auto; padding: 12px 18px 6px; border-bottom: 1px solid #343941; }
+header { flex: 0 0 auto; padding: 12px 18px 6px; border-bottom: 1px solid var(--border); }
 .session-title { display: flex; align-items: center; gap: 16px; }
-#disk-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #aeb7c5; }
-#ips { margin-left: auto; color: #929ba8; white-space: nowrap; font-size: 12px; font-variant-numeric: tabular-nums; }
-#fullscreen { flex-shrink: 0; min-height: 44px; padding-inline: 1.3rem; font-size: 16px; }
+#disk-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted-foreground); }
+.session-stats { display: flex; align-items: center; gap: 12px; margin-left: auto; flex-shrink: 0; }
+#ips { color: var(--muted-foreground); white-space: nowrap; font-size: 12px; font-variant-numeric: tabular-nums; }
+#disk-progress { position: relative; width: 40px; height: 40px; flex-shrink: 0; }
+#disk-progress svg { display: block; width: 100%; height: 100%; fill: none; stroke: var(--border); stroke-width: 3px; }
+#disk-progress circle:last-child { stroke: var(--primary); }
+#disk-progress span { position: absolute; inset: 0; display: grid; place-items: center; font-size: 10px; font-variant-numeric: tabular-nums; }
+#fullscreen { flex-shrink: 0; }
 #controls { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 8px; }
-fieldset { border: 0; padding: 0; margin: 0; display: flex; gap: 5px; flex-wrap: wrap; align-items: center; }
-legend { color: #929ba8; font-size: 11px; padding: 0 0 4px; }
-.media span { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: #b1bac7; }
-#controls .btn { height: 30px; font-size: 12px; }
-[role=status] { min-height: 1.45em; color: #b8c6d9; }
+fieldset { min-inline-size: 0; max-width: 100%; border: 0; padding: 0; margin: 0; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+legend { color: var(--muted-foreground); font-size: 11px; padding: 0 0 4px; }
+.media > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+#session .icon-button { --button-bg: var(--secondary); --button-fg: var(--secondary-foreground); display: inline-flex; align-items: center; justify-content: center; flex: 0 0 56px; width: 56px; height: 56px; padding: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--button-bg); color: var(--button-fg); }
+#session .icon-button:hover { --button-bg: var(--accent); }
+#session .icon-button[aria-pressed=true], #session .icon-button[aria-checked=true] { --button-bg: var(--primary); --button-fg: var(--primary-foreground); border-color: var(--primary); }
+#session .icon-button[data-confirm=true] { --button-bg: #b91c1c; --button-fg: #fff; border-color: #ef4444; }
+#session .icon-button:disabled { opacity: .45; }
+#session .icon-button .icon-mark { display: block; position: relative; width: 40px; height: 40px; }
+#session .icon-button svg { display: block; width: 40px; height: 40px; flex-shrink: 0; }
+#session .icon-button .tablet-body { transform: rotate(90deg); }
+#session .icon-button .stylus { position: absolute; top: -3px; right: -3px; width: 24px; height: 24px; background: var(--button-bg); border-radius: 3px; }
+#session .icon-button .download-arrow { position: absolute; bottom: 0; right: 0; width: 22px; height: 22px; background: var(--button-bg); border-radius: 3px; }
+#session .icon-button .eject-triangle { position: absolute; top: 0; left: 0; transform: scaleY(.72); transform-origin: center top; fill: none; stroke-width: 1.6; }
+#session .icon-button .eject-bar { position: absolute; bottom: -14px; left: 0; transform: scale(1,.6); transform-origin: center; stroke-width: 1.6; }
+[role=status] { min-height: 1.45em; color: var(--foreground); }
 #session-status { margin: 6px 0 0; font-size: 12px; }
 [role=status].error { color: var(--destructive); border-color: var(--destructive); }
-#display { flex: 1 1 auto; min-height: 120px; overflow: hidden; position: relative; background: #000; outline: none; }
+#display { flex: 1 1 auto; min-height: 120px; overflow: hidden; position: relative; background: #000; outline: none; cursor: none; }
+#display * { cursor: inherit; }
 #screen_container { position: absolute; top: 50%; left: 50%; transform-origin: 0 0; }
 #screen { white-space: pre; font: 16px/16px monospace; }
 #screen_container canvas { display: block; }
 @media (max-width: 640px) { header { padding: 8px; } #controls { gap: 8px; } #session { height: auto; min-height: 100dvh; } #vm-view { min-height: 60dvh; } }
 
-@media (max-width: 640px) { .session-title { flex-wrap: wrap; gap: 8px; } #fullscreen { width: 100%; } }
+@media (max-width: 640px) { .session-title { flex-wrap: wrap; gap: 8px; } #disk-name { max-width: 100%; } }
 
 #vm-view { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; background: #000; }
 #display { touch-action: none; overscroll-behavior: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
-#view-controls { display: none; align-items: center; justify-content: center; flex: 0 0 auto; gap: 8px; padding: 6px; background: #15171b; }
+#view-controls { display: none; align-items: center; justify-content: center; flex: 0 0 auto; gap: 8px; padding: 6px; background: var(--background); }
 #view-controls button { min-height: 44px; touch-action: manipulation; }
-#touch-hint { font-size: 12px; color: #b1b8c3; }
+#touch-hint { font-size: 12px; color: var(--muted-foreground); }
 #touch-drag[aria-pressed=true] { color: var(--primary-foreground); background: var(--primary); }
-.touch-control { display: none; }
-#vm-view.touch-input .touch-control { display: inline-block; }
+.touch-control, #session .icon-button.touch-control { display: none; }
+#session #vm-view.touch-input .touch-control { display: inline-flex; }
 #vm-view.touch-input #view-controls { display: flex; }
 html.vm-expanded, html.vm-expanded body { overflow: hidden; overscroll-behavior: none; }
 #vm-view.expanded {
@@ -76,9 +85,8 @@ html.vm-expanded, html.vm-expanded body { overflow: hidden; overscroll-behavior:
 #vm-view:fullscreen { top: 0; left: 0; width: 100%; height: 100%; }
 #vm-view:-webkit-full-screen { top: 0; left: 0; width: 100%; height: 100%; }
 @media (any-pointer: coarse) {
-    #vm-view .touch-control { display: inline-block; }
+    #session #vm-view .touch-control { display: inline-flex; }
     #vm-view #view-controls { display: flex; }
-    #mouse { display: none; }
 }
 @media (max-width: 540px) { #touch-hint { display: none !important; } }
 

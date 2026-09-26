@@ -17,6 +17,13 @@ for(const [name, type] of Object.entries({chromium, webkit})) {
         assert.equal(await page.locator("#disk-cold-login").isChecked(), false);
         assert.equal(await page.locator("#disk-machine").inputValue(), "main");
         assert.equal(await page.locator("#disk-only-localhost").isChecked(), false);
+        assert.equal(await page.locator('#disk-cache-publication').isChecked(),false);
+        await page.locator('#disk-cache-publication').check();
+        await page.reload();await page.waitForFunction(()=>!document.body.inert);
+        assert.equal(await page.locator('#disk-cache-publication').isChecked(),true);
+        await page.locator('#disk-cache-publication').uncheck();
+        await page.reload();await page.waitForFunction(()=>!document.body.inert);
+        assert.equal(await page.locator('#disk-cache-publication').isChecked(),false);
         assert.equal(await page.locator("#disk-settings, #disk-gateway").count(), 0);
         assert.equal(await page.locator("#choose-disk, #show-resume, #resume-form, #download-disk").count(), 0);
         assert.equal(await page.locator("#disk-workspace").isVisible(), false);
@@ -25,7 +32,7 @@ for(const [name, type] of Object.entries({chromium, webkit})) {
         const tabKey = name === "webkit" && process.platform === "darwin" ? "Alt+Tab" : "Tab";
         // Logical tab order, including checkbox and submit by keyboard.
         await page.locator("#disk-user").focus();
-        for(const id of ["disk-password", "disk-machine", "disk-only-localhost", "disk-cold-login", "disk-autoboot"]) {
+        for(const id of ["disk-password", "disk-machine", "disk-only-localhost", "disk-cache-publication", "disk-cold-login", "disk-autoboot"]) {
             await page.keyboard.press(tabKey);
             assert.equal(await page.evaluate(() => document.activeElement.id), id);
         }
@@ -65,6 +72,7 @@ for(const [name, type] of Object.entries({chromium, webkit})) {
                 async openRemote(value) {
                     calls.push(["open",value.gateway]);
                     check('opening defers prefetch until origin selection',value.prefetch.enabled===false);
+                    check('publication cache follows the checkbox',value.persistentCache.publication===$('cache-publication').checked);
                     if(failAt==="open")throw Error("Remote unavailable");
                     if(failAt==="wait-remote") {
                         options.onProgress({phase:"resolve"});
@@ -101,9 +109,15 @@ for(const [name, type] of Object.entries({chromium, webkit})) {
             check('management visible, password cleared, no disk to boot',!$('workspace').hidden && $('login').hidden && $('password').value==='' && $('boot').disabled);
             await close();
             check('logout restores login and default boot',!$('login').hidden && $('workspace').hidden && $('autoboot').checked);
+            $('cache-publication').checked=true;$('cache-publication').onchange();
             fill(true);submit();await idle();
             check('checked opens and boots exactly once in order',sequence()==='unlock,open,prefetch,read,boot' && calls[1][1]===undefined && session);
+            options.onProgress({phase:'cache-error'});
+            check('cache failure has a separate nonfatal notice',!$('cache-notice').hidden);
             await close();
+            check('logout clears only the cache notice',$('cache-notice').hidden);
+            check('logout preserves cache preference',$('cache-publication').checked&&localStorage.getItem('my98-cache-publication')==='true');
+            $('cache-publication').checked=false;$('cache-publication').onchange();
             failAt='unlock';fill(true);submit();await idle();
             check('unlock failure disposes candidate and retains login',sequence()==='unlock,close' && !$('login').hidden && $('status').textContent==='Unlock failed');
             calls=[];failAt='open';fill(true);submit();await idle();

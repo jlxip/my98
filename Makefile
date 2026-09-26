@@ -123,6 +123,7 @@ site-test: site
 	node scripts/run-browser-test.mjs tests/pages/audio.mjs
 	node scripts/run-browser-test.mjs tests/pages/run.mjs
 	node scripts/run-browser-test.mjs tests/pages/login.mjs
+	node scripts/run-browser-test.mjs tests/pages/disk-progress.mjs
 	node scripts/run-browser-test.mjs tests/pages/empty-disk.mjs
 	node scripts/run-browser-test.mjs tests/pages/integration.mjs
 	node scripts/run-browser-test.mjs tests/pages/resolution.mjs
@@ -135,11 +136,14 @@ site-test: site
 	node scripts/run-browser-test.mjs tests/pages/car-stream.mjs
 	node scripts/run-browser-test.mjs tests/pages/persistent-cache.mjs
 	node scripts/run-browser-test.mjs tests/pages/persistent-cache-api.mjs
+	node scripts/run-browser-test.mjs tests/pages/publication-cache.mjs
+	node scripts/run-browser-test.mjs tests/pages/publication-cache-api.mjs
 	node scripts/run-browser-test.mjs tests/pages/state-api.mjs
 	node scripts/run-browser-test.mjs tests/pages/state-large.mjs
 	node scripts/run-browser-test.mjs tests/pages/state.mjs
 	node scripts/run-browser-test.mjs tests/pages/media.mjs
 	node scripts/run-browser-test.mjs tests/pages/mobile.mjs
+	node scripts/run-browser-test.mjs tests/pages/controls.mjs
 	node scripts/run-browser-test.mjs tests/pages/direct-pointer.mjs
 	node scripts/run-browser-test.mjs tests/pages/display.mjs
 
@@ -154,6 +158,8 @@ state-test: site
 	node scripts/run-browser-test.mjs tests/pages/car-stream.mjs
 	node scripts/run-browser-test.mjs tests/pages/persistent-cache.mjs
 	node scripts/run-browser-test.mjs tests/pages/persistent-cache-api.mjs
+	node scripts/run-browser-test.mjs tests/pages/publication-cache.mjs
+	node scripts/run-browser-test.mjs tests/pages/publication-cache-api.mjs
 	node scripts/run-browser-test.mjs tests/pages/state-api.mjs
 	node scripts/run-browser-test.mjs tests/pages/state-large.mjs
 	node scripts/run-browser-test.mjs tests/pages/state.mjs

@@ -11,7 +11,7 @@ export interface PrefetchOptions {enabled?:boolean;policy?:'auto'|'sequential'|'
 export interface DiscoveryStats {state:'idle'|'skipped'|'running'|'complete'|'limited'|'failed'|'cancelled';providers:number;verifiedProviders:number;verifiedEndpoints:number;endpointsTested?:number;receivedBytes?:number;limits?:string[];failures?:{stage:string;target:string;code:string;message:string}[];error?:{code:string;message:string};}
 export interface EndpointStats {url:string;active:number;validBytes:number;failures:number;bytesPerMs:number;cooldownUntil:number;excluded:boolean;}
 export interface PersistentCacheCounters {hits:number;misses:number;readBytes:number;writtenBytes:number;writes:number;errors:number;discarded:number;}
-export interface PersistentCacheStats {enabled:{state:boolean;loadProfile:boolean};available:boolean;queuedBytes:number;pendingWrites:number;state:PersistentCacheCounters;loadProfile:PersistentCacheCounters;}
+export interface PersistentCacheStats {enabled:{state:boolean;loadProfile:boolean;publication?:boolean;disk?:boolean};available:boolean;stale?:boolean;disk?:PersistentCacheCounters;queuedBytes:number;pendingWrites:number;state:PersistentCacheCounters;loadProfile:PersistentCacheCounters;}
 export interface RemoteStats {persistentCache:PersistentCacheStats;stateTransport?:{mode:"blocks"|"car";lanes:number;bytes:number;fallback:boolean;gateway?:string;fallbackAt?:number;reason?:string;active:number};loadProfile?:LoadProfileStats;endpoints:EndpointStats[];discovery:DiscoveryStats;rangeProfile?:{ranges:number;units:number;completedUnits:number};retainedBytes:number;coveredBytes:number;totalBytes:number;completedUnits:number;totalUnits:number;inFlight:number;queued:number;prefetchState:'idle'|'running'|'paused'|'stopped'|'suspended'|'complete'|'closed';prefetchError?:{code:string;message:string};policy:string;concurrency:number;traceDropped:number;}
 export interface DiskTraceEvent {type:string;unit?:number;policy?:string;time:number;offset?:number;length?:number;ms?:number;cid?:string;gateway?:string;priority?:string;hit?:boolean;bytes?:number;code?:string;}
 export interface QueryServer {url:string;resolution:'gateway'|'routing'|false;discovery:boolean;}
@@ -23,7 +23,7 @@ export class Slop86Disk {
  createFromImage(file:File|Blob):Promise<SavedDisk>;
  createEmpty(sizeBytes:number):Promise<SavedDisk>;
  open(file:File|Blob):Promise<DiskState>;
- openRemote(options?:{gateway?:string;servers?:QueryServer[];onlyLocalhost?:boolean;prefetch?:PrefetchOptions}):Promise<DiskState>;
+ openRemote(options?:{gateway?:string;servers?:QueryServer[];onlyLocalhost?:boolean;prefetch?:PrefetchOptions;persistentCache?:{publication?:boolean}}):Promise<DiskState>;
  /** Export a stable capability for the unlocked identity, including past/future disks. Treat as a secret. */
  exportReadOnlyKey():Promise<string>;
  /** Open a CID using a my98-ro-v2 capability, without signing material. Writes live only in RAM. */

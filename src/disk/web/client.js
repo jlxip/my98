@@ -64,7 +64,7 @@ export class Slop86Disk {
     createFromImage(file) {return this.call("create", {file});}
     createEmpty(sizeBytes) {return this.call("createEmpty", {sizeBytes});}
     open(file) {return this.call("open", {file});}
-    openRemote({gateway, servers, onlyLocalhost = false, prefetch} = {}) {return this.call("openRemote", {gateway,servers,onlyLocalhost,prefetch});}
+    openRemote({gateway, servers, onlyLocalhost = false, prefetch, persistentCache = {}} = {}) {return this.call("openRemote", {gateway,servers,onlyLocalhost,prefetch,persistentCache});}
     async exportReadOnlyKey() {
         const bytes = await this.call("exportReadOnlyKey");
         try { return "my98-ro-v2." + btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, ''); }

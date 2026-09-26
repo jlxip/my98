@@ -1,5 +1,5 @@
 // Absolute input for a guest already configured to accept VMware mouse packets.
-// No guest probing or cursor manipulation: the native browser cursor stays visible.
+// No guest probing or guest cursor manipulation; the host cursor stays hidden.
 export function setupDirectPointer({ display, getSurface, getMachine, focus = () => {} })
 {
     let enabled = false, vm = null, gesture = null, buttons = [false, false, false];
@@ -61,7 +61,7 @@ export function setupDirectPointer({ display, getSurface, getMachine, focus = ()
             previousMouseEnabled = vm.mouse_adapter?.emu_enabled ?? true;
             vm.mouse_set_enabled(false);
             previousCursor = display.style.cursor;
-            display.style.cursor = "default";
+            display.style.cursor = "none";
             enabled = true;
             unlocked();
         }

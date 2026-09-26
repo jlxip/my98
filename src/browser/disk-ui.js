@@ -1,11 +1,20 @@
+import {setupDiskProgress} from './disk-progress.js';
+
 /** Local file/VM controls. Secret contexts stay in the independent disk Worker. */
 export function setupDisk(host) {
     const $ = id => document.getElementById("disk-" + id);
     let client, BufferClass, state, adapter, active = false, working = false, capturing = false, prepared = false;
     let analyzing = false, analysisError, stateAbort;
+    const progress = setupDiskProgress($("progress"), () => active && host.hasSession() && state?.remote ?
+        {client, adapter, cid:state.remote.cid, busy:working || host.busy()} : null);
+    const cachePreference='my98-cache-publication';
+    $('cache-publication').checked=false;
+    try {$('cache-publication').checked=localStorage.getItem(cachePreference)==='true';}catch{}
+    $('cache-publication').onchange=()=>{try{localStorage.setItem(cachePreference,String($('cache-publication').checked));}catch{}};
     const stateSaveButton=document.getElementById("save-state"), stateLoadButton=document.getElementById("load-state"), stateCancelButton=document.getElementById("cancel-state");
     const message = (text,error=false) => { $("status").textContent=text;$("status").classList.toggle("error",error); if(stateAbort) {const target=document.getElementById("session-status");target.textContent=text;target.classList.toggle("error",error);} };
     function syncControls(busy) {
+        progress.update();
         $("workspace").hidden=!client;$("login").hidden=!!client;
         $("brand").hidden=!!client;$("notice").hidden=!client;
         document.getElementById("welcome").classList.toggle("authenticated", !!client);
@@ -58,6 +67,7 @@ export function setupDisk(host) {
                 message(analysisError, true);
                 void client.cancelLoadAnalysis().then(() => { analyzing = false; syncControls(host.busy()); }).catch(error => message(error.message, true));
             },onProgress:p=>{
+                if(p.phase==="cache-error") {$("cache-notice").hidden=false;return;}
                 if(stateAbort) {
                     const labels={compress:"Compressing state", "encrypt-state":"Encrypting state", "decrypt-state":"Decrypting state", "download-state":"Downloading state", decompress:"Decompressing state"};
                     message(`${labels[p.phase] || "Preparing state"}: ${(p.completed/1048576).toFixed(1)} MiB…`);
@@ -109,7 +119,7 @@ export function setupDisk(host) {
     async function openRemote() {
         message("Finding remote disk…");capturing=true;syncControls(true);
         try {
-            state=await client.openRemote({gateway:$("only-localhost").checked ? "http://127.0.0.1:8080" : undefined, onlyLocalhost:$("only-localhost").checked,prefetch:{enabled:false}});prepared=false;
+            state=await client.openRemote({gateway:$("only-localhost").checked ? "http://127.0.0.1:8080" : undefined, onlyLocalhost:$("only-localhost").checked,prefetch:{enabled:false},persistentCache:{publication:$("cache-publication").checked}});prepared=false;
             message("Remote disk authenticated. Choose Boot or a state; its load profile is downloaded first, then the rest of the disk. Changes are saved locally.");
         } finally {capturing=false;syncControls(true);}
     }
@@ -197,7 +207,7 @@ export function setupDisk(host) {
         if(!window.confirm("Close the identity? Pending changes and the prepared download for this session will be lost."))return;
         if(active)await host.stop();adapter?.dispose();adapter=undefined;await host.close();active=false;
         await client.close();client=state=undefined;prepared=false;analyzing=false;analysisError=undefined;$("identity").textContent="";$("analysis-options").hidden=true;
-        $("password").value="";$("autoboot").checked=true;$("cold-login").checked=false;$("empty-size").value="1024";
+        $("cache-notice").hidden=true;$("password").value="";$("autoboot").checked=true;$("cold-login").checked=false;$("empty-size").value="1024";
         message("");
     });
     return {syncControls};

@@ -46,7 +46,7 @@ for(const mode of ["none", "worker", "headers"]) {
             return teal > 1000 && bar > c.width*8;
         }, null, { timeout: 180000, polling: 500 });
         const desktopMs = Date.now() - started;
-        await page.evaluate(() => document.querySelector("#exit-fullscreen").click());
+        await page.evaluate(() => document.querySelector("#fullscreen").click());
         await page.waitForFunction(() => !document.querySelector("#vm-view").classList.contains("expanded"));
         await page.locator("#pause").click();
         await page.screenshot({ path: `build/pages-tests/win98-${mode}.png`, fullPage: true });

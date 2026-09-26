@@ -11,25 +11,35 @@ import { createIPNSRecord, marshalIPNSRecord } from "ipns";
 
 // An actual signed IPNS record and content-addressed raw block on a second origin.
 // Small enough to test the packaged client without a Kubo installation or public network.
-export async function diskFixture({isolated=false,car=false} = {}) {
+export async function diskFixture({isolated=false,car=false,sizeBytes=512*1024} = {}) {
     let directory = resolve("build/pages-tests"); await mkdir(directory, { recursive: true });
     if(isolated) directory=await mkdtemp(directory+"/fixture-");
     const source = directory + "/fixture.img", file = directory + "/fixture.my98";
-    const bytes = new Uint8Array(512 * 1024);
+    const bytes = new Uint8Array(sizeBytes);
     bytes.set([0xfa, 0xf4, 0xeb, 0xfd]); // cli; hlt; loop: a harmless bootable test disk
     bytes[510] = 85; bytes[511] = 170;
     await writeFile(source, bytes);
     const compat = resolve("build/disk-target/release/examples/compat");
     const run = (...args) => execFileSync(compat, args, { encoding: "utf8" });
     const packed = JSON.parse(run("pack", source, file));
-    const block = await readFile(file), cid = CID.createV1(0x55, await sha256.digest(block)).toString();
+    const block = await readFile(file), blocks=new Map();
+    async function addBlock(bytes,code=0x55) {const id=CID.createV1(code,await sha256.digest(bytes));blocks.set(id.toString(),bytes);return id;}
+    async function addDisk(bytes) {
+        if(bytes.length<=4*1048576)return addBlock(bytes);
+        const links=[],unixfs=new UnixFS({type:'file'});
+        for(let i=0;i<bytes.length;i+=262144) {
+            const chunk=bytes.subarray(i,i+262144),id=await addBlock(chunk);
+            links.push({Name:'',Hash:id,Tsize:chunk.length});unixfs.addBlockSize(BigInt(chunk.length));
+        }
+        return addBlock(dagPB.encode(dagPB.prepare({Data:unixfs.marshal(),Links:links})),0x70);
+    }
+    const cid=(await addDisk(block)).toString();
     const identity = JSON.parse(run("identity"));
     const signer = { type: "Ed25519", sign: async data => new Uint8Array(Buffer.from(run("sign", Buffer.from(data).toString("hex")).trim(), "hex")) };
     let record = marshalIPNSRecord(await createIPNSRecord(signer, "/ipfs/" + cid, 1n, 3600000, { v1Compatible: false }));
-    const blocks=new Map([[cid,block]]), delays=new Map(), timers=new Set();let sequence=1n;
-    async function addBlock(bytes,code=0x55) {const id=CID.createV1(code,await sha256.digest(bytes));blocks.set(id.toString(),bytes);return id;}
+    const delays=new Map(), timers=new Set();let sequence=1n;
     async function publishState(bytes, diskBytes=block, profiles) {
-        const baseCid=await addBlock(diskBytes);
+        const baseCid=await addDisk(diskBytes);
         const links=[],unixfs=new UnixFS({type:"file"});
         for(let i=0;i<bytes.length;i+=262144) {
             const chunk=bytes.subarray(i,i+262144),id=await addBlock(chunk);

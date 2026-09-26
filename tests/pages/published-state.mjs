@@ -22,7 +22,7 @@ for(const [name,type] of Object.entries({chromium,webkit})) {
    Slop86Disk.create=async function(...args){const d=await create.apply(this,args);window.disk=d;return d;};
   });
   console.log(name,'capture');
-  await bootEncrypted(page,fixture.file);await page.evaluate(()=>document.querySelector('#exit-fullscreen').click());
+  await bootEncrypted(page,fixture.file);await page.evaluate(()=>document.querySelector('#fullscreen').click());
   await page.waitForFunction(()=>!document.querySelector('#pause').disabled);
   await page.locator('#pause').click();
   const readKey=await page.evaluate(()=>disk.exportReadOnlyKey());

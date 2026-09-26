@@ -63,6 +63,7 @@ async function execute(op,a) {
         throw fail("READ_ONLY", "Operation unavailable in read-only mode");
     }
     if(op === "openReadOnly") {
+        if(a.persistentCache && Object.hasOwn(a.persistentCache,"publication"))throw fail("OPERATION_FAILED","Publication caching requires an unlocked IPNS identity");
         if(vault) throw fail("OPERATION_FAILED", "Close the current disk or identity first");
         if(!(a.readKey instanceof Uint8Array) || a.readKey.length !== 64) throw fail("INVALID_READ_KEY", "Invalid read key");
         const remote = new RemoteDisk({gateway:a.gateway, servers:a.servers, onlyLocalhost:a.onlyLocalhost, prefetch:a.prefetch, preloadState:a.preloadState, stateTransport:a.stateTransport, persistentCache:a.persistentCache,
@@ -138,7 +139,7 @@ async function execute(op,a) {
     }
     case "openRemote": {
         if(current) throw fail("OPERATION_FAILED", "Close the current disk before opening another");
-        const remote = new RemoteDisk({gateway:a.gateway, servers:a.servers, onlyLocalhost:a.onlyLocalhost, prefetch:a.prefetch, onNetwork:(bytes, calls)=>{networkBytes+=bytes;networkRequests+=calls;}});
+        const remote = new RemoteDisk({gateway:a.gateway, servers:a.servers, onlyLocalhost:a.onlyLocalhost, prefetch:a.prefetch, persistentCache:a.persistentCache, onCacheError:()=>progress("cache-error",0,0), onNetwork:(bytes, calls)=>{networkBytes+=bytes;networkRequests+=calls;}});
         let id;
         try {
             progress("resolve",0,0);

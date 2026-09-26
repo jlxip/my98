@@ -27,7 +27,7 @@ async function download(page, selector, path) {
     await file.saveAs(path); return path;
 }
 async function exitFullscreen(page) {
-    await page.evaluate(() => document.querySelector("#exit-fullscreen").click());
+    await page.evaluate(() => document.querySelector("#fullscreen").click());
     await page.waitForFunction(() => !document.querySelector("#vm-view").classList.contains("expanded"));
 }
 try {
@@ -58,7 +58,7 @@ try {
             await page.waitForFunction(() => document.querySelector("#fda-name").textContent === "floppy.img");
             const floppyPath = await download(page, "#download-fda", `build/pages-tests/${name}-floppy.img`);
             assert.deepEqual(await readFile(floppyPath), floppy);
-            await page.locator("#eject-fda").click();
+            await page.locator("#insert-fda").click();
             await page.waitForFunction(() => document.querySelector("#fda-name").textContent === "Empty");
             // Navigate only this disposable test context; this also checks a controlled return visit.
             console.log(name + ": encrypted disk and remote login");
@@ -133,12 +133,12 @@ try {
             const [profile] = JSON.parse(await readFile(jsonPath, 'utf8'));
             assert.equal(profile.version,2); assert.deepEqual(profile.origin,{kind:'boot'}); assert.equal(profile.cid, analysis.cid); assert.equal(profile.ranges.length, 32);
             assert.ok(profile.observedUnits > 0); assert.equal(profile.minUtilization, 0.5);
-            assert.equal(await page.locator('#pause').textContent(), 'Pause');
+            assert.equal(await page.locator('#pause').getAttribute("aria-label"), 'Pause');
             assert.equal(await page.locator('#disk-analyze').textContent(), 'Analyze loads');
             assert.equal(await page.locator('#disk-analyze').isDisabled(), false);
             // Pause/resume still operates on the same live VM after analysis.
-            await page.locator('#pause').click(); await page.waitForFunction(() => document.querySelector('#pause').textContent === 'Resume');
-            await page.locator('#pause').click(); await page.waitForFunction(() => document.querySelector('#pause').textContent === 'Pause');
+            await page.locator('#pause').click(); await page.waitForFunction(() => document.querySelector('#pause').getAttribute("aria-label") === 'Resume');
+            await page.locator('#pause').click(); await page.waitForFunction(() => document.querySelector('#pause').getAttribute("aria-label") === 'Pause');
             await page.screenshot({path:`build/pages-tests/${name}-boot-analysis.png`});
             // Exercise dirty remote save through the shipped Worker and native reconstruction.
             console.log(name + ": remote save and native verification");

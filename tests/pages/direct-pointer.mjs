@@ -7,7 +7,7 @@ import { bootEncrypted } from "./encrypted.mjs";
 
 const out = "build/pages-tests/direct-pointer";
 await mkdir(out, { recursive: true });
-const fixture = await diskFixture(), results = [];
+const fixture = await diskFixture({isolated: true}), results = [];
 try {
 for(const [name, type] of Object.entries({ chromium, webkit })) {
     const server = await serveSite({ headers: true }), browser = await type.launch();
@@ -42,14 +42,13 @@ for(const [name, type] of Object.entries({ chromium, webkit })) {
                 };
             });
             await bootEncrypted(page, fixture.file);
-            await page.evaluate(() => document.querySelector("#exit-fullscreen").click());
+            await page.evaluate(() => document.querySelector("#fullscreen").click());
             assert.equal(await page.locator("#direct-pointer").getAttribute("aria-checked"), "false");
             await page.locator("#direct-pointer").click();
             assert.equal(await page.locator("#direct-pointer").getAttribute("aria-checked"), "true");
             const initialLocks = await page.evaluate(() => window.lockAttempts);
             await page.waitForTimeout(250);
             await page.screenshot({ path: `${out}/${name}-${mobile ? "mobile" : "desktop"}-controls.png` });
-            await page.locator("#fullscreen").click();
             // Use the real display adapter; guest fixture itself is just a halted boot sector.
             await page.evaluate(() => {
                 const a = vm.screen_adapter, v = vm.v86.cpu.devices.vga;
@@ -66,15 +65,17 @@ for(const [name, type] of Object.entries({ chromium, webkit })) {
                 assert(moves.length > 0);
                 const value = moves.at(-1)[1];
                 assert(Math.abs(value[0] / value[2] - (x - r.x) / r.width) < .006);
-                assert(Math.abs(value[1] / value[3] - (y - r.y) / r.height) < .006);
+                assert(Math.abs(value[1] / value[3] - (y - r.y) / r.height) < .006, JSON.stringify({value, x, y, r, current: await rect()}));
                 assert(!(await events()).some(e => e[0] === "mouse-delta"));
             };
             for(const viewport of [mobile ? { width: 390, height: 844 } : { width: 1280, height: 900 }, { width: 844, height: 390 }]) {
                 await page.setViewportSize(viewport);
-                await page.waitForFunction(() => Math.abs(document.querySelector("#vm-view").getBoundingClientRect().height - visualViewport.height) < 2);
+                await page.locator("#display").scrollIntoViewIfNeeded();
+                await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
                 const r = await rect();
                 for(const [u, v] of [[.5,.5], [.02,.02], [.98,.98], [.1,.85]]) {
-                    const x = r.x + r.width * u, y = r.y + r.height * v;
+                    // Native WebKit input rounds CSS coordinates to whole pixels.
+                    const x = Math.round(r.x + r.width * u), y = Math.round(r.y + r.height * v);
                     await clear();
                     if(mobile) await page.touchscreen.tap(x, y); else await page.mouse.click(x, y);
                     await checkPoint(x, y, r);
@@ -89,7 +90,7 @@ for(const [name, type] of Object.entries({ chromium, webkit })) {
                 assert.deepEqual(await clicks(), [], "Letterbox must not click the guest");
                 await page.screenshot({ path: `${out}/${name}-${mobile ? "mobile" : "desktop"}-${viewport.width}.png` });
             }
-            assert.equal(await page.locator("#vga").evaluate(e => getComputedStyle(e).cursor), "default");
+            assert.equal(await page.locator("#vga").evaluate(e => getComputedStyle(e).cursor), "none");
             for(const id of ["touch-drag", "touch-right", "touch-hint"]) assert.equal(await page.locator("#" + id).isVisible(), false);
             if(!mobile) {
                 const r = await rect(), x = r.x + r.width / 2, y = r.y + r.height / 2;
@@ -146,9 +147,16 @@ for(const [name, type] of Object.entries({ chromium, webkit })) {
             assert.equal(await page.evaluate(() => !!document.pointerLockElement), false);
             await page.evaluate(() => vm.restart());
             assert.equal(await page.locator("#direct-pointer").getAttribute("aria-checked"), "true");
-            await page.evaluate(() => document.querySelector("#exit-fullscreen").click());
+            await page.locator("#fullscreen").click();
+            assert.equal(await page.locator("#direct-pointer").getAttribute("aria-checked"), "false");
+            assert.equal(await page.evaluate(() => vm.mouse_adapter.emu_enabled), true);
+            assert.equal(await page.locator("#fullscreen").getAttribute("aria-label"), "Exit fullscreen");
+            assert.equal(await page.locator("#fullscreen").isVisible(), mobile);
+            if(mobile) await page.locator("#fullscreen").click();
+            else await page.keyboard.press("Escape");
+            assert.equal(await page.locator("#direct-pointer").getAttribute("aria-checked"), "true");
             await page.locator("#direct-pointer").click();
-            assert.equal(await page.locator("#mouse").isDisabled(), false);
+            assert.equal(await page.locator("#mouse").count(), 0);
             assert.equal(await page.evaluate(() => vm.mouse_adapter.emu_enabled), true);
             // Closing and reopening the VM resets the option; no reload is required.
             await page.locator("#direct-pointer").click();

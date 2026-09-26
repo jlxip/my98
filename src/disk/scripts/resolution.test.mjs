@@ -103,6 +103,19 @@ test('local mode ignores supplied servers and keeps only the loopback gateway',a
     assert.equal(result.sequence,'1');assert.equal(f.seen.length,1);
     await rejected(resolveIpns(identity,{onlyLocalhost:true,gateway:'https://example.com',servers:f.servers}),'IO_ERROR');
 });
+test('local resolution can exceed 5s and a stalled local lookup remains cancellable',async t=>{
+    const f=await fixture(t,[{bytes:await record(),delay:5300},{hang:true}]);
+    const controller=new AbortController(),start=performance.now();
+    const stalled=resolveIpns(identity,{onlyLocalhost:true,gateway:f.servers[1].url,signal:controller.signal});
+    const cancelled=rejected(stalled,'CANCELLED');
+    t.after(()=>controller.abort());
+    const result=await resolveIpns(identity,{onlyLocalhost:true,gateway:f.servers[0].url});
+    assert.equal(result.rootCid,cid);assert(performance.now()-start>=5200);
+    const cancelStart=performance.now();controller.abort();await cancelled;
+    assert(performance.now()-cancelStart<500);
+    await new Promise(r=>setTimeout(r,50));assert.equal(f.active,0);
+    assert.equal(f.seen.length,2);
+});
 test('local redirect cannot fall back to another endpoint',async t=>{
     const f=await fixture(t,[{status:302,headers:{Location:'https://should-not-be-contacted.invalid'}}]);
     await rejected(resolveIpns(identity,{onlyLocalhost:true,gateway:f.servers[0].url}),'IO_ERROR');assert.equal(f.seen.length,1);
