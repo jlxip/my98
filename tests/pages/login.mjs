@@ -106,7 +106,7 @@ for(const [name, type] of Object.entries({chromium, webkit})) {
             const sequence=()=>calls.map(c=>c[0]).join(',');
             fill(false);submit();await idle();
             check('unchecked unlocks only, with exact identity inputs',sequence()==='unlock' && JSON.stringify(calls[0])===JSON.stringify(['unlock','User','secret','other']));
-            check('management visible, password cleared, no disk to boot',!$('workspace').hidden && $('login').hidden && $('password').value==='' && $('boot').disabled);
+            check('management visible, password cleared, no disk actions available',!$('workspace').hidden && $('login').hidden && $('password').value==='' && $('boot').disabled && $('load-state').disabled);
             await close();
             check('logout restores login and default boot',!$('login').hidden && $('workspace').hidden && $('autoboot').checked);
             $('cache-publication').checked=true;$('cache-publication').onchange();
@@ -124,6 +124,7 @@ for(const [name, type] of Object.entries({chromium, webkit})) {
             check('remote failure preserves identity without boot',sequence()==='unlock,open' && !$('workspace').hidden && !$('remote').disabled && $('boot').disabled && $('status').textContent==='Remote unavailable');
             failAt='';$('remote').onclick();await idle();
             check('remote failure can be retried without logging in',sequence()==='unlock,open,open' && !$('boot').disabled);
+            check('opened disk enables local state restore',$('load-state').disabled===false);
             check('disk without published state keeps resume disabled',$('resume-state').disabled);
             await close();
             failAt='boot';fill(true);submit();await idle();

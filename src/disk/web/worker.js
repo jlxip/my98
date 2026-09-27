@@ -2,10 +2,11 @@ import init, {Vault} from "../pkg/slop86_disk.js";
 import {RemoteDisk} from "./remote.js";
 import {BootAnalysis} from "./boot-analysis.js";
 import {encodeState, decodeState} from "./state-format.js";
+import {WorkerProtocol} from "./worker-protocol.js";
 const sources = new Map();
 let stateCandidate, stateSerial = 0;
 function dropState() {stateCandidate?.vault.free();stateCandidate=undefined;}
-let identity, activeRequest;
+let identity;
 let networkBytes = 0, networkRequests = 0;
 let vault, sourceId = 0, current, prepared, nextDownload = 0;
 let bootAnalysis;
@@ -15,18 +16,18 @@ const originFor = kind => {
     if(kind==='restored' && restoredOrigin)return {...restoredOrigin};
     throw fail('OPERATION_FAILED','Restore a state before selecting its load profile');
 };
-let sequence = Promise.resolve(), cancelEpoch = 0, activeEpoch = 0, cancelView;
+let protocol;
 let readBytes = 0, readCalls = 0, progressAt = new Map(), initError;
 const fail = (code, message) => Object.assign(new Error(message), {code});
 const describe = () => ({...JSON.parse(vault.describe()), ...(sources.get(current)?.remote ? {remote:sources.get(current).remote} : {})});
 const source = value => { const id = `source:${++sourceId}`; sources.set(id, value instanceof RemoteDisk ? value : {size:value.size, blob:value, read:async(offset,length)=>new Uint8Array(await value.slice(offset,offset+length).arrayBuffer())}); return id; };
 const remove = id => {sources.get(id)?.close?.();sources.delete(id);};
-globalThis.slopDiskCancelled = () => activeEpoch !== cancelEpoch || !!(cancelView && Atomics.load(cancelView, 0) !== activeEpoch);
+globalThis.slopDiskCancelled = () => protocol?.cancelled() || false;
 function check() { if(globalThis.slopDiskCancelled()) throw fail("CANCELLED", "Operation cancelled"); }
 globalThis.slopDiskRead = async (id, offset, length) => {
     check(); const input = sources.get(id);
     if(!input || !Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 0 || offset + length > input.size) throw fail("IO_ERROR", "Source range unavailable");
-    const bytes = await input.read(offset, length, activeRequest?.signal);
+    const bytes = await input.read(offset, length, protocol.signal);
     check();
     if(bytes.length !== length) throw fail("IO_ERROR", "Short source read");
     readBytes += length; readCalls++; return bytes;
@@ -71,7 +72,7 @@ async function execute(op,a) {
         let id, candidate;
         try {
             progress("resolve",0,0);
-            await remote.openCid(a.cid, activeRequest.signal); check();
+            await remote.openCid(a.cid, protocol.signal); check();
             id = source(remote);
             candidate = await Vault.open_read_only(id, remote.size, a.readKey); check();
             vault = candidate; current = id; prepared = undefined;
@@ -143,7 +144,7 @@ async function execute(op,a) {
         let id;
         try {
             progress("resolve",0,0);
-            await remote.open(identity, activeRequest.signal); check();
+            await remote.open(identity, protocol.signal); check();
             id = source(remote); await vault.open(id,remote.size);
             current = id; prepared = undefined; restoredOrigin=undefined;freshRestore=false;remote.startPrefetch(); return describe();
         } catch(error) {if(id)remove(id);else remote.close();throw error;}
@@ -158,9 +159,9 @@ async function execute(op,a) {
         if(input && typeof input==='object' && input.published===true) {
             const remote=sources.get(current);
             if(!(remote instanceof RemoteDisk)) throw fail("INVALID_STATE","No published state for this disk");
-            input=await remote.openStateStream(activeRequest.signal,(done,total)=>progress("download-state",done,total));check();
+            input=await remote.openStateStream(protocol.signal,(done,total)=>progress("download-state",done,total));check();
         }
-        const decoded=await decodeState(vault,input,{check,progress,signal:activeRequest.signal});
+        const decoded=await decodeState(vault,input,{check,progress,signal:protocol.signal});
         try {
             check();const candidate=vault.fork_state(decoded.overlay);
             void input?.validated?.();
@@ -203,7 +204,7 @@ async function execute(op,a) {
             if(!blob) {
                 const parts=[];
                 for(let offset=0;offset<input.size;offset+=1048576) {
-                    check(); const bytes=await input.read(offset,Math.min(1048576,input.size-offset),activeRequest.signal);check();
+                    check(); const bytes=await input.read(offset,Math.min(1048576,input.size-offset),protocol.signal);check();
                     parts.push(new Blob([bytes]));progress("download",Math.min(offset+1048576,input.size),input.size);
                 }
                 blob=new Blob(parts,{type:"application/octet-stream"});
@@ -229,21 +230,7 @@ async function execute(op,a) {
     default: throw fail("OPERATION_FAILED","Unknown disk operation");
     }
 }
-function errorInfo(error) {
-    const message = String(error?.message || error);
-    try {const value = JSON.parse(message);if(value.code && value.message) return value;}catch{}
-    return {code:error?.code || "OPERATION_FAILED",message};
-}
-self.onmessage = ({data}) => {
-    if(data.op === "cancel") {cancelEpoch=data.epoch;activeRequest?.abort();sources.get(current)?.cancel?.();return;}
-    if(data.op === "configure") {cancelView=data.buffer ? new Int32Array(data.buffer):undefined;return;}
-    sequence=sequence.then(async()=>{
-        const {id,op,args,epoch}=data;
-        try {await ready;if(initError)throw initError;activeEpoch=epoch;activeRequest=new AbortController();progressAt.clear();check();const result=await execute(op,args);
-            self.postMessage({id,ok:true,result},result instanceof Uint8Array?[result.buffer]:result?.state instanceof ArrayBuffer?[result.state]:[]);
-        }catch(error) {
-            if(globalThis.slopDiskCancelled()) {vault?.cancel();error=fail("CANCELLED","Operation cancelled");}
-            self.postMessage({id,ok:false,error:errorInfo(error)});
-        }finally {activeRequest=undefined;args?.password?.fill(0);args?.bytes?.fill(0);if(args?.readKey instanceof Uint8Array) args.readKey.fill(0);}
-    }).catch(()=>self.postMessage({type:"fatal",error:"Disk Worker failed"}));
-};
+protocol=new WorkerProtocol({ready,getInitError:()=>initError,execute,
+    onCancel:()=>sources.get(current)?.cancel?.(),onCancelled:()=>vault?.cancel(),
+    onRequest:()=>progressAt.clear()});
+self.onmessage=({data})=>protocol.handle(data);

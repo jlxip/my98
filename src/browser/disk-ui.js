@@ -1,47 +1,46 @@
 import {setupDiskProgress} from './disk-progress.js';
+import {diskControls} from './disk-controls.js';
+import {DiskSession} from './disk-session.js';
 
 /** Local file/VM controls. Secret contexts stay in the independent disk Worker. */
 export function setupDisk(host) {
     const $ = id => document.getElementById("disk-" + id);
-    let client, BufferClass, state, adapter, active = false, working = false, capturing = false, prepared = false;
-    let analyzing = false, analysisError, stateAbort;
-    const progress = setupDiskProgress($("progress"), () => active && host.hasSession() && state?.remote ?
-        {client, adapter, cid:state.remote.cid, busy:working || host.busy()} : null);
+    const session=new DiskSession(host);
+    let working=false,capturing=false;
+    const progress = setupDiskProgress($("progress"), () => session.active && host.hasSession() && session.description?.remote ?
+        {client:session.client, adapter:session.adapter, cid:session.description.remote.cid, busy:working || host.busy()} : null);
     const cachePreference='my98-cache-publication';
     $('cache-publication').checked=false;
     try {$('cache-publication').checked=localStorage.getItem(cachePreference)==='true';}catch{}
     $('cache-publication').onchange=()=>{try{localStorage.setItem(cachePreference,String($('cache-publication').checked));}catch{}};
     const stateSaveButton=document.getElementById("save-state"), stateLoadButton=document.getElementById("load-state"), stateCancelButton=document.getElementById("cancel-state");
-    const message = (text,error=false) => { $("status").textContent=text;$("status").classList.toggle("error",error); if(stateAbort) {const target=document.getElementById("session-status");target.textContent=text;target.classList.toggle("error",error);} };
+    const message = (text,error=false) => { $("status").textContent=text;$("status").classList.toggle("error",error); if(session.stateAbort) {const target=document.getElementById("session-status");target.textContent=text;target.classList.toggle("error",error);} };
+    const stateMessage = (text,error=false) => {
+        message(text,error);
+        const target=document.getElementById("session-status");
+        target.textContent=text;target.classList.toggle("error",error);
+    };
     function syncControls(busy) {
         progress.update();
-        $("workspace").hidden=!client;$("login").hidden=!!client;
-        $("brand").hidden=!!client;$("notice").hidden=!client;
-        document.getElementById("welcome").classList.toggle("authenticated", !!client);
-        $("panel").querySelectorAll("button,input").forEach(e=>e.disabled=busy||working);
-        if(!client || state) {$("empty-form").hidden=true;$("empty").setAttribute("aria-expanded","false");}
-        for(const id of ["empty", "empty-size", "empty-submit", "empty-cancel"]) $(id).disabled ||= !!state;
-        $("create").disabled ||= !!state;$("open").disabled ||= !!state;$("remote").disabled ||= !!state;
-        $("only-localhost").disabled ||= !!state;
-        for(const id of ["boot","save","download","discard","verify"]) $(id).disabled ||= !state;
-        $("boot").disabled ||= active || !!adapter?.failed;
-        $("resume-state").disabled ||= !state?.remote?.stateCid || active || analyzing || !!adapter?.failed;
-        $("save").disabled ||= !active || !!adapter?.failed;
-        $("download").disabled ||= !!state?.dirty_bytes;
-        $("analyze").textContent = analyzing ? "Stop analyzing" : "Analyze loads";
-        $("analyze").disabled ||= !analyzing && (!state?.remote || !!adapter?.failed);
-        $("analyze-boot").disabled ||= !state?.remote || !!state.dirty_bytes || analyzing;
-        $("analyze-resume").disabled ||= !state?.remote?.stateCid || analyzing;
-        $("analyze-file").disabled ||= !state?.remote || analyzing;
-        if(analyzing) for(const id of ["save", "download", "verify", "discard", "retry"]) $(id).disabled = true;
-        $("retry").disabled ||= !prepared;
-        $("resume").hidden=!adapter?.failed;$("resume").disabled=busy||working||!adapter?.failed;
-        $("load-state").disabled=busy||working||!state||analyzing;
-        if(stateSaveButton) stateSaveButton.disabled=busy||working||!active||analyzing||!!adapter?.failed;
-        if(stateLoadButton) stateLoadButton.disabled=busy||working||!state||analyzing;
-        if(stateCancelButton) stateCancelButton.hidden=!stateAbort;
-        if(stateCancelButton) stateCancelButton.disabled=false;
-        $("cancel").hidden=!(capturing||stateAbort);$("cancel").disabled=!(capturing||stateAbort);
+        const view=diskControls({busy,working,client:session.client,state:session.description,active:session.active,adapter:session.adapter,analyzing:session.analyzing,prepared:session.prepared,capturing,stateAbort:session.stateAbort});
+        $("workspace").hidden=!view.authenticated;$("login").hidden=view.authenticated;
+        $("brand").hidden=view.authenticated;$("notice").hidden=!view.authenticated;
+        document.getElementById("welcome").classList.toggle("authenticated",view.authenticated);
+        $("panel").querySelectorAll("button,input").forEach(element=>element.disabled=busy||working);
+        if(view.hideEmptyForm) {$("empty-form").hidden=true;$("empty").setAttribute("aria-expanded","false");}
+        $("analyze").textContent=view.analyzing ? "Stop analyzing" : "Analyze loads";
+        $("resume").hidden=!view.showRetry;
+        $("cancel").hidden=!view.showCancel;
+        if(stateCancelButton) stateCancelButton.hidden=!view.showStateCancel;
+        for(const [id,disabled] of Object.entries(view.disabled)) {
+            if(id==='load-state') {
+                $(id).disabled=disabled;
+                if(stateLoadButton)stateLoadButton.disabled=disabled;
+                continue;
+            }
+            const element=id==='save-state' ? stateSaveButton : id==='cancel-state' ? stateCancelButton : $(id);
+            if(element)element.disabled=disabled;
+        }
     }
     async function run(text,work) {
         if(working||host.busy())return;
@@ -51,46 +50,44 @@ export function setupDisk(host) {
         finally {working=false;capturing=false;host.setBusy(false);}
     }
     function download(result) {
-        prepared=true;
-        host.download(result.blob,`${state.disk_id.slice(0,4).map(n=>n.toString(16).padStart(2,"0")).join("")}.my98`);
+        session.prepared=true;
+        host.download(result.blob,`${session.description.disk_id.slice(0,4).map(n=>n.toString(16).padStart(2,"0")).join("")}.my98`);
         message(`Full download prepared (${(result.size/1048576).toFixed(2)} MiB). Check that the file was saved.`);
     }
     $("login").onsubmit=event=>{
         event.preventDefault();
-        if(working || host.busy() || client)return;
+        if(working || host.busy() || session.client)return;
         const autoBoot=$("autoboot").checked;
         let username=$("user").value,password=$("password").value,machine=$("machine").value;$("password").value="";
         run("Unlocking identity…",async()=>{
-            const module=await import("../../build/disk/web/client.js");BufferClass=module.DiskBuffer;
-            const candidate=await module.Slop86Disk.create({onAnalysis:event=>{
-                analysisError = event.error;
-                message(analysisError, true);
-                void client.cancelLoadAnalysis().then(() => { analyzing = false; syncControls(host.busy()); }).catch(error => message(error.message, true));
+            let identity;
+            try {identity=await session.unlock(username,password,machine,{onAnalysis:event=>{
+                session.analysisError = event.error;
+                message(session.analysisError, true);
+                void session.cancelLoadAnalysis().then(() => syncControls(host.busy())).catch(error => message(error.message, true));
             },onProgress:p=>{
                 if(p.phase==="cache-error") {$("cache-notice").hidden=false;return;}
-                if(stateAbort) {
+                if(session.stateAbort) {
                     const labels={compress:"Compressing state", "encrypt-state":"Encrypting state", "decrypt-state":"Decrypting state", "download-state":"Downloading state", decompress:"Decompressing state"};
                     message(`${labels[p.phase] || "Preparing state"}: ${(p.completed/1048576).toFixed(1)} MiB…`);
                 }
                 if(capturing && p.phase==="resolve") message("Finding remote disk…");
                 else if(capturing) message(`${({verify:"Verifying",encrypt:"Encrypting",download:"Downloading",resolve:"Finding remote disk"})[p.phase]||"Working"}: ${(p.completed/1048576).toFixed(1)} MiB…`);
-            }});
-            try {const identity=await candidate.unlock(username,password,machine);client=candidate;$("identity").textContent=identity.ipnsName;message("Identity unlocked. Create a disk, open a .my98 file, or find your remote disk.");}
-            catch(error){await candidate.close().catch(()=>{});throw error;}
-            finally {username=password=machine="";}
+            }});} finally {username=password=machine="";}
+            $("identity").textContent=identity.ipnsName;message("Identity unlocked. Create a disk, open a .my98 file, or find your remote disk.");
             if(autoBoot) {
                 await openRemote();
-                if(state.remote?.stateCid && !$("cold-login").checked) await stateOperation(false,{published:true});
+                if(session.description.remote?.stateCid && !$("cold-login").checked) await restorePublishedState();
                 else await boot();
             }
         });
     };
     $("create").onclick=()=>run("Choosing image…",async()=>{
         const [file]=await host.pickFiles();if(!file)return;
-        capturing=true;syncControls(true);state=await client.createFromImage(file);download(state.download);
+        capturing=true;syncControls(true);const description=await session.createFromImage(file);download(description.download);
     });
     $("empty").onclick=()=>{
-        if(!client || state || working || host.busy())return;
+        if(!session.client || session.description || working || host.busy())return;
         $("empty-form").hidden=false;$("empty").setAttribute("aria-expanded","true");$("empty-size").focus();
     };
     $("empty-cancel").onclick=()=>{
@@ -99,7 +96,7 @@ export function setupDisk(host) {
     };
     $("empty-form").onsubmit=event=>{
         event.preventDefault();
-        if(!client || state || working || host.busy())return;
+        if(!session.client || session.description || working || host.busy())return;
         const sizeMiB=$("empty-size").valueAsNumber;
         if(!$("empty-form").reportValidity())return;
         if(!Number.isSafeInteger(sizeMiB) || sizeMiB < 1 || sizeMiB > 1048576) {
@@ -107,19 +104,19 @@ export function setupDisk(host) {
         }
         run("Creating empty disk…",async()=>{
             capturing=true;syncControls(true);
-            state=await client.createEmpty(sizeMiB*1048576);download(state.download);
+            const description=await session.createEmpty(sizeMiB*1048576);download(description.download);
         });
     };
     $("open").onclick=()=>run("Opening encrypted disk…",async()=>{
         const [file]=await host.pickFiles();if(!file)return;
-        state=await client.open(file);prepared=false;message("Header authenticated. Disk data will be read and verified on demand.");
+        await session.open(file);message("Header authenticated. Disk data will be read and verified on demand.");
     });
     $("only-localhost").checked=false;
     $("only-localhost").onchange=()=>syncControls(host.busy());
     async function openRemote() {
         message("Finding remote disk…");capturing=true;syncControls(true);
         try {
-            state=await client.openRemote({gateway:$("only-localhost").checked ? "http://127.0.0.1:8080" : undefined, onlyLocalhost:$("only-localhost").checked,prefetch:{enabled:false},persistentCache:{publication:$("cache-publication").checked}});prepared=false;
+            await session.openRemote({gateway:$("only-localhost").checked ? "http://127.0.0.1:8080" : undefined, onlyLocalhost:$("only-localhost").checked,prefetch:{enabled:false},persistentCache:{publication:$("cache-publication").checked}});
             message("Remote disk authenticated. Choose Boot or a state; its load profile is downloaded first, then the rest of the disk. Changes are saved locally.");
         } finally {capturing=false;syncControls(true);}
     }
@@ -127,86 +124,76 @@ export function setupDisk(host) {
     $("cold-login").checked=false;
     async function boot(analyze = false) {
         message("Booting encrypted disk…");
-        if(state.size%512)throw new Error("The image is preserved exactly, but its length does not allow booting it as an HDD.");
         if(host.hasSession()&&!window.confirm("Close the current Windows session and boot this disk? Save its disk first."))return;
+        await session.boot({analyze,onDiskError:async error=>{await host.fail(error);message("Disk stopped: "+error.message+". You can retry the operation.",true);syncControls(host.busy());}});
+        message(session.analysisError || (session.analyzing ? "Recording disk reads. Perform the expected actions, then select Stop analyzing to download the profile." : "Windows is using the encrypted disk. Shut it down before saving."), !!session.analysisError);
+    }
+    async function saveMachineState() {
         try {
-            if(analyze) { await client.startLoadAnalysis({origin:'boot'}); analyzing = true; analysisError = undefined; }
-            await client.setLoadPrefetch({origin:'boot',scope:'disk'});
-            await client.read(0,512);
-            adapter?.dispose();adapter=new BufferClass(client,state.size,async error=>{await host.fail(error);message("Disk stopped: "+error.message+". You can retry the operation.",true);syncControls(host.busy());});
-            await host.boot(adapter,"Encrypted disk",{autoFullscreen:!analyze});active=true;
-            message(analysisError || (analyzing ? "Recording disk reads. Perform the expected actions, then select Stop analyzing to download the profile." : "Windows is using the encrypted disk. Shut it down before saving."), !!analysisError);
+            const result=await session.saveMachineState(()=>syncControls(true));
+            host.download(result.blob,`${result.id}.my98state`);
+            stateMessage("State download prepared. Keep the original base disk with this state.");
+        } catch(error) {stateMessage(error.message,true);throw error;}
+    }
+    async function restoreState(input, {analyze=false,published=false}={}) {
+        if(host.hasSession()&&!window.confirm("Replace the current session with this state? Changes made since it was saved will be lost."))return;
+        try {
+            await session.restoreState(input,{analyze,onStart:()=>syncControls(true)});
+            stateMessage(analyze ? "Recording disk reads. Perform the expected actions, then select Stop analyzing to download the profile." : "State restored. Pending disk writes were replaced by the saved state.");
         } catch(error) {
-            if(analyze) { await client.cancelLoadAnalysis().catch(()=>{}); analyzing = false; }
+            if(published && error.code!=="CANCELLED") error.message=error.message.replace(/[.!?]$/,"")+". Retry Resume state or select Boot to start from the base disk.";
+            stateMessage(error.message,true);
             throw error;
         }
     }
-    async function stateOperation(save, published, analyze=false) {
-        let file=published;
-        if(!save) {
-            if(!file) {[file]=await host.pickFiles();if(!file)return;}
-            if(host.hasSession()&&!window.confirm("Replace the current session with this state? Changes made since it was saved will be lost."))return;
-        }
-        stateAbort=new AbortController();syncControls(true);
-        try {
-            if(save) {
-                const result=await host.captureState(client,stateAbort.signal);
-                const id=state.disk_id.slice(0,4).map(n=>n.toString(16).padStart(2,"0")).join("");
-                host.download(result.blob,`${id}.my98state`);
-                message("State download prepared. Keep the original base disk with this state.");
-            } else {
-                const result=await host.restoreState(client,file,stateAbort.signal,{analyze});
-                adapter=result.adapter;state=result.description;active=true;prepared=false;
-                if(analyze) {analyzing=true;analysisError=undefined;}
-                message(analyze ? "Recording disk reads. Perform the expected actions, then select Stop analyzing to download the profile." : "State restored. Pending disk writes were replaced by the saved state.");
-            }
-        } catch(error) {if(published && error.code!=="CANCELLED") error.message=error.message.replace(/[.!?]$/,"")+". Retry Resume state or select Boot to start from the base disk.";message(error.message,true);throw error;}
-        finally {stateAbort=undefined;state=await client.describe();}
+    async function restoreLocalState(analyze=false) {
+        const [file]=await host.pickFiles();
+        if(file)await restoreState(file,{analyze});
     }
-    $("load-state").onclick=()=>run("Restoring state…",()=>stateOperation(false));
+    function restorePublishedState(analyze=false) {
+        return restoreState({published:true},{analyze,published:true});
+    }
+    $("load-state").onclick=()=>run("Restoring state…",()=>restoreLocalState());
     if(stateLoadButton) stateLoadButton.onclick=$("load-state").onclick;
-    if(stateSaveButton) stateSaveButton.onclick=()=>run("Saving state…",()=>stateOperation(true));
-    if(stateCancelButton) stateCancelButton.onclick=()=>stateAbort?.abort();
-    $("resume-state").onclick=()=>run("Restoring published state…",()=>stateOperation(false,{published:true}));
+    if(stateSaveButton) stateSaveButton.onclick=()=>run("Saving state…",saveMachineState);
+    if(stateCancelButton) stateCancelButton.onclick=()=>session.stateAbort?.abort();
+    $("resume-state").onclick=()=>run("Restoring published state…",()=>restorePublishedState());
     $("boot").onclick=()=>run("Booting encrypted disk…",()=>boot());
     $("analyze").onclick=()=>{
-        if(!analyzing) {$("analysis-options").hidden=!$("analysis-options").hidden;syncControls(host.busy());return;}
+        if(!session.analyzing) {$("analysis-options").hidden=!$("analysis-options").hidden;syncControls(host.busy());return;}
         return run("Generating load profile…",async()=>{
-        const profile = await client.finishLoadAnalysis();
-        analyzing = false;
-        const id = state.disk_id.slice(0,4).map(n=>n.toString(16).padStart(2,"0")).join("");
+        const profile = await session.finishLoadAnalysis();
+        const id = session.description.disk_id.slice(0,4).map(n=>n.toString(16).padStart(2,"0")).join("");
         host.download(new Blob([JSON.stringify(profile, null, 2) + "\n"], {type:"application/json"}), `${id}-load-profile.json`);
         message("Load profile prepared. Check that the JSON was saved. Windows can continue running.");
     });};
-    for(const [id,action] of [['boot',()=>boot(true)],['resume',()=>stateOperation(false,{published:true},true)],['file',()=>stateOperation(false,undefined,true)]]) {
+    for(const [id,action] of [['boot',()=>boot(true)],['resume',()=>restorePublishedState(true)],['file',()=>restoreLocalState(true)]]) {
         $("analyze-"+id).onclick=()=>run("Starting load analysis…",async()=>{
             $("analysis-options").hidden=true;
-            try {await action();}catch(error){if(id!=='boot')await client.cancelLoadAnalysis().catch(()=>{});analyzing=false;throw error;}
+            try {await action();}catch(error){if(id!=='boot')await session.cancelLoadAnalysis().catch(()=>{});session.analyzing=false;throw error;}
         });
     }
     $("analyze-cancel").onclick=()=>{$("analysis-options").hidden=true;};
     $("save").onclick=()=>run("Preparing save…",async()=>{
         if(!window.confirm("Has Windows finished shutting down? Confirm to stop the VM and save the full disk.")){message("Save cancelled.");return;}
-        await host.stop();capturing=true;syncControls(true);const saved=await client.save();state=saved;
+        capturing=true;syncControls(true);const saved=await session.saveDisk();
         if(saved.outcome==="unchanged")message("No changes. The VM remains stopped.");else download(saved.download);
     });
-    $("download").onclick=()=>run("Preparing full download…",async()=>{await host.stop();capturing=true;syncControls(true);download(await client.downloadCurrent());});
-    $("retry").onclick=()=>run("Retrying download…",async()=>download(await client.retryDownload()));
+    $("download").onclick=()=>run("Preparing full download…",async()=>{capturing=true;syncControls(true);download(await session.downloadCurrent());});
+    $("retry").onclick=()=>run("Retrying download…",async()=>download(await session.retryDownload()));
     $("verify").onclick=()=>run("Verifying full disk…",async()=>{
-        await host.stop();capturing=true;syncControls(true);const hash=await client.verifyImage();
+        capturing=true;syncControls(true);const hash=await session.verifyImage();
         message("Disk verified. SHA-256: "+Array.from(hash,b=>b.toString(16).padStart(2,"0")).join("")+". The VM remains stopped.");
     });
-    $("resume").onclick=()=>run("Retrying disk access…",async()=>{await adapter.retry();await host.resume();message("Disk access restored. Windows retains its RAM and writes.");});
+    $("resume").onclick=()=>run("Retrying disk access…",async()=>{await session.retryAdapter();message("Disk access restored. Windows retains its RAM and writes.");});
     $("discard").onclick=()=>run("Discarding writes…",async()=>{
         if(!window.confirm("Discard pending writes and close this Windows session? The source file is preserved."))return;
-        if(active){await host.stop();adapter?.dispose();adapter=undefined;await host.close();active=false;}
-        state=await client.discardWrites();message("Writes discarded.");
+        await session.discardWrites();message("Writes discarded.");
     });
-    $("cancel").onclick=()=>{if(stateAbort)stateAbort.abort();else client?.cancel();message("Cancellation requested…");};
+    $("cancel").onclick=()=>{session.cancel();message("Cancellation requested…");};
     $("close").onclick=()=>run("Closing identity…",async()=>{
         if(!window.confirm("Close the identity? Pending changes and the prepared download for this session will be lost."))return;
-        if(active)await host.stop();adapter?.dispose();adapter=undefined;await host.close();active=false;
-        await client.close();client=state=undefined;prepared=false;analyzing=false;analysisError=undefined;$("identity").textContent="";$("analysis-options").hidden=true;
+        await session.close();$("identity").textContent="";$("analysis-options").hidden=true;
         $("cache-notice").hidden=true;$("password").value="";$("autoboot").checked=true;$("cold-login").checked=false;$("empty-size").value="1024";
         message("");
     });

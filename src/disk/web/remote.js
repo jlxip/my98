@@ -5,47 +5,50 @@ import {CID} from 'multiformats/cid';
 import {sha256} from 'multiformats/hashes/sha2';
 import {resolveIpns} from './resolution.js';
 import {discoverProviders} from './discovery.js';
-import {dataGateway, gatewayURL} from './network-config.js';
+import {dataGateway} from './network-config.js';
 export {DEFAULT_GATEWAY, gatewayURL} from './network-config.js';
 import {exporter} from 'ipfs-unixfs-exporter';
-import {parallelCarState} from './state-car.js';
-import {cachedStateContent} from './cached-state.js';
 import {PersistentCache} from './persistent-cache.js';
 import {PublicationCache} from './publication-cache.js';
 import {ProfileCacheSelection} from './profile-cache.js';
+import {PublishedStateTransport, BLOCK_LIMIT} from './state-transport.js';
+import {BlockScheduler} from './block-scheduler.js';
 
-const BLOCK_LIMIT = 4 * 1024 * 1024;
-const STATE_WINDOW = 2 * 1024 * 1024;
-const STATE_RANGE = 4 * 1024 * 1024;
 const HEADER = 198, RECORD = 65536 + 62;
 const MAX_FILE = 198 + 2 ** 40 + Math.ceil(2 ** 40 / 65536) * 62;
 const fail = (code, message) => Object.assign(new Error(message), {code});
 const check = signal => { if(signal?.aborted) throw fail('CANCELLED', 'Operation cancelled'); };
 
 export class RemoteDisk {
+    get pendingState() {return this.publishedState.pendingState;}
+    get stateDownloads() {return this.publishedState.stateDownloads;}
+    get endpoints() {return this.scheduler.endpoints;}
+    set endpoints(value) {this.scheduler.endpoints=value;}
+    get jobs() {return this.scheduler.jobs;}
+    get admissionWaiters() {return this.scheduler.admissionWaiters;}
+    get carActive() {return this.scheduler.carActive;}
     constructor({gateway, servers, onlyLocalhost = false, onNetwork, timeoutMs = 30000, prefetch = {}, preloadState = false, onStateProgress, stateTransport = 'auto', persistentCache = {}, onCacheError} = {}) {
         if(typeof onlyLocalhost !== 'boolean') throw fail('IO_ERROR', 'Invalid Only localhost option.');
         this.directGateway = gateway != null || onlyLocalhost;
         this.gateway = this.directGateway ? dataGateway(gateway, onlyLocalhost) : undefined;
         this.servers = servers;this.onlyLocalhost = onlyLocalhost;
         this.providers = new Map();
-        this.endpoints = new Map();
-        this.admissionWaiters = new Set();
+        this.scheduler = new BlockScheduler(this);
         if(this.gateway) this.addEndpoint(this.gateway);
         this.discovery = {state:'idle',providers:0,verifiedProviders:0,verifiedEndpoints:0};
         this.resolutionController = undefined;
         this.onNetwork = onNetwork;
         if(!['auto','blocks'].includes(stateTransport))throw fail('OPERATION_FAILED','Invalid state transport');
-        this.stateTransport=stateTransport;this.carActive=0;
+        this.stateTransport=stateTransport;
         if(persistentCache?.publication!==undefined && (Object.keys(persistentCache).some(k=>k!=='publication')||typeof persistentCache.publication!=='boolean'))throw new TypeError('Invalid publication cache options');
         this.persistent=persistentCache?.publication ? new PublicationCache({onError:onCacheError}) : new PersistentCache(persistentCache?.publication===false ? {} : persistentCache);
         this.preloadState = preloadState;
+        this.publishedState = new PublishedStateTransport(this);
         this.onStateProgress = onStateProgress;
         this.timeoutMs = timeoutMs;
         this.blocks = new Map();
         this.persistent.retained=this.blocks;
         this.cacheBytes = 0;
-        this.jobs = new Map();
         this.readControllers = new Set();
         this.epoch = 0;
         this.demandReads = 0;
@@ -79,12 +82,12 @@ export class RemoteDisk {
             loadProfile:this.load ? {...this.load, selected:this.load.selected ? {cid:this.load.selected.cid,origin:this.load.selected.origin} : undefined,
                 status:this.load.selected && this.rangeOrder?.stats().completedUnits===this.rangeOrder?.stats().units ? 'complete' : this.load.status} : undefined,
             endpoints:[...this.endpoints.values()].map(({url,active,window,rescues,probationUntil,validBytes,failures,rate,cooldownUntil,excluded})=>({url,active,window,rescues,probationUntil,validBytes,failures,bytesPerMs:rate,cooldownUntil,excluded})),
-            stateTransport:this.stateTransfer ? {...this.stateTransfer,active:this.carActive} : undefined,
+            stateTransport:this.publishedState.stateTransfer ? {...this.publishedState.stateTransfer,active:this.carActive} : undefined,
             discovery:{...this.discovery}, policy:this.policy, concurrency:this.concurrency, traceDropped:this.traceDropped};
     }
     // Called only after the encrypted header has been authenticated by the Vault.
     startPrefetch() {
-        if(this.closed || !this.entry || this.stateDownloads) return;
+        if(this.closed || !this.entry || this.publishedState.stateDownloads) return;
         if(this.load?.needsReload && this.load.scope!=='none') {this.setLoadPrefetch(this.load.origin,this.load.scope);return;}
         if(!this.coverage) {
             this.coverage = new Uint8Array(Math.ceil((this.size - HEADER) / RECORD));
@@ -237,7 +240,7 @@ export class RemoteDisk {
         if(this.policy!=='sequential') this.cursor=(Math.floor((offset+length-1)/65536)+1)%this.coverage.length;
     }
     cancel() {
-        this.pendingState?.controller.abort();this.pendingState=undefined;
+        this.publishedState.cancel();
         this.loadGeneration++;
         this.profileController?.abort();this.prefetchController?.abort();
         if(this.load?.status==='loading') {this.load.status='cancelled';this.load.needsReload=true;}
@@ -245,214 +248,21 @@ export class RemoteDisk {
         this.discoveryController?.abort();
         if(this.discovery.state === 'running') this.discovery.state = 'cancelled';
         this.epoch++;
-        clearTimeout(this.scheduleTimer);
-        for(const wake of this.admissionWaiters) wake();
+        this.scheduler.cancel();
         this.prefetchState='stopped';
         for(const controller of this.readControllers) controller.abort();
-        for(const job of this.jobs.values()) {
-            job.controller.abort();
-            job.reject(fail('CANCELLED', 'Operation cancelled'));
-        }
-        this.jobs.clear();
     }
-    addEndpoint(value) {
-        const url=gatewayURL(value);
-        if(!this.endpoints.has(url)) this.endpoints.set(url,{url,active:0,window:2,credits:0,rescues:0,stalls:0,recovery:0,probationUntil:0,penalizedAt:0,latency:0,growAfter:0,dataSamples:0,attempts:0,validBytes:0,failures:0,consecutive:0,rate:0,cooldownUntil:0,excluded:false});
-    }
-    async acquireCarRequest(signal) {
-        const available=()=>this.carActive<Math.min(4,this.concurrency-1) &&
-            this.carActive+[...this.endpoints.values()].reduce((n,e)=>n+e.active,0)<this.concurrency-1;
-        while(!available()) {
-            check(signal);if(this.closed)throw fail('CANCELLED','Disk closed');
-            await new Promise(resolve=>{
-                const wake=()=>{this.admissionWaiters.delete(wake);signal?.removeEventListener('abort',wake);resolve();};
-                this.admissionWaiters.add(wake);signal?.addEventListener('abort',wake,{once:true});if(signal?.aborted)wake();
-            });
-        }
-        check(signal);if(this.closed)throw fail('CANCELLED','Disk closed');this.carActive++;
-        let released=false;
-        return ()=>{if(released)return;released=true;this.carActive--;this.schedule();this.notifyAdmission();};
-    }
-    carCandidates() {
-        const now=Date.now();
-        return [...this.endpoints.values()].filter(e=>!e.excluded&&!e.carDisabled&&e.cooldownUntil<=now)
-            .sort((a,b)=>(a.probationUntil>now)-(b.probationUntil>now)||(b.carVerified?1:0)-(a.carVerified?1:0)||b.rate-a.rate)
-            .map(e=>e.url);
-    }
-    slowAfter(endpoint) { return Math.max(endpoint.dataSamples?250:750,Math.min(2000,3*endpoint.latency)); }
-    reduceWindow(endpoint) {
-        // Keep the proven two-slot baseline while reducing speculative growth.
-        // A single slot serializes round trips after an isolated latency spike.
-        endpoint.window=Math.max(Math.min(2,this.concurrency),Math.floor(endpoint.window/2));endpoint.credits=0;
-        endpoint.rate*=.5;endpoint.recovery=0;endpoint.penalizedAt=Date.now();
-        endpoint.growAfter=endpoint.penalizedAt+1500;
-    }
-    notifyAdmission() { for(const wake of this.admissionWaiters) wake(); }
-    async admitBackground(signal, epoch) {
-        while([...this.jobs.values()].filter(j=>j.hasBackground).length>=8) {
-            check(signal);
-            if(epoch!==this.epoch || this.closed) throw fail('CANCELLED','Operation cancelled');
-            await new Promise(resolve=>{
-                const wake=()=>{this.admissionWaiters.delete(wake);signal?.removeEventListener('abort',wake);resolve();};
-                this.admissionWaiters.add(wake);signal?.addEventListener('abort',wake,{once:true});
-                if(signal?.aborted) wake();
-            });
-        }
-        check(signal);
-        if(epoch!==this.epoch || this.closed) throw fail('CANCELLED','Operation cancelled');
-    }
-    finishJob(job, error, bytes) {
-        if(this.jobs.get(job.key)!==job) return;
-        this.jobs.delete(job.key);
-        if(error) job.reject(error); else job.resolve(bytes);
-        this.notifyAdmission();
-    }
-    schedule() {
-        clearTimeout(this.scheduleTimer);
-        if(this.closed) return;
-        const now=Date.now(), jobs=[...this.jobs.values()];
-        let active=this.carActive+[...this.endpoints.values()].reduce((n,e)=>n+e.active,0), wakeAt=Infinity;
-        const foreground=this.demandReads || jobs.some(j=>j.priority!=='background');
-        const order={demand:0,state:1,background:2};
-        jobs.sort((a,b)=>order[a.priority]-order[b.priority]);
-        for(const job of jobs) {
-            const attempt=job.attempt;
-            if(job.state==='active' && attempt && !job.rescued && job.priority!=='background') {
-                const others=[...this.endpoints.values()].filter(e=>!e.excluded && !job.tried.has(e.url));
-                if(others.length) {
-                    const due=attempt.lastProgress+this.slowAfter(attempt.endpoint);
-                    const available=others.filter(e=>e.active<e.window && e.cooldownUntil<=now && e.probationUntil<=now);
-                    // Progress alone is not sufficient: a trickling response
-                    // can retain the ordered reader until the hard timeout.
-                    // Only restart it when a provider with verified data samples
-                    // is conservatively likely to finish the whole block sooner.
-                    const bodyMs=now-attempt.firstByte;
-                    const canEstimate=attempt.total>=65536 && attempt.received>0 && bodyMs>=250 && now-attempt.startedAt>=this.slowAfter(attempt.endpoint);
-                    const remainingMs=canEstimate ? (attempt.total-attempt.received)*bodyMs/attempt.received : 0;
-                    const faster=canEstimate && available.some(e=>e.dataSamples && remainingMs>2*Math.max(150,1.5*e.latency,1.5*attempt.total/e.rate));
-                    if(available.length && (now>=due || faster)) {
-                        job.rescued=true;job.revisit=attempt.endpoint.url;attempt.rescue=true;
-                        attempt.endpoint.rescues++;this.reduceWindow(attempt.endpoint);
-                        // A fast successful sample must not send every next
-                        // window back to a provider repeatedly stalling. Prefer
-                        // healthy alternatives until it has had time to recover.
-                        attempt.endpoint.probationUntil=now+Math.min(8000,this.slowAfter(attempt.endpoint)*2**Math.min(++attempt.endpoint.stalls,3));
-                        this.traceEvent('fetch-rescue',{cid:job.key,gateway:attempt.endpoint.url});
-                        attempt.controller.abort();
-                    } else wakeAt=Math.min(wakeAt,Math.max(now+100,Math.min(due,attempt.startedAt+this.slowAfter(attempt.endpoint))));
-                }
-            }
-            if(job.state!=='queued') continue;
-            if(job.deadline && now>=job.deadline) {this.finishJob(job,job.error || fail('IO_ERROR','IPFS block request timed out. You can retry.'));continue;}
-            let remaining=[...this.endpoints.values()].filter(e=>!e.excluded && !job.tried.has(e.url));
-            // An early rescue is speculative, not evidence that the original
-            // provider cannot serve the block. Retain one ordinary fallback.
-            if(!remaining.length && job.revisit) {
-                job.tried.delete(job.revisit);job.revisit=undefined;
-                remaining=[...this.endpoints.values()].filter(e=>!e.excluded && !job.tried.has(e.url));
-            }
-            if(!remaining.length && this.discovery.state!=='running') {
-                this.finishJob(job,job.error || fail('IO_ERROR','No provider could serve this IPFS block. You can retry.'));continue;
-            }
-            if(job.deadline) wakeAt=Math.min(wakeAt,job.deadline);
-            if(active>=this.concurrency || (foreground && job.priority==='background')) continue;
-            // Early state data may use spare capacity, but leave one slot for
-            // the disk descriptor needed to authenticate/open the machine.
-            if(job.priority==='state' && active>=Math.max(1,this.concurrency-1))continue;
-            for(const e of remaining) {
-                if(e.cooldownUntil>now)wakeAt=Math.min(wakeAt,e.cooldownUntil);
-                if(e.probationUntil>now)wakeAt=Math.min(wakeAt,e.probationUntil);
-            }
-            const healthyAlternative=remaining.some(e=>e.probationUntil<=now && e.cooldownUntil<=now);
-            const eligible=remaining.filter(e=>e.active<e.window && e.cooldownUntil<=now && (!healthyAlternative || e.probationUntil<=now));
-            eligible.sort((a,b)=>(a.attempts===0?0:1)-(b.attempts===0?0:1) || b.rate/(b.active+1)-a.rate/(a.active+1) || a.active-b.active);
-            const endpoint=eligible[0];
-            if(!endpoint) continue;
-            job.deadline ??= now+this.timeoutMs;
-            job.tried.add(endpoint.url);job.state='active';endpoint.active++;endpoint.attempts++;active++;
-            this.runAttempt(job,endpoint);
-            wakeAt=Math.min(wakeAt,now+this.slowAfter(endpoint));
-        }
-        if(Number.isFinite(wakeAt)) this.scheduleTimer=setTimeout(()=>this.schedule(),Math.max(1,wakeAt-Date.now()));
-    }
-    async runAttempt(job, endpoint) {
-        const started=performance.now(), live=()=>job.epoch===this.epoch && !this.closed && !job.controller.signal.aborted && this.jobs.get(job.key)===job;
-        const controller=new AbortController(),abort=()=>controller.abort();
-        job.controller.signal.addEventListener('abort',abort,{once:true});
-        const attempt=job.attempt={controller,endpoint,startedAt:Date.now(),lastProgress:Date.now(),received:0,total:0};
-        this.traceEvent('fetch-start',{cid:job.key,priority:job.priority,gateway:endpoint.url,window:endpoint.window});
-        try {
-            const bytes=await this.request(`/ipfs/${job.key}?format=raw`, 'application/vnd.ipld.raw', BLOCK_LIMIT, controller.signal, endpoint.url, Math.min(5000,Math.max(1,job.deadline-Date.now())),(received,total)=>{
-                attempt.lastProgress=Date.now();attempt.firstByte??=attempt.lastProgress;attempt.received=received;attempt.total=total||0;
-            });
-            const digest=await sha256.digest(bytes);
-            if(!live()) return;
-            if(attempt.rescue)throw fail('CANCELLED','Block reassigned');
-            if(!digest.digest.every((b,i)=>b===job.cid.multihash.digest[i]) || digest.digest.length!==job.cid.multihash.digest.length) throw fail('CORRUPTION','IPFS block does not match its CID.');
-            const ms=Math.max(1,performance.now()-started), sample=bytes.length/ms;
-            // Metadata has different transfer costs. Learn capacity from data
-            // blocks; small DAG nodes must not distort the throughput estimate.
-            if(bytes.length>=65536 && attempt.startedAt>=endpoint.penalizedAt) {
-                // The first data transfer establishes a baseline: connection
-                // setup must not collapse the initial window to a single slot.
-                const healthy=!endpoint.dataSamples || ms<=Math.max(750,1.8*endpoint.latency);
-                if(!healthy)this.reduceWindow(endpoint);
-                else if(Date.now()>=endpoint.growAfter && ++endpoint.credits>=endpoint.window) {
-                    endpoint.window=Math.min(this.concurrency,endpoint.window*2);endpoint.credits=0;
-                }
-                if(healthy && ++endpoint.recovery>=2) {endpoint.stalls=0;endpoint.probationUntil=0;}
-                endpoint.latency=endpoint.latency ? .8*endpoint.latency+.2*ms : ms;
-                endpoint.rate=endpoint.dataSamples++ ? .75*endpoint.rate+.25*sample : sample;
-            } else if(!endpoint.dataSamples)endpoint.rate=endpoint.validBytes ? .75*endpoint.rate+.25*sample : sample;
-            endpoint.validBytes+=bytes.length;endpoint.consecutive=0;endpoint.cooldownUntil=0;
-            if(!this.blocks.has(job.key)) {this.blocks.set(job.key,bytes);this.cacheBytes+=bytes.length;}
-            this.traceEvent('fetch-end',{cid:job.key,priority:job.priority,gateway:endpoint.url,bytes:bytes.length,ms});
-            this.finishJob(job,undefined,bytes);
-        } catch(error) {
-            if(!live()) return;
-            if(attempt.rescue) {
-                job.state='queued';return;
-            }
-            endpoint.failures++;this.reduceWindow(endpoint);
-            if(error.code==='CORRUPTION') endpoint.excluded=true;
-            else if(!error.status || error.status===408 || error.status===429 || error.status>=500) {
-                endpoint.cooldownUntil=Date.now()+Math.min(60000,5000*2**Math.min(endpoint.consecutive++,4));
-            }
-            job.error=error;job.state='queued';
-            this.traceEvent('fetch-error',{cid:job.key,gateway:endpoint.url,code:error.code,ms:performance.now()-started});
-        } finally {
-            job.controller.signal.removeEventListener('abort',abort);
-            if(job.attempt===attempt)job.attempt=undefined;
-            endpoint.active--;
-            if(!this.closed) this.schedule();
-            this.notifyAdmission();
-        }
-    }
-    async waitForJob(job, signal, priority) {
-        check(signal);
-        const waiter={priority};job.waiters.add(waiter);
-        let abort;
-        try {
-            return await Promise.race([job.promise, new Promise((_,reject)=>{
-                abort=()=>reject(fail('CANCELLED','Operation cancelled'));
-                signal?.addEventListener('abort',abort,{once:true});
-                if(signal?.aborted) abort();
-            })]);
-        } finally {
-            signal?.removeEventListener('abort',abort);
-            job.waiters.delete(waiter);
-            if(job.waiters.size) {
-                const priorities=[...job.waiters].map(w=>w.priority);
-                const priority=priorities.includes('demand')?'demand':priorities.includes('state')?'state':'background';
-                if(job.priority!==priority) {job.priority=priority;this.schedule();}
-            }
-            if(!job.waiters.size && signal?.aborted) {
-                job.controller.abort();job.reject(fail('CANCELLED','Operation cancelled'));
-                if(this.jobs.get(job.key)===job) this.jobs.delete(job.key);
-                this.notifyAdmission();this.schedule();
-            }
-        }
-    }
+    addEndpoint(value) {return this.scheduler.addEndpoint(value);}
+    acquireCarRequest(signal) {return this.scheduler.acquireCarRequest(signal);}
+    carCandidates() {return this.scheduler.carCandidates();}
+    slowAfter(endpoint) {return this.scheduler.slowAfter(endpoint);}
+    reduceWindow(endpoint) {return this.scheduler.reduceWindow(endpoint);}
+    notifyAdmission() {return this.scheduler.notifyAdmission();}
+    admitBackground(signal, epoch) {return this.scheduler.admitBackground(signal,epoch);}
+    finishJob(job, error, bytes) {return this.scheduler.finishJob(job,error,bytes);}
+    schedule() {return this.scheduler.schedule();}
+    runAttempt(job, endpoint) {return this.scheduler.runAttempt(job,endpoint);}
+    waitForJob(job, signal, priority) {return this.scheduler.waitForJob(job,signal,priority);}
     async request(path, type, limit, signal, gateway=this.gateway, timeoutMs=Math.min(5000,this.timeoutMs), onProgress) {
         return this.requestOnce(path,type,limit,signal,timeoutMs,gateway,onProgress);
     }
@@ -677,159 +487,9 @@ export class RemoteDisk {
         this.size = Number(size);
         return this;
     }
-    async openStateStream(signal, progress) {
-        check(signal);
-        const pending=this.pendingState;
-        if(!pending)return this.createStateStream(signal,progress);
-        this.pendingState=undefined;pending.progress=progress;pending.priority='demand';
-        for(const job of this.jobs.values())if(job.priority==='state') {
-            job.priority='demand';for(const waiter of job.waiters)if(waiter.priority==='state')waiter.priority='demand';
-        }
-        this.schedule();
-        const abort=()=>pending.controller.abort();
-        signal?.addEventListener('abort',abort,{once:true});
-        const cleanup=()=>signal?.removeEventListener('abort',abort);
-        pending.controller.signal.addEventListener('abort',cleanup,{once:true});
-        try {
-            const result=await pending.promise;check(signal);
-            progress?.(pending.received||0,result.size);
-            if(pending.controller.signal.aborted)cleanup();
-            return result;
-        } catch(error) {abort();cleanup();throw error;}
-    }
-    beginStatePrefetch(signal) {
-        const controller=new AbortController(),abort=()=>controller.abort();
-        signal?.addEventListener('abort',abort,{once:true});
-        const pending=this.pendingState={controller,priority:'state',progress:this.onStateProgress};
-        pending.promise=this.createStateStream(controller.signal,(received,total)=>{
-            pending.received=received;pending.progress?.(received,total);
-        },()=>{signal?.removeEventListener('abort',abort);controller.abort();},()=>pending.priority);
-        // The disk can still open when optional state data is invalid. Its
-        // error belongs to prepareState, which takes ownership of this promise.
-        pending.promise.catch(()=>{});
-    }
-    async createStateStream(signal, progress, onFinish, priority=()=> 'demand') {
-        check(signal);
-        if(!this.stateCid) throw fail('INVALID_STATE','No state is published for this disk.');
-        const resume = this.prefetchState === 'running';
-        const controller=new AbortController(), external=signal;
-        const abort=()=>finish();external?.addEventListener('abort',abort,{once:true});
-        signal=controller.signal;
-        this.readControllers.add(controller);
-        this.stateDownloads = (this.stateDownloads || 0) + 1;
-        if(resume) this.prefetchState = 'suspended';
-        let iterator,finished=false,blockBytes=0;
-        const stateBlocks=new Map();
-        const finish=(resumeAllowed=false)=>{
-            if(finished)return;finished=true;controller.abort();
-            external?.removeEventListener('abort',abort);this.stateDownloads--;
-            stateBlocks.clear();blockBytes=0;
-            this.readControllers.delete(controller);onFinish?.();
-            if(resume && resumeAllowed)this.startPrefetch();
-        };
-        signal.addEventListener('abort',()=>finish(),{once:true});
-        try {
-            await this.prefetchLoop;
-            check(signal);
-            const remote = this;
-            // Do not retain another full encrypted state in the disk block cache.
-            const store = {async *get(cid, options) {
-                const key=cid.toV1().toString(), retained=remote.blocks.has(key);
-                if(stateBlocks.has(key)) {yield stateBlocks.get(key);return;}
-                try {for await(const bytes of remote.get(cid,{...options,signal,priority:priority(),cacheKind:'state'})) {
-                    // A range traversal can touch the boundary leaf twice.
-                    // Keep a small local cache instead of redownloading it or
-                    // retaining the complete encrypted file in the disk cache.
-                    if(!stateBlocks.has(key)) {stateBlocks.set(key,bytes);blockBytes+=bytes.length;}
-                    while(blockBytes>BLOCK_LIMIT) {const first=stateBlocks.keys().next().value;blockBytes-=stateBlocks.get(first).length;stateBlocks.delete(first);}
-                    yield bytes;
-                }}
-                finally {if(!retained && remote.blocks.has(key)) {remote.cacheBytes-=remote.blocks.get(key).length;remote.blocks.delete(key);}}
-            }};
-            // Capture before reading the root: a partial previous transfer is
-            // useful without a complete marker. Fetch only its missing blocks.
-            const cachedState=await this.persistent.hasStateRoot(this.stateCid);check(signal);
-            const entry=await exporter(this.stateCid,store,{signal,blockReadConcurrency:1});
-            if(!['file','raw','identity'].includes(entry.type)) throw fail('INVALID_STATE','Published state is not a file.');
-            const total=Number(entry.type==='file'?entry.unixfs.fileSize():entry.size);
-            if(!Number.isSafeInteger(total) || total<12 || total>1024*1024*1024+65536) throw fail('INVALID_STATE','Invalid published state size.');
-            // UnixFS's exporter has an internal push queue. Bound each traversal
-            // too, so a slow/absent consumer cannot accumulate the whole file.
-            // Exporter concurrency also counts completed out-of-order blocks.
-            // Give it bounded lookahead beyond the actual network budget so a
-            // slow head block does not leave the other download slots idle.
-            const concurrency=2*this.concurrency;
-            this.stateTransfer={mode:'blocks',lanes:0,bytes:0,fallback:false};
-            const transfer=this.stateTransfer;
-            iterator=(async function*() {
-                let received=0;
-                if(cachedState) {yield* cachedStateContent(remote.stateCid,total,store,signal);return;}
-                if(!cachedState&&remote.stateTransport==='auto'&&remote.concurrency>1&&total>=1048576&&entry.type==='file'&&entry.node?.Links?.length) {
-                    try {
-                        for await(const bytes of parallelCarState({cid:CID.parse(remote.stateCid),size:total,signal,
-                            lanes:Math.min(4,remote.concurrency-1),candidates:()=>remote.carCandidates(),
-                            discovering:()=>remote.discovery.state==='running',acquire:s=>remote.acquireCarRequest(s),
-                            timeoutMs:remote.timeoutMs,onNetwork:remote.onNetwork,
-                            onBlock:remote.persistent.options.state ? async(cid,bytes)=>{
-                                if(signal.aborted)return;
-                                if(remote.persistent.options.publication)await remote.persistent.putState(cid,bytes);
-                                else remote.persistent.put(cid,bytes,'state');
-                                // Let IDB callbacks run between buffered CAR bursts.
-                                // The bounded read-only cache remains best-effort;
-                                // full publication caching applies backpressure above.
-                                if(remote.persistent.queueBytes>=1048576)await new Promise(resolve=>setTimeout(resolve,0));
-                            } : undefined,
-                            onEvent:(type,detail)=>remote.traceEvent(type,detail),
-                            failed:(gateway,error)=>{
-                                const endpoint=remote.endpoints.get(gateway);if(endpoint)endpoint.carDisabled=true;
-                                remote.traceEvent('car-error',{gateway,code:error.code||'IO_ERROR'});
-                            },
-                            onSelected:(gateway,lanes)=>{
-                                const endpoint=remote.endpoints.get(gateway);if(endpoint)endpoint.carVerified=true;
-                                Object.assign(transfer,{mode:'car',gateway,lanes});
-                            },
-                        })) {received+=bytes.length;transfer.bytes=received;yield bytes;}
-                        return;
-                    } catch(error) {
-                        check(signal);
-                        Object.assign(transfer,{mode:'blocks',fallback:true,fallbackAt:received,reason:error.code||'IO_ERROR'});
-                        remote.traceEvent('car-fallback',{offset:received,code:transfer.reason});
-                    }
-                }
-                // Only bytes already emitted count as a checkpoint. Discard
-                // unconsumed CAR queues, then resume the verified raw reader at
-                // that exact offset without restarting decryption or gzip.
-                for(let offset=received;offset<total;offset+=STATE_RANGE) {
-                    check(signal);
-                    yield* entry.content({signal,offset,length:Math.min(STATE_RANGE,total-offset),blockReadConcurrency:concurrency});
-                }
-            })();
-            let size=0;
-            const stream=new ReadableStream({
-                async pull(output) {
-                    try {
-                        check(signal);const {done,value}=await iterator.next();check(signal);
-                        if(done) {
-                            if(size!==total)throw fail('INVALID_STATE','Incomplete published state.');
-                            finish(true);output.close();return;
-                        }
-                        size+=value.length;
-                        if(size>total)throw fail('INVALID_STATE','Published state exceeds its declared size.');
-                        progress?.(size,total);output.enqueue(value);
-                    } catch(error) {finish();output.error(error);await iterator.return?.().catch(()=>{});}
-                },
-                async cancel() {finish();await iterator.return?.().catch(()=>{});},
-            },new ByteLengthQueuingStrategy({highWaterMark:STATE_WINDOW}));
-            return {size:total,stream,validated:()=>this.persistent.complete(this.stateCid)};
-        } catch(error) {finish();throw error;}
-    }
-    // Preserve the collecting API for callers explicitly asking for a file.
-    async downloadState(signal, progress) {
-        const {stream}=await this.openStateStream(signal,progress),reader=stream.getReader(),parts=[];
-        try {for(;;) {const {done,value}=await reader.read();if(done)break;parts.push(new Blob([value]));}
-            return new Blob(parts,{type:'application/octet-stream'});
-        } finally {await reader.cancel().catch(()=>{});reader.releaseLock();}
-    }
+    openStateStream(signal, progress) {return this.publishedState.openStateStream(signal,progress);}
+    beginStatePrefetch(signal) {return this.publishedState.beginStatePrefetch(signal);}
+    downloadState(signal, progress) {return this.publishedState.downloadState(signal,progress);}
     async read(offset, length, signal, priority = 'demand', retainOutput = true) {
         check(signal);
         if(this.closed) throw fail('CANCELLED','Disk closed');

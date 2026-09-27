@@ -32,8 +32,10 @@ try {for(const [name,type] of Object.entries({chromium,webkit})) {
   assert.equal(await page.evaluate(()=>oldVM.v86.cpu.mem8[0x70000]),77);
   assert.equal(await page.evaluate(async()=>(await disk.read(10000,1))[0]),99);
   assert.match(await page.locator("#disk-status").textContent(),/authentication/i);
+  assert.match(await page.locator("#session-status").textContent(),/authentication/i);
   await load(path);
   assert.match(await page.locator("#disk-status").textContent(),/State restored/);
+  assert.match(await page.locator("#session-status").textContent(),/State restored/);
   await page.locator("#pause").click(); // Resume to expose candidate through run hook.
   assert.equal(await page.evaluate(()=>vm.v86.cpu.mem8[0x70000]),41);
   assert.equal(await page.evaluate(async()=>(await disk.read(10000,1))[0]),42);
