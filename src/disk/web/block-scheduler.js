@@ -4,6 +4,7 @@ import {BLOCK_LIMIT} from './state-transport.js';
 
 const fail = (code, message) => Object.assign(new Error(message), {code});
 const check = signal => { if(signal?.aborted) throw fail('CANCELLED', 'Operation cancelled'); };
+export const retryDelay = failures => failures < 3 ? 0 : failures === 3 ? 1000 : failures === 4 ? 5000 : 10000;
 
 /** Owns provider windows, block jobs and CAR admission under one global limit. */
 export class BlockScheduler {
@@ -128,9 +129,15 @@ export class BlockScheduler {
                 job.tried.delete(job.revisit);job.revisit=undefined;
                 remaining=[...this.endpoints.values()].filter(e=>!e.excluded && !job.tried.has(e.url));
             }
+            if(!remaining.length && job.retryForever && [...this.endpoints.values()].some(e=>!e.excluded)) {
+                job.tried.clear();
+                job.retryAt=now+retryDelay(job.failures);
+                remaining=[...this.endpoints.values()].filter(e=>!e.excluded);
+            }
             if(!remaining.length && remote.discovery.state!=='running') {
                 remote.finishJob(job,job.error || fail('IO_ERROR','No provider could serve this IPFS block. You can retry.'));continue;
             }
+            if(job.retryAt>now) {wakeAt=Math.min(wakeAt,job.retryAt);continue;}
             if(job.deadline) wakeAt=Math.min(wakeAt,job.deadline);
             if(active>=remote.concurrency || (foreground && job.priority==='background')) continue;
             // Early state data may use spare capacity, but leave one slot for
@@ -145,7 +152,7 @@ export class BlockScheduler {
             eligible.sort((a,b)=>(a.attempts===0?0:1)-(b.attempts===0?0:1) || b.rate/(b.active+1)-a.rate/(a.active+1) || a.active-b.active);
             const endpoint=eligible[0];
             if(!endpoint) continue;
-            job.deadline ??= now+remote.timeoutMs;
+            if(!job.retryForever) job.deadline ??= now+remote.timeoutMs;
             job.tried.add(endpoint.url);job.state='active';endpoint.active++;endpoint.attempts++;active++;
             remote.runAttempt(job,endpoint);
             wakeAt=Math.min(wakeAt,now+remote.slowAfter(endpoint));
@@ -160,7 +167,7 @@ export class BlockScheduler {
         const attempt=job.attempt={controller,endpoint,startedAt:Date.now(),lastProgress:Date.now(),received:0,total:0};
         remote.traceEvent('fetch-start',{cid:job.key,priority:job.priority,gateway:endpoint.url,window:endpoint.window});
         try {
-            const bytes=await remote.request(`/ipfs/${job.key}?format=raw`, 'application/vnd.ipld.raw', BLOCK_LIMIT, controller.signal, endpoint.url, Math.min(5000,Math.max(1,job.deadline-Date.now())),(received,total)=>{
+            const bytes=await remote.request(`/ipfs/${job.key}?format=raw`, 'application/vnd.ipld.raw', BLOCK_LIMIT, controller.signal, endpoint.url, job.deadline ? Math.min(5000,Math.max(1,job.deadline-Date.now())) : 5000,(received,total)=>{
                 attempt.lastProgress=Date.now();attempt.firstByte??=attempt.lastProgress;attempt.received=received;attempt.total=total||0;
             });
             const digest=await sha256.digest(bytes);
@@ -191,10 +198,10 @@ export class BlockScheduler {
             if(attempt.rescue) {
                 job.state='queued';return;
             }
-            endpoint.failures++;remote.reduceWindow(endpoint);
+            endpoint.failures++;job.failures++;remote.reduceWindow(endpoint);
             if(error.code==='CORRUPTION') endpoint.excluded=true;
             else if(!error.status || error.status===408 || error.status===429 || error.status>=500) {
-                endpoint.cooldownUntil=Date.now()+Math.min(60000,5000*2**Math.min(endpoint.consecutive++,4));
+                endpoint.cooldownUntil=Date.now()+retryDelay(++endpoint.consecutive);
             }
             job.error=error;job.state='queued';
             remote.traceEvent('fetch-error',{cid:job.key,gateway:endpoint.url,code:error.code,ms:performance.now()-started});

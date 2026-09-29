@@ -18,6 +18,12 @@ try {for(const [name,type] of Object.entries({chromium,webkit})) {
   // Wait for the fixture boot sector before probing RAM: the BIOS may still
   // clear that memory after the UI enables Pause. The fixture halts after CLI.
   await page.waitForFunction(()=>vm.v86.cpu.in_hlt[0] && vm.v86.cpu.instruction_pointer[0]===0x7c02);
+  await page.evaluate(()=>vm.v86.cpu.devices.ide.primary.master.buffer.fail(new Error('temporary disk failure')));
+  await page.waitForFunction(()=>document.querySelector('#session-status').textContent.includes('temporary disk failure') && !document.querySelector('#disk-resume').hidden);
+  await page.locator('#disk-resume').click();
+  await page.waitForFunction(()=>document.querySelector('#session-status').textContent.includes('Disk access restored'));
+  assert.equal(await page.locator('#session-status').evaluate(e=>e.classList.contains('error')),false);
+  assert.equal(await page.locator('#disk-status').evaluate(e=>e.classList.contains('error')),false);
   await page.locator("#pause").click();
   await page.evaluate(async()=>{vm.v86.cpu.mem8[0x70000]=41;await disk.write(10000,new Uint8Array([42]));window.oldVM=vm;});
   let download=page.waitForEvent("download",{timeout:60000});await page.locator("#save-state").click();

@@ -125,6 +125,7 @@ export function setupDisk(host) {
     async function boot(analyze = false) {
         message("Booting encrypted disk…");
         if(host.hasSession()&&!window.confirm("Close the current Windows session and boot this disk? Save its disk first."))return;
+        capturing=true;syncControls(true);
         await session.boot({analyze,onDiskError:async error=>{await host.fail(error);message("Disk stopped: "+error.message+". You can retry the operation.",true);syncControls(host.busy());}});
         message(session.analysisError || (session.analyzing ? "Recording disk reads. Perform the expected actions, then select Stop analyzing to download the profile." : "Windows is using the encrypted disk. Shut it down before saving."), !!session.analysisError);
     }

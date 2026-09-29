@@ -109,6 +109,7 @@ export class RemoteDisk {
     // Short control operation: optional metadata and ranges never occupy the Worker RPC queue.
     setLoadPrefetch(origin, scope) {
         if(!['none','profile','disk'].includes(scope))throw fail('OPERATION_FAILED','Invalid load prefetch scope.');
+        this.keepDownloading=scope==='disk';
         if(this.load && sameOrigin(this.load.origin,origin) && !this.load.needsReload && scope!=='none') {
             this.load.scope=scope;this.prefetchEnabled=true;
             if(this.prefetchState==='complete' && this.completedUnits!==this.coverage?.length)this.prefetchState='stopped';
@@ -241,6 +242,7 @@ export class RemoteDisk {
     }
     cancel() {
         this.publishedState.cancel();
+        this.keepDownloading=false;
         this.loadGeneration++;
         this.profileController?.abort();this.prefetchController?.abort();
         if(this.load?.status==='loading') {this.load.status='cancelled';this.load.needsReload=true;}
@@ -345,7 +347,7 @@ export class RemoteDisk {
             if(this.blocks.has(key)) {const ready=this.blocks.get(key);await this.cacheObserved(cid,ready,cacheKind);yield ready;return;}
             let job=this.jobs.get(key);
             if(!job) {
-                job={key,cid,priority,epoch:this.epoch,state:'queued',hasBackground:priority==='background',tried:new Set(),controller:new AbortController(),waiters:new Set()};
+                job={key,cid,priority,epoch:this.epoch,state:'queued',hasBackground:priority==='background',tried:new Set(),controller:new AbortController(),waiters:new Set(),retryForever:!!this.keepDownloading && priority!=='state',failures:0};
                 job.promise=new Promise((resolve,reject)=>{job.resolve=resolve;job.reject=reject;});
                 this.jobs.set(key,job);
             }

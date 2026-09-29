@@ -27,7 +27,7 @@ emulator: prepare-emulator
 	$(MAKE) -C build/slop86 all
 
 run:
-	python3 scripts/serve.py
+	python3 scripts/serve.py 8686
 
 crypto:
 	sh src/crypto/scripts/build.sh

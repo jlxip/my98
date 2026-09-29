@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {CID} from 'multiformats/cid';
 import {sha256} from 'multiformats/hashes/sha2';
 import {RemoteDisk} from '../web/remote.js';
+import {retryDelay} from '../web/block-scheduler.js';
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const until=async f=>{for(let i=0;i<1000;i++){if(f())return;await sleep(2);}throw Error('Condition timeout');};
 const raw='application/vnd.ipld.raw';
@@ -78,9 +79,34 @@ test('exhaustion rejects promptly, explicit retry reuses known providers',async 
     await assert.rejects(f.get(0),{code:'IO_ERROR'});assert.equal(f.calls.length,2);
     f.setHandler(undefined);await f.get(0);assert.equal(f.remote.endpoints.size,2);
 });
-test('transient failure cools the endpoint, uses another, then a valid response resets it',async t=>{
+test('disk reads keep retrying transient failures, then recover without a manual retry',async t=>{
+    assert.deepEqual([1,2,3,4,5,6].map(retryDelay),[0,0,1000,5000,10000,10000]);
+    const f=await fixture(t,{endpoints:1,timeoutMs:80});
+    f.remote.keepDownloading=true;
+    let attempts=0;
+    f.setHandler((u,b)=>++attempts<=3?new Response(null,{status:503}):new Response(b.bytes,{headers:{'Content-Type':raw}}));
+    const start=Date.now();
+    assert.deepEqual(await f.get(0),f.blocks[0].bytes);
+    assert.equal(attempts,4);
+    assert.ok(Date.now()-start>=1000);
+    assert.equal(f.remote.endpoints.get('https://p0.example').consecutive,0);
+});
+test('a waiting disk read can be cancelled during retry backoff',async t=>{
+    const f=await fixture(t,{endpoints:1,timeoutMs:80});
+    f.remote.keepDownloading=true;
+    f.setHandler(()=>new Response(null,{status:503}));
+    const controller=new AbortController();
+    const pending=f.get(0,'demand',controller.signal).catch(error=>error.code);
+    await until(()=>f.remote.jobs.get(f.blocks[0].cid.toString())?.retryAt>Date.now());
+    const job=f.remote.jobs.get(f.blocks[0].cid.toString());
+    assert.ok(job.retryAt>Date.now());
+    controller.abort();
+    assert.equal(await pending,'CANCELLED');
+    await until(()=>!f.remote.jobs.size);
+});
+test('transient failure uses another endpoint, then a valid response resets it',async t=>{
     const f=await fixture(t,{endpoints:2});f.setHandler((u,b)=>u.host==='p0.example'?new Response(null,{status:503}):new Response(b.bytes,{headers:{'Content-Type':raw}}));
-    await f.get(0);const e=f.remote.endpoints.get('https://p0.example');assert.ok(e.cooldownUntil>Date.now());assert.equal(e.consecutive,1);
+    await f.get(0);const e=f.remote.endpoints.get('https://p0.example');assert.equal(e.consecutive,1);
     f.remote.endpoints.get('https://p1.example').excluded=true;f.setHandler(undefined);
     await f.get(1);assert.equal(e.cooldownUntil,0);assert.equal(e.consecutive,0);
 });

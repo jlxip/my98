@@ -456,7 +456,12 @@ diskController = setupDisk({
         $("session").hidden = true;
         updateControls();
     },
-    async resume() { diskBlocked = false; if(emulator) emulator.run(); updateControls(); },
+    async resume() {
+        diskBlocked = false;
+        if(emulator) emulator.run();
+        status("Disk access restored. Windows retains its RAM and writes.");
+        updateControls();
+    },
     async fail(error) {
         diskBlocked = true;
         if(emulator) await emulator.stop();
