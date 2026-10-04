@@ -36,5 +36,8 @@
   "src/browser/control-icons.js": "src/browser/control-icons.js",
   "vendor/lucide-1.17.0/icons.js": "vendor/lucide-1.17.0/icons.js",
   "vendor/lucide-1.17.0/LICENSE": "vendor/lucide-1.17.0/LICENSE",
-  "vendor/lucide-1.17.0/source.json": "vendor/lucide-1.17.0/source.json"
+  "vendor/lucide-1.17.0/source.json": "vendor/lucide-1.17.0/source.json",
+  "src/browser/relay-network.js": "src/browser/relay-network.js",
+  "src/disk/web/network-config.js": "src/disk/web/network-config.js",
+  "src/disk/web/relay-discovery.js": "src/disk/web/relay-discovery.js"
 }

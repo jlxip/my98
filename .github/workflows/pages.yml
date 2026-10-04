@@ -42,7 +42,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang make python3 wget
-      - name: Build and test a clean staged snapshot
+      - name: Build and test site and agent CLI in a clean staged snapshot
         id: tests
         run: make site-test-clean
       - name: Upload browser test diagnostics

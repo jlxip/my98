@@ -1,0 +1,8 @@
+{
+  "enabled": false,
+  "public_url": "wss://relay.example/my98-relay/v1",
+  "origins": ["https://my98.example", "http://127.0.0.1:8686", "http://localhost:8686"],
+  "allow_file": "/var/lib/my98-relay/allow.json",
+  "admin_socket": "/run/my98-relay/admin.sock",
+  "host_ips": []
+}

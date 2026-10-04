@@ -181,6 +181,17 @@ async function execute(op,a) {
         sources.get(current)?.setLoadPrefetch?.(restoredOrigin,'none');
         return describe();
     }
+    case "relayPublicKey": return vault.relay_public_key();
+    case "signRelayChallenge": {
+        if(!identity) throw fail("READ_ONLY", "Relay authentication requires an unlocked identity");
+        const url = new URL(a.url);
+        if(url.protocol !== 'wss:' || url.username || url.password || url.hash || url.search ||
+           a.origin !== self.location.origin || !Number.isSafeInteger(a.expires) ||
+           a.expires * 1000 < Date.now() - 1000 || a.expires * 1000 > Date.now() + 11000) {
+            throw fail("OPERATION_FAILED", "Invalid relay challenge");
+        }
+        return vault.sign_relay_challenge(url.href,a.origin,new Uint8Array(a.nonce),BigInt(a.expires));
+    }
     case "exportReadOnlyKey": return vault.export_read_key();
     case "describe": return describe();
     case "read": {

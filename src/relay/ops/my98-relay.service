@@ -1,0 +1,39 @@
+[Unit]
+Description=my98 authenticated private Ethernet relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=my98-relay
+Group=my98-relay
+ExecStart=/usr/local/lib/my98-relay/my98-relay /etc/my98-relay/config.json
+Restart=on-failure
+RestartSec=3
+RuntimeDirectory=my98-relay
+RuntimeDirectoryMode=0700
+StateDirectory=my98-relay
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+MemoryMax=256M
+CPUQuota=100%
+TasksMax=64
+LimitNOFILE=8192
+TimeoutStopSec=5
+
+[Install]
+WantedBy=multi-user.target

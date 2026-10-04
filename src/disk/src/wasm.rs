@@ -66,6 +66,24 @@ impl Vault {
     pub fn identity(&self) -> Result<String> {
         Ok(serde_json::json!({"ipnsName":self.engine.identity()?.ipns_name().map_err(operation)?,"publicKey":self.engine.identity()?.public_key().map_err(operation)?}).to_string())
     }
+    pub fn relay_public_key(&self) -> Result<Vec<u8>> {
+        self.engine
+            .identity()?
+            .relay_public_key()
+            .map_err(operation)
+    }
+    pub fn sign_relay_challenge(
+        &self,
+        url: &str,
+        origin: &str,
+        nonce: Vec<u8>,
+        expires: u64,
+    ) -> Result<Vec<u8>> {
+        self.engine
+            .identity()?
+            .sign_relay_challenge(url, origin, &nonce, expires)
+            .map_err(operation)
+    }
     pub fn export_read_key(&self) -> Result<js_sys::Uint8Array> {
         let bytes = self.engine.export_read_key()?;
         // Copy into JS before the zeroizing Rust allocation is released.

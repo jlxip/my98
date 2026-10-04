@@ -86,6 +86,12 @@ export function setupDisk(host) {
         const [file]=await host.pickFiles();if(!file)return;
         capturing=true;syncControls(true);const description=await session.createFromImage(file);download(description.download);
     });
+    $("relay-key").onclick=()=>run("Copying relay public key…",async()=>{
+        const publicKey=await session.client.relayPublicKey();
+        const text=Array.from(publicKey,b=>b.toString(16).padStart(2,'0')).join('');
+        await navigator.clipboard.writeText(text);
+        message("Relay public key copied.");
+    });
     $("empty").onclick=()=>{
         if(!session.client || session.description || working || host.busy())return;
         $("empty-form").hidden=false;$("empty").setAttribute("aria-expanded","true");$("empty-size").focus();
@@ -198,5 +204,6 @@ export function setupDisk(host) {
         $("cache-notice").hidden=true;$("password").value="";$("autoboot").checked=true;$("cold-login").checked=false;$("empty-size").value="1024";
         message("");
     });
-    return {syncControls};
+    return {syncControls,relaySigner:()=>session.client,
+        relayGateways:async()=>((await session.client?.readStats())?.remote?.endpoints || []).map(e=>e.url)};
 }

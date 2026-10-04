@@ -8,12 +8,41 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import urllib.error
 import urllib.request
 
 KUBO = {
     ('Linux', 'x86_64'): ('linux-amd64', '6af21cd24a307d94326807b3d3827064c74fb7122f83b6940af250e6ae40da250e0ec0e1f3551256b78cd204623ed56c32ce735bbe28bdcc787b36943c52458a'),
     ('Darwin', 'arm64'): ('darwin-arm64', '2377bc886b340087b20d5a9bdd025e5a6ed4b7e910ac04fa0d0e26f5b7e189b31a33f6cc682c0aaec2695a65b8a38d1f5bfce505c2948c0ea08ee64009034ef6'),
 }
+
+
+def download_kubo(archive, expected):
+    urls = (
+        'https://dist.ipfs.tech/kubo/v0.43.0/' + archive.name,
+        'https://github.com/ipfs/kubo/releases/download/v0.43.0/' + archive.name,
+    )
+    partial = archive.with_suffix(archive.suffix + '.download')
+    errors = []
+    for url in urls:
+        print(f'Clean CI: downloading pinned Kubo from {url}', flush=True)
+        try:
+            digest = hashlib.sha512()
+            with urllib.request.urlopen(url, timeout=30) as response, partial.open('wb') as output:
+                while chunk := response.read(1024 * 1024):
+                    digest.update(chunk)
+                    output.write(chunk)
+        except (OSError, urllib.error.URLError) as error:
+            partial.unlink(missing_ok=True)
+            errors.append(f'{url}: {error}')
+            print(f'Clean CI: Kubo download failed: {error}', flush=True)
+            continue
+        if digest.hexdigest() != expected:
+            partial.unlink(missing_ok=True)
+            raise RuntimeError('Kubo archive checksum mismatch')
+        partial.replace(archive)
+        return
+    raise RuntimeError('Kubo download failed from all official sources: ' + '; '.join(errors))
 
 
 def git(root, *args):
@@ -72,14 +101,11 @@ def main():
             target, expected = KUBO[(platform.system(), platform.machine())]
             tools = source / 'build/ipfs-tools'; tools.mkdir(parents=True)
             archive = tools / f'kubo_v0.43.0_{target}.tar.gz'
-            print('Clean CI: downloading pinned Kubo 0.43.0', flush=True)
-            urllib.request.urlretrieve('https://dist.ipfs.tech/kubo/v0.43.0/' + archive.name, archive)
-            if hashlib.sha512(archive.read_bytes()).hexdigest() != expected:
-                raise RuntimeError('Kubo archive checksum mismatch')
+            download_kubo(archive, expected)
             with tarfile.open(archive) as package:
                 package.extractall(tools, filter='data')
             run(str(tools / 'kubo/ipfs'), 'version')
-            run('make', 'site-test')
+            run('make', 'site-test', 'agent-test')
             shutil.copytree(source / 'build/site', result / 'site')
             print('Clean CI: PASS', flush=True)
         finally:

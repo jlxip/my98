@@ -24,6 +24,8 @@ export class Slop86Crypto {
     sealMetadata(disk: number, bytes: Uint8Array): Promise<EncryptedObject>;
     openMetadata(disk: number, envelope: Uint8Array): Promise<Uint8Array>;
     sign(identity: number, message: Uint8Array): Promise<Uint8Array>;
+    relayPublicKey(identity: number): Promise<Uint8Array>;
+    signRelayChallenge(identity: number, challenge: {url:string;origin:string;nonce:Uint8Array;expires:number}): Promise<Uint8Array>;
     verify(publicKey: Uint8Array, message: Uint8Array, signature: Uint8Array): Promise<boolean>;
     cid(bytes: Uint8Array): Promise<string>;
     closeDisk(disk: number): Promise<void>;

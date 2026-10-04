@@ -76,6 +76,8 @@ export class Slop86Crypto {
     sealMetadata(disk, bytes) { return this.#request("sealMetadata", { disk, bytes: copy(bytes) }); }
     openMetadata(disk, envelope) { return this.#request("openMetadata", { disk, envelope: copy(envelope) }); }
     sign(identity, message) { return this.#request("sign", { identity, message: copy(message) }); }
+    relayPublicKey(identity) { return this.#request("relayPublicKey", {identity}); }
+    signRelayChallenge(identity, {url,origin,nonce,expires}) { return this.#request("signRelayChallenge", {identity,url,origin,nonce:copy(nonce),expires}); }
     verify(publicKey, message, signature) { return this.#request("verify", { publicKey: copy(publicKey), message: copy(message), signature: copy(signature) }); }
     cid(bytes) { return this.#request("cid", { bytes: copy(bytes) }); }
     closeDisk(disk) { return this.#request("closeDisk", { disk }); }

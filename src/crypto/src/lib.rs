@@ -129,6 +129,7 @@ fn unit_nonce(unit: &[u8]) -> Result<[u8; 12]> {
 #[derive(Clone)]
 pub struct Identity {
     signing_seed: Zeroizing<[u8; 32]>,
+    relay_seed: Zeroizing<[u8; 32]>,
     master_key: Zeroizing<[u8; 32]>,
     public_key: [u8; 32],
     active: bool,
@@ -165,6 +166,7 @@ pub fn derive_identity(username: &str, password: Vec<u8>, machine: &str) -> Resu
         .hash_password_into_with_memory(&password, &salt[..16], master.as_mut(), &mut memory)
         .map_err(|_| "Key derivation failed".to_owned())?;
     let signing_seed = expand(master.as_ref(), b"slop86/keys/v1", b"slop86/signing/v1");
+    let relay_seed = expand(master.as_ref(), b"slop86/keys/v1", b"my98/relay-signing/v1");
     let master_key = expand(
         master.as_ref(),
         b"slop86/keys/v1",
@@ -175,6 +177,7 @@ pub fn derive_identity(username: &str, password: Vec<u8>, machine: &str) -> Resu
         .to_bytes();
     Ok(Identity {
         signing_seed,
+        relay_seed,
         master_key,
         public_key,
         active: true,
@@ -193,6 +196,28 @@ impl Identity {
     pub fn public_key(&self) -> Result<Vec<u8>> {
         self.check()?;
         Ok(self.public_key.to_vec())
+    }
+    pub fn relay_public_key(&self) -> Result<Vec<u8>> {
+        self.check()?;
+        Ok(SigningKey::from_bytes(&self.relay_seed)
+            .verifying_key()
+            .to_bytes()
+            .to_vec())
+    }
+    /// A relay key can only sign this versioned authentication domain.
+    pub fn sign_relay_challenge(
+        &self,
+        url: &str,
+        origin: &str,
+        nonce: &[u8],
+        expires: u64,
+    ) -> Result<Vec<u8>> {
+        self.check()?;
+        let message = relay_challenge(&self.relay_public_key()?, url, origin, nonce, expires)?;
+        Ok(SigningKey::from_bytes(&self.relay_seed)
+            .sign(&message)
+            .to_bytes()
+            .to_vec())
     }
     pub fn ipns_name(&self) -> Result<String> {
         self.check()?;
@@ -243,9 +268,41 @@ impl Identity {
     }
     pub fn close(&mut self) {
         self.signing_seed.zeroize();
+        self.relay_seed.zeroize();
         self.master_key.zeroize();
         self.active = false;
     }
+}
+
+/// Length-delimited fields, including fixed-size fields, in network byte order.
+pub fn relay_challenge(
+    public: &[u8],
+    url: &str,
+    origin: &str,
+    nonce: &[u8],
+    expires: u64,
+) -> Result<Vec<u8>> {
+    if public.len() != 32
+        || nonce.len() != 32
+        || url.len() > 2048
+        || origin.len() > 2048
+        || !url.starts_with("wss://")
+        || !(origin.starts_with("https://") || origin.starts_with("http://"))
+    {
+        return Err("Invalid relay challenge".into());
+    }
+    let mut bytes = b"my98/relay-challenge/v1\0".to_vec();
+    for field in [
+        public,
+        url.as_bytes(),
+        origin.as_bytes(),
+        nonce,
+        &expires.to_be_bytes(),
+    ] {
+        bytes.extend_from_slice(&(field.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(field);
+    }
+    Ok(bytes)
 }
 impl Drop for Identity {
     fn drop(&mut self) {

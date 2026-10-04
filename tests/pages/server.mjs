@@ -24,6 +24,11 @@ export async function serveSite(options = {}) {
                 });
             }
             let bytes = await readFile(file);
+            // General VM fixtures have no relay. Answer before the page's fetch
+            // reaches a service worker or a production seeder. Relay tests opt in
+            // to their own discovery mocks instead.
+            if(relative === "index.html" && !options.relayDiscovery)
+                bytes = Buffer.from(bytes.toString().replace("<head>", `<head><script>(${offlineRelayDiscovery.toString()})();</script>`));
             if(relative === "coi-serviceworker.js" && options.revision)
                 bytes = Buffer.concat([bytes, Buffer.from("\n// Test update " + options.revision)]);
             const type = ({ ".js": "text/javascript", ".mjs": "text/javascript", ".wasm": "application/wasm", ".html": "text/html", ".css": "text/css" })[extname(file)] || "application/octet-stream";
@@ -48,6 +53,18 @@ export async function serveSite(options = {}) {
             server.closeAllConnections();
             await new Promise(r => server.close(r));
         },
+    };
+}
+
+export function offlineRelayDiscovery() {
+    const fetch = globalThis.fetch.bind(globalThis);
+    globalThis.fetch = (input, options) => {
+        const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url, location.href);
+        if(url.pathname === "/.well-known/my98-relay.json")
+            return Promise.resolve(new Response(JSON.stringify({version: 1, relay: null}), {
+                headers: {"Content-Type": "application/json"},
+            }));
+        return fetch(input, options);
     };
 }
 

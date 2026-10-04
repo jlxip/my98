@@ -12,6 +12,17 @@ let diskBlocked = false;
 let directPreferred = false;
 setupControlIcons();
 let diskController, machineAdapter, machineConfig = {...DEFAULT_CONFIG};
+function relayState(state) {
+    const labels={connecting:'Connecting Internet…',online:'Internet connected.',offline:'Internet disconnected. Reconnecting…',rejected:'Internet access rejected. Authorize your relay public key and retry.','identity-closed':'Internet disconnected.',closed:'Internet disconnected.'};
+    $("relay-status").textContent=labels[state] || 'Internet disconnected.';
+    $("relay-retry").hidden=!['offline','rejected'].includes(state);
+}
+$("relay-retry").onclick=()=>emulator?.network_adapter?.retry();
+const relayOptions=()=>({relaySigner:diskController?.relaySigner(),
+    relayGateways:()=>diskController?.relayGateways(),
+    onRelayState:(state,network)=>{
+    if(!emulator || emulator.network_adapter===network)relayState(state);
+}});
 function status(message, error = false)
 {
     const target = $("session").hidden ? $("welcome-status") : $("session-status");
@@ -240,7 +251,8 @@ async function start(diskAdapter, name, autoFullscreen = true)
         status("Preparing Windows…");
         machineConfig = {...DEFAULT_CONFIG};
         machineAdapter = diskAdapter;
-        emulator = await createMachine(diskAdapter, machineConfig, $("screen_container"));
+        emulator = await createMachine(diskAdapter, machineConfig, $("screen_container"),relayOptions());
+        relayState(emulator.network_adapter?.status || 'identity-closed');
         diskName = name;
         $("disk-name").textContent = diskName;
         $("disk-name").title = diskName;
@@ -414,7 +426,7 @@ diskController = setupDisk({
             const restored=await restoreMachineState({disk,input,signal,
                 current:previous ? {machine:previous,adapter:previousAdapter} : null,
                 compatibility:await compatibility(),
-                createMachine:(adapter,config)=>createMachine(adapter,config,container),
+                createMachine:(adapter,config)=>createMachine(adapter,config,container,relayOptions()),
                 onDiskError:async error=>{diskBlocked=true;if(emulator)await emulator.stop();status(error.message,true);updateControls();},
             });
             directPreferred=false;direct.deactivate();touch.release();
@@ -424,6 +436,7 @@ diskController = setupDisk({
             text.id="screen";canvas.id="vga";
             $("screen_container").replaceChildren(text,canvas);
             emulator=restored.machine;machineAdapter=restored.adapter;machineConfig=restored.config;
+            relayState(emulator.network_adapter?.status || 'identity-closed');
             diskBlocked=false;$("session").hidden=false;
             for(const drive of Object.keys(media))media[drive]=null;
             diskName="Restored state";$("disk-name").textContent=diskName;$("disk-name").title=diskName;

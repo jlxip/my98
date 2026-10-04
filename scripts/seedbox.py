@@ -1274,13 +1274,15 @@ def main(argv=None):
         "and refuses manual seedbox entries. It cannot detect arbitrary wrappers or atomically "
         "exclude other crontab editors. Paths/options cannot contain newlines or %. "
         "It does not install/start cron or Kubo; keep the script and executables at their current paths.")
-    parser.add_argument("command", choices=("login", "add", "sync", "status", "publish", "publish-state", "clear-state", "publish-profile", "clear-profiles", "setup-cron"))
+    parser.add_argument("command", choices=("login", "add", "sync", "status", "publish", "publish-state", "clear-state", "publish-profile", "clear-profiles", "setup-cron", "relay-allow", "relay-revoke", "relay-status"))
     parser.add_argument("target", nargs="?", help="Public IPNS key for add; disk file for publish; state file for publish-state; profile JSON for publish-profile")
     parser.add_argument("--key", default="my98", help="Existing Kubo publication key (default: my98)")
     parser.add_argument("--names", help="Names file (default: STATE/names.txt)")
     parser.add_argument("--state", default="~/.local/my98", help="State directory (default: ~/.local/my98)")
     parser.add_argument("--api", default="/ip4/127.0.0.1/tcp/5001", help="Kubo API multiaddress")
     parser.add_argument("--ipfs", help="Kubo executable (default: automatic, including IPFS Desktop)")
+    relay_runtime = "/var/run" if sys.platform.startswith("openbsd") else "/run"
+    parser.add_argument("--relay-socket", default=relay_runtime + "/my98-relay/admin.sock", help="Local relay administration Unix socket")
     args = parser.parse_args(argv)
     if args.command in ("add", "publish", "publish-state", "publish-profile") and not args.target:
         parser.error(args.command + " requires " + {"add":"a public IPNS key", "publish":"a disk file", "publish-state":"a state file", "publish-profile":"a profile JSON file"}[args.command])
@@ -1288,6 +1290,29 @@ def main(argv=None):
         parser.error(args.command + " does not accept a target")
     os.umask(0o077)
     try:
+        if args.command.startswith("relay-"):
+            import socket
+            command = args.command.removeprefix("relay-")
+            if command == "status" and args.target:
+                parser.error("relay-status does not accept a target")
+            if command != "status" and (not args.target or not re.fullmatch(r"[0-9a-f]{64}", args.target)):
+                parser.error(args.command + " requires a 64-character lowercase hexadecimal public key")
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                connection.settimeout(5)
+                connection.connect(args.relay_socket)
+                connection.sendall((json.dumps({"command":command, "public_key":args.target or ""}) + "\n").encode())
+                with connection.makefile("rb") as reader:
+                    raw = reader.readline(8193)
+                if len(raw) > 8192 or not raw.endswith(b"\n"):
+                    raise Failure("Invalid relay administration response")
+                try:
+                    result = json.loads(raw)
+                except (ValueError, UnicodeError):
+                    raise Failure("Invalid relay administration response") from None
+                if not result.get("ok"):
+                    raise Failure("Relay administration request failed")
+                print(json.dumps(result, indent=2))
+            return 0
         store = Store(Path(args.state).expanduser())
         store.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         if args.command == "status":

@@ -1,0 +1,12 @@
+#!/bin/ksh
+daemon="/bin/sh"
+daemon_flags="/usr/local/lib/my98-relay/supervise.sh"
+daemon_user="my98-relay"
+daemon_logger="daemon.info"
+. /etc/rc.d/rc.subr
+rc_bg=YES
+rc_reload=NO
+rc_pre() {
+    install -d -m 0700 -o my98-relay -g my98-relay /var/run/my98-relay
+}
+rc_cmd $1

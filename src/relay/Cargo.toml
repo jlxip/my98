@@ -1,0 +1,28 @@
+[package]
+name = "my98-relay"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+publish = false
+license = "GPL-3.0-only"
+
+[workspace]
+
+[dependencies]
+slop86-crypto = { path = "../crypto" }
+tokio = { version = "=1.43.0", features = ["rt-multi-thread", "macros", "net", "sync", "time", "io-util", "signal"] }
+tokio-tungstenite = "=0.26.2"
+futures-util = { version = "=0.3.31", features = ["sink"] }
+serde = { version = "=1.0.219", features = ["derive"] }
+serde_json = "=1.0.140"
+hex = "=0.4.3"
+getrandom = "=0.2.16"
+
+[build-dependencies]
+cc = "=1.2.16"
+pkg-config = "=0.3.32"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"

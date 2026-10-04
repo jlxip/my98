@@ -10,5 +10,5 @@ if ! git diff --quiet --ignore-submodules=none; then
 fi
 
 # The clean runner snapshots this exact index before clearing Git's hook environment.
-printf '%s\n' 'Running the GitHub Pages test suite from a clean staged snapshot...'
+printf '%s\n' 'Running the site and agent CLI test suites from a clean staged snapshot...'
 exec python3 scripts/clean-site-test.py

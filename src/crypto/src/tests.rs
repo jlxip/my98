@@ -15,6 +15,53 @@ fn identity() -> &'static Identity {
     })
 }
 #[test]
+fn relay_key_domain_and_erasure() {
+    let mut owner = identity().clone();
+    let public = owner.relay_public_key().unwrap();
+    assert_eq!(
+        hex::encode(&public),
+        "cff2c6f1b5378682d0f31435963eaa1ee61c9315ed080c045f0c3856df904b49"
+    );
+    assert_ne!(public, owner.public_key().unwrap());
+    let url = "wss://relay.example/my98-relay/v1";
+    let origin = "https://my98.lol";
+    let nonce = [42; 32];
+    let signature = owner
+        .sign_relay_challenge(url, origin, &nonce, 123456)
+        .unwrap();
+    let message = relay_challenge(&public, url, origin, &nonce, 123456).unwrap();
+    assert!(verify(&public, &message, &signature));
+    for (u, o, n, e) in [
+        ("wss://other.example/my98-relay/v1", origin, nonce, 123456),
+        (url, "https://other.example", nonce, 123456),
+        (url, origin, [43; 32], 123456),
+        (url, origin, nonce, 123457),
+    ] {
+        assert!(!verify(
+            &public,
+            &relay_challenge(&public, u, o, &n, e).unwrap(),
+            &signature
+        ));
+    }
+    let read = owner.export_read_key().unwrap();
+    assert_ne!(
+        public,
+        SigningKey::from_bytes(&expand(
+            &read[32..],
+            b"slop86/keys/v1",
+            b"my98/relay-signing/v1"
+        ))
+        .verifying_key()
+        .to_bytes()
+    );
+    owner.close();
+    assert_eq!(*owner.relay_seed, [0; 32]);
+    assert!(owner.relay_public_key().is_err());
+    assert!(owner
+        .sign_relay_challenge(url, origin, &nonce, 123456)
+        .is_err());
+}
+#[test]
 fn official_sha256_hkdf_vectors() {
     assert_eq!(
         hex::encode(Sha256::digest(b"abc")),

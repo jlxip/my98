@@ -1,14 +1,52 @@
 #!/usr/bin/env python3
 import importlib.util
+import hashlib
+import io
 import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('clean_ci', Path(__file__).with_name('clean-site-test.py'))
 ci = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ci)
+
+
+class DownloadTest(unittest.TestCase):
+    def test_timeout_uses_official_mirror_and_checks_hash(self):
+        payload = b'verified archive'
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = Path(temporary) / 'kubo_v0.43.0_darwin-arm64.tar.gz'
+            with patch.object(ci.urllib.request, 'urlopen', side_effect=[
+                ci.urllib.error.URLError(TimeoutError('connection timed out')), io.BytesIO(payload),
+            ]) as request:
+                ci.download_kubo(archive, hashlib.sha512(payload).hexdigest())
+            self.assertEqual(archive.read_bytes(), payload)
+            self.assertEqual(request.call_count, 2)
+            self.assertTrue(request.call_args.args[0].startswith('https://github.com/ipfs/kubo/releases/download/v0.43.0/'))
+            self.assertEqual(request.call_args.kwargs['timeout'], 30)
+            self.assertFalse(archive.with_suffix('.gz.download').exists())
+
+    def test_bad_hash_fails_without_using_mirror(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = Path(temporary) / 'kubo.tar.gz'
+            with patch.object(ci.urllib.request, 'urlopen', return_value=io.BytesIO(b'corrupt')) as request:
+                with self.assertRaisesRegex(RuntimeError, 'checksum mismatch'):
+                    ci.download_kubo(archive, hashlib.sha512(b'expected').hexdigest())
+            self.assertEqual(request.call_count, 1)
+            self.assertFalse(archive.exists())
+            self.assertFalse(archive.with_suffix('.gz.download').exists())
+
+    def test_all_sources_fail_with_diagnostic_and_no_archive(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = Path(temporary) / 'kubo.tar.gz'
+            with patch.object(ci.urllib.request, 'urlopen', side_effect=ci.urllib.error.URLError('offline')) as request:
+                with self.assertRaisesRegex(RuntimeError, 'all official sources'):
+                    ci.download_kubo(archive, 'unused')
+            self.assertEqual(request.call_count, 2)
+            self.assertFalse(archive.exists())
 
 
 class SnapshotTest(unittest.TestCase):

@@ -54,6 +54,8 @@ function execute(op, a) {
     case "sealMetadata": return encrypted(disk(a.disk).seal_metadata(a.bytes));
     case "openMetadata": return disk(a.disk).open_metadata(a.envelope);
     case "sign": return identity(a.identity).sign(a.message);
+    case "relayPublicKey": return identity(a.identity).relay_public_key();
+    case "signRelayChallenge": return identity(a.identity).sign_relay_challenge(a.url,a.origin,a.nonce,BigInt(a.expires));
     case "verify": return verify(a.publicKey, a.message, a.signature);
     case "cid": return object_cid(a.bytes);
     case "closeDisk": disk(a.disk); dropDisk(a.disk); return null;

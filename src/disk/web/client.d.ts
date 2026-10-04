@@ -14,12 +14,15 @@ export interface PersistentCacheCounters {hits:number;misses:number;readBytes:nu
 export interface PersistentCacheStats {enabled:{state:boolean;loadProfile:boolean;publication?:boolean;disk?:boolean};available:boolean;stale?:boolean;disk?:PersistentCacheCounters;queuedBytes:number;pendingWrites:number;state:PersistentCacheCounters;loadProfile:PersistentCacheCounters;}
 export interface RemoteStats {persistentCache:PersistentCacheStats;stateTransport?:{mode:"blocks"|"car";lanes:number;bytes:number;fallback:boolean;gateway?:string;fallbackAt?:number;reason?:string;active:number};loadProfile?:LoadProfileStats;endpoints:EndpointStats[];discovery:DiscoveryStats;rangeProfile?:{ranges:number;units:number;completedUnits:number};retainedBytes:number;coveredBytes:number;totalBytes:number;completedUnits:number;totalUnits:number;inFlight:number;queued:number;prefetchState:'idle'|'running'|'paused'|'stopped'|'suspended'|'complete'|'closed';prefetchError?:{code:string;message:string};policy:string;concurrency:number;traceDropped:number;}
 export interface DiskTraceEvent {type:string;unit?:number;policy?:string;time:number;offset?:number;length?:number;ms?:number;cid?:string;gateway?:string;priority?:string;hit?:boolean;bytes?:number;code?:string;}
-export interface QueryServer {url:string;resolution:'gateway'|'routing'|false;discovery:boolean;}
+export interface QueryServer {url:string;resolution:'gateway'|'routing'|false;discovery:boolean;relay?:string;}
 /** Extract the public identity from a v2 credential, validating its encoding. */
 export function readOnlyPublicKey(readKey:string):Uint8Array;
 export class Slop86Disk {
  static create(options?:{workerUrl?:URL|string;onProgress?:(progress:{phase:string;completed:number;total:number;readBytes:number;readCalls:number})=>void;onAnalysis?:(event:{type:'analysis';error:string})=>void}):Promise<Slop86Disk>;
  unlock(username:string,password:string,machine:string):Promise<{ipnsName:string;publicKey:number[]}>;
+ relayPublicKey():Promise<Uint8Array>;
+ onClosed(listener:()=>void):()=>void;
+ signRelayChallenge(challenge:{url:string;origin:string;nonce:Uint8Array;expires:number}):Promise<Uint8Array>;
  createFromImage(file:File|Blob):Promise<SavedDisk>;
  createEmpty(sizeBytes:number):Promise<SavedDisk>;
  open(file:File|Blob):Promise<DiskState>;

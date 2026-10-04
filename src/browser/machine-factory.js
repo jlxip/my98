@@ -1,4 +1,6 @@
 import {V86} from "../../build/libv86.mjs";
+import {RelayNetworkAdapter} from "./relay-network.js";
+import {discoverRelay} from "../disk/web/relay-discovery.js";
 
 let compatibilityPromise;
 export function compatibility() {
@@ -14,7 +16,7 @@ async function readAsset(path) {
     return response.arrayBuffer();
 }
 
-export async function createMachine(diskAdapter, config, container) {
+export async function createMachine(diskAdapter, config, container, {disableSpeaker = false, relaySigner, onRelayState, relayURL, relayGateways} = {}) {
     await compatibility();
     const hda = {disk_adapter:diskAdapter};
     const [bios, vgaBios, wasm] = await Promise.all([
@@ -31,9 +33,9 @@ export async function createMachine(diskAdapter, config, container) {
         vga_memory_size: config.vga_memory_size,
         bios: {buffer:bios}, vga_bios: {buffer:vgaBios},
         hda, boot_order: 0x312, acpi: false,
-        net_device: {type:"ne2k", relay_url:"wss://relay.widgetry.org/", mtu:1500},
+        net_device: {type:"ne2k", mtu:1500}, mac_address_translation: true,
         screen: {container, use_graphical_text:false},
-        disable_speaker: false, autostart: false,
+        disable_speaker: disableSpeaker, autostart: false,
     });
     try {
         await new Promise((resolve, reject) => {
@@ -50,5 +52,10 @@ export async function createMachine(diskAdapter, config, container) {
             vm.add_listener("download-error", failed);
         });
     } catch(error) { await vm.destroy(); throw error; }
+    if(relaySigner) {
+        vm.network_adapter=new RelayNetworkAdapter(vm.bus,{url:relayURL,
+            resolveURL:async signal=>discoverRelay({signal,gateways:await relayGateways?.() || []}),
+            signer:relaySigner,onState:onRelayState});
+    } else onRelayState?.('identity-closed');
     return vm;
 }

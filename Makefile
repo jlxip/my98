@@ -52,7 +52,7 @@ disk-test-browser: emulator disk
 	node src/disk/browser-tests/run.mjs
 
 test-stop: prepare-emulator
-	node tests/api/stop.js
+	$(MAKE) -C build/slop86 stop-test
 
 .PHONY: parallel-test parallel-test-browser discovery-test discovery-test-browser resolution-test resolution-test-browser
 parallel-test: node_modules/.package-lock.json
@@ -110,9 +110,11 @@ site: all
 
 site-test: site
 	PYTHONDONTWRITEBYTECODE=1 python3 scripts/clean-site-test.test.py
+	PYTHONDONTWRITEBYTECODE=1 python3 tests/prepare-emulator.test.py
 	PYTHONDONTWRITEBYTECODE=1 python3 tests/server_test.py
 	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo run --manifest-path src/disk/Cargo.toml --locked --release --example compat
 	node --test scripts/run-browser-test.test.mjs
+	node --test tests/pages/server.test.mjs
 	node --test src/disk/scripts/network.test.mjs
 	node --test src/disk/scripts/state-stream.test.mjs
 	node --test src/disk/scripts/car.test.mjs
@@ -148,6 +150,13 @@ site-test: site
 	node scripts/run-browser-test.mjs tests/pages/display.mjs
 
 .PHONY: state-test
+.PHONY: agent-test
+agent-test: site
+	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo build --manifest-path src/disk/Cargo.toml --locked --release --example compat
+	node --test tests/agent.test.mjs
+	node scripts/run-browser-test.mjs tests/agent-integration.mjs
+	node scripts/run-browser-test.mjs tests/agent-cold-init.mjs
+
 state-test: site
 	node --test src/disk/scripts/network.test.mjs
 	node --test src/disk/scripts/state-stream.test.mjs
@@ -163,3 +172,17 @@ state-test: site
 	node scripts/run-browser-test.mjs tests/pages/state-api.mjs
 	node scripts/run-browser-test.mjs tests/pages/state-large.mjs
 	node scripts/run-browser-test.mjs tests/pages/state.mjs
+
+.PHONY: relay relay-test relay-test-browser
+relay:
+	CARGO_TARGET_DIR="$(CURDIR)/build/relay-target" cargo build --manifest-path src/relay/Cargo.toml --locked --release --jobs 1
+
+relay-test:
+	CARGO_TARGET_DIR="$(CURDIR)/build/relay-target" cargo test --manifest-path src/relay/Cargo.toml --locked
+	node --test tests/relay-network.test.mjs
+	node --test tests/relay-discovery.test.mjs
+	PYTHONDONTWRITEBYTECODE=1 python3 tests/relay-deploy.test.py
+	PYTHONDONTWRITEBYTECODE=1 python3 tests/seedbox-relay.test.py
+
+relay-test-browser: site
+	node scripts/run-browser-test.mjs tests/pages/relay.mjs

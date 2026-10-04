@@ -23,6 +23,7 @@ export class Slop86Disk {
     constructor(url, onProgress, onAnalysis) {
         this.worker = new Worker(url, { type: "module" });
         this.pending = new Map(); this.next = 0; this.closed = false; this.cancelEpoch = 0;
+        this.closeListeners = new Set();
         if(globalThis.crossOriginIsolated && typeof SharedArrayBuffer !== "undefined") {
             this.cancelView = new Int32Array(new SharedArrayBuffer(4));
             this.worker.postMessage({ op: "configure", buffer: this.cancelView.buffer });
@@ -44,6 +45,13 @@ export class Slop86Disk {
         clearTimeout(this.timer); this.readyReject(error);
         for(const pending of this.pending.values()) pending.reject(error);
         this.pending.clear(); this.closed = true; this.worker.terminate();
+        for(const listener of this.closeListeners) {try {listener();}catch {}}
+        this.closeListeners.clear();
+    }
+    onClosed(listener) {
+        if(this.closed) {queueMicrotask(listener);return ()=>{};}
+        this.closeListeners.add(listener);
+        return ()=>this.closeListeners.delete(listener);
     }
     async call(op, args = {}, transfer = []) {
         const epoch = this.cancelEpoch;
@@ -62,6 +70,8 @@ export class Slop86Disk {
         return this.call("unlock", {username,password:bytes,machine}, [bytes.buffer]);
     }
     createFromImage(file) {return this.call("create", {file});}
+    relayPublicKey() {return this.call("relayPublicKey");}
+    signRelayChallenge(challenge) {return this.call("signRelayChallenge", challenge);}
     createEmpty(sizeBytes) {return this.call("createEmpty", {sizeBytes});}
     open(file) {return this.call("open", {file});}
     openRemote({gateway, servers, onlyLocalhost = false, prefetch, persistentCache = {}} = {}) {return this.call("openRemote", {gateway,servers,onlyLocalhost,prefetch,persistentCache});}
