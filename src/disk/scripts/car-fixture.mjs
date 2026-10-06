@@ -17,7 +17,7 @@ export function carBytes(blocks,root,offset,length) {
     }
     visit(root,offset,offset+length);return join(parts);
 }
-export async function carFixture({nested=false,protobuf=false,inline=false,duplicate=false}={}) {
+export async function carFixture({nested=false,protobuf=false,inline=false,duplicate=false,count=24}={}) {
     const blocks=new Map();
     const put=async(bytes,code=0x55)=>{const cid=CID.createV1(code,await sha256.digest(bytes));blocks.set(cid.toString(),bytes);return {cid,size:bytes.length};};
     const node=async(children,data)=>{
@@ -26,7 +26,7 @@ export async function carFixture({nested=false,protobuf=false,inline=false,dupli
         return {...value,size:Number(file.fileSize())};
     };
     const leaves=[],bytes=[];
-    for(let i=0;i<24;i++) {
+    for(let i=0;i<count;i++) {
         const b=new Uint8Array(262144);b.fill(duplicate?7:i);bytes.push(b);
         leaves.push(protobuf?await node([],b):await put(b));
     }

@@ -136,7 +136,7 @@ const wait=(ms,signal)=>new Promise((resolve,reject)=>{
     signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted)abort();
 });
 
-export async function* parallelCarState({cid,size,signal,lanes,candidates,discovering,failed,acquire,onNetwork,onEvent,timeoutMs,onSelected,onBlock}) {
+export async function* parallelCarState({cid,size,prefixBytes=0,signal,lanes,candidates,discovering,failed,acquire,onNetwork,onEvent,timeoutMs,onSelected,onBlock}) {
     const controller=new AbortController(),abort=()=>controller.abort();signal?.addEventListener('abort',abort,{once:true});
     const selectedSignal=controller.signal,probes=new Map(),tried=new Set(),readers=[];
     const count=Math.min(L.lanes,lanes,Math.ceil(size/1048576));
@@ -155,11 +155,37 @@ export async function* parallelCarState({cid,size,signal,lanes,candidates,discov
                 const local=new AbortController(),cancel=()=>local.abort();selectedSignal.addEventListener('abort',cancel,{once:true});
                 const iterator=make(gateway,ranges[0],local.signal);
                 const probe={gateway,local,iterator,cancel};
-                probe.promise=iterator.next().then(first=>({probe,first}),error=>({probe,error}));probes.set(gateway,probe);
+                probe.started=performance.now();probe.useful=0;
+                const target=prefixBytes&&lanes>1&&(candidates().length>1||discovering())?Math.min(prefixBytes,ranges[0].length):0;
+                probe.promise=(async()=>{
+                    const prefix=probe.prefix=[];let useful=0;const samplingEnd=Math.min(performance.now()+750,performance.now()+Math.max(0,deadline-Date.now()));
+                    do {
+                        let item;
+                        if(prefix.length){
+                            const remaining=samplingEnd-performance.now();
+                            if(remaining<=0||!(candidates().length>1||discovering()))break;
+                            const pending=iterator.next();
+                            let timer;
+                            try{item=await Promise.race([pending,new Promise(resolve=>{probe.finish=()=>resolve();timer=setTimeout(probe.finish,remaining);})]);}
+                            finally{clearTimeout(timer);probe.finish=undefined;}
+                            if(!item){probe.pending=pending;break;}
+                        }else item=await iterator.next();
+                        if(item.done&&!prefix.length)return {probe,first:item};
+                        if(item.done)break;
+                        prefix.push(item.value);useful+=item.value.length;probe.useful=useful;
+                    }while(useful<target);
+                    onEvent?.('car-probe-prefix',{gateway,bytes:useful,target,samplingMs:750});
+                    return {probe,first:{done:false,value:prefix}};
+                })().catch(error=>{probe.error=error;return {probe,error};});probes.set(gateway,probe);
             }
             if(!probes.size&&(!discovering()||Date.now()>=deadline||tried.size>=4))throw fail('IO_ERROR','No CAR provider available');
-            if(Date.now()>=deadline)throw fail('IO_ERROR','CAR provider selection timed out');
-            const result=await Promise.race([...probes.values()].map(p=>p.promise).concat(wait(Math.min(100,deadline-Date.now()),signal)));
+            let result;
+            if(Date.now()>=deadline){
+                const now=performance.now(),ready=[...probes.values()].filter(p=>p.useful&&!p.error);
+                ready.sort((a,b)=>b.useful/Math.max(1,now-b.started)-a.useful/Math.max(1,now-a.started)||b.useful-a.useful);
+                if(!ready.length)throw fail('IO_ERROR','CAR provider selection timed out');
+                ready[0].finish?.();result=await ready[0].promise;
+            }else result=await Promise.race([...probes.values()].map(p=>p.promise).concat(wait(Math.min(100,deadline-Date.now()),signal)));
             if(!result)continue;
             probes.delete(result.probe.gateway);
             if(result.error||result.first.done) {
@@ -172,7 +198,7 @@ export async function* parallelCarState({cid,size,signal,lanes,candidates,discov
         for(const probe of probes.values()) {probe.local.abort();selectedSignal.removeEventListener('abort',probe.cancel);void probe.iterator.return?.().catch(()=>{});}
         probes.clear();onSelected?.(winner.gateway,ranges.length);
         const first=winner;
-        const iterators=ranges.map((range,i)=>i===0?(async function*(){yield first.first.value;yield* first.iterator;})():make(winner.gateway,range,selectedSignal));
+        const iterators=ranges.map((range,i)=>i===0?(async function*(){yield* first.first.value;if(first.pending){const item=await first.pending;if(!item.done)yield item.value;}yield* first.iterator;})():make(winner.gateway,range,selectedSignal));
         for(const iterator of iterators) {
             const stream=new ReadableStream({async pull(output) {
                 try {check(selectedSignal);const item=await iterator.next();if(item.done)output.close();else output.enqueue(item.value);}

@@ -105,6 +105,7 @@ export class PublishedStateTransport {
                 if(!cachedState&&remote.stateTransport==='auto'&&remote.concurrency>1&&total>=1048576&&entry.type==='file'&&entry.node?.Links?.length) {
                     try {
                         for await(const bytes of parallelCarState({cid:CID.parse(remote.stateCid),size:total,signal,
+                            prefixBytes:!entry.unixfs.data?.length&&entry.node.Links.every((link,i)=>link.Hash.code===0x55&&Number(entry.unixfs.blockSizes[i])>0&&Number(entry.unixfs.blockSizes[i])<=262144)?1048576:0,
                             lanes:Math.min(4,remote.concurrency-1),candidates:()=>remote.carCandidates(),
                             discovering:()=>remote.discovery.state==='running',acquire:s=>remote.acquireCarRequest(s),
                             timeoutMs:remote.timeoutMs,onNetwork:remote.onNetwork,
