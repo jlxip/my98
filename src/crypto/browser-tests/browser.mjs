@@ -19,29 +19,28 @@ export async function runCryptoTests(fixture) {
         const deriveMs = performance.now() - start;
         clearInterval(timer);
         check("derivation runs outside UI thread", ticks > 2);
-        check("native/browser stable IPNS identity", identity.ipnsName === fixture.ipns);
         check("native/browser public key", hex(identity.publicKey) === fixture.publicKey);
         check("native signature verifies", await client.verify(identity.publicKey, text("native signed"), bytes(fixture.signature)));
         check("altered signature message rejected", !await client.verify(identity.publicKey, text("changed"), bytes(fixture.signature)));
         const normalized = await client.deriveIdentity("café", fixture.password, "main");
-        check("Unicode NFC identity", normalized.ipnsName === identity.ipnsName);
+        check("Unicode NFC identity", hex(normalized.publicKey) === hex(identity.publicKey));
         await client.closeIdentity(normalized.handle);
         const wrong = await client.deriveIdentity(fixture.username, fixture.password.trim(), "main");
-        check("password whitespace preserved", wrong.ipnsName !== identity.ipnsName);
+        check("password whitespace preserved", hex(wrong.publicKey) !== hex(identity.publicKey));
         await rejects("wrong credentials cannot open descriptor", () => client.openDisk(wrong.handle, bytes(fixture.descriptor)));
         await client.closeIdentity(wrong.handle);
         const otherMachine = await client.deriveIdentity(fixture.username, fixture.password, "Main");
-        check("Machine is case-sensitive", otherMachine.ipnsName !== identity.ipnsName);
+        check("Machine is case-sensitive", hex(otherMachine.publicKey) !== hex(identity.publicKey));
         await rejects("other Machine cannot decrypt descriptor", () => client.openDisk(otherMachine.handle, bytes(fixture.descriptor)));
         await client.closeIdentity(otherMachine.handle);
         await rejects("empty Machine rejected", () => client.deriveIdentity(fixture.username, fixture.password, ""));
         const m1 = await client.deriveIdentity("u", "p", "máquina");
         const m2 = await client.deriveIdentity("u", "p", "ma\u0301quina");
-        check("Machine Unicode NFC", m1.ipnsName === m2.ipnsName);
+        check("Machine Unicode NFC", hex(m1.publicKey) === hex(m2.publicKey));
         await client.closeIdentity(m1.handle);await client.closeIdentity(m2.handle);
         const disk = await client.openDisk(identity.handle, bytes(fixture.descriptor));
         check("native bytes incl zero/slack/partial tail restored", hex(await client.openUnit(disk.handle, 0n, bytes(fixture.unit))) === fixture.plain);
-        check("native object CID interoperable", await client.cid(bytes(fixture.unit)) === fixture.cid);
+        check("native object hash interoperable", await client.hash(bytes(fixture.unit)) === fixture.sha256);
         check("native encrypted metadata opens", new TextDecoder().decode(await client.openMetadata(disk.handle, bytes(fixture.metadata))) === "native metadata");
         await rejects("unit substitution rejected", () => client.openUnit(disk.handle, 1n, bytes(fixture.unit)));
         await rejects("kind substitution rejected", () => client.openMetadata(disk.handle, bytes(fixture.unit)));
@@ -58,20 +57,20 @@ export async function runCryptoTests(fixture) {
         const first = await client.sealUnit(newDisk.handle, 0n, plain);
         const second = await client.sealUnit(newDisk.handle, 0n, plain);
         check("rewrites use new use salt", hex(first.bytes.slice(6, 38)) !== hex(second.bytes.slice(6, 38)));
-        check("same plaintext rewrite changes ciphertext CID", first.cid !== second.cid);
+        check("same plaintext rewrite changes ciphertext hash", first.sha256 !== second.sha256);
         check("input is not detached or modified", hex(plain) === fixture.plain);
-        check("transfer retry keeps immutable ciphertext CID", await client.cid(first.bytes) === first.cid);
+        check("transfer retry keeps immutable ciphertext hash", await client.hash(first.bytes) === first.sha256);
         check("browser exact roundtrip", hex(await client.openUnit(newDisk.handle, 0n, first.bytes)) === fixture.plain);
         const part0 = await client.sealUnit(newDisk.handle, 10n, plain.slice(0, 512));
         const part1 = await client.sealUnit(newDisk.handle, 11n, plain.slice(512, 1024));
         const rewritten1 = await client.sealUnit(newDisk.handle, 11n, plain.slice(512, 1024));
-        check("independent units retain their ciphertext CID", await client.cid(part0.bytes) === part0.cid && rewritten1.cid !== part1.cid);
+        check("independent units retain their ciphertext hash", await client.hash(part0.bytes) === part0.sha256 && rewritten1.sha256 !== part1.sha256);
         const empty = await client.sealUnit(newDisk.handle, (1n << 96n) - 1n, new Uint8Array());
         check("full 96-bit unit and empty content", (await client.openUnit(newDisk.handle, (1n << 96n) - 1n, empty.bytes)).length === 0);
         for(const invalid of [-1n, 1n << 96n, 1, "1"]) await rejects("invalid unit ID " + String(invalid), () => unitId(invalid));
         const metadata = await client.sealMetadata(newDisk.handle, text("browser metadata"));
         const signature = await client.sign(identity.handle, text("browser signed"));
-        const output = { ipns: identity.ipnsName, descriptor: hex(newDisk.descriptor), unit: hex(first.bytes),
+        const output = { publicKey: hex(identity.publicKey), descriptor: hex(newDisk.descriptor), unit: hex(first.bytes),
             plain: fixture.plain, metadata: hex(metadata.bytes), signature: hex(signature) };
         await client.closeDisk(disk.handle);
         await rejects("closed disk inaccessible", () => client.openUnit(disk.handle, 0n, bytes(fixture.unit)));
@@ -83,7 +82,7 @@ export async function runCryptoTests(fixture) {
         check("reopen using credentials and descriptor only", hex(await client.openUnit(recovered.handle, 0n, first.bytes)) === fixture.plain);
         check("no automatic browser persistence", localStorage.length === 0 && sessionStorage.length === 0 && (await indexedDB.databases()).length === 0);
         await client.close();
-        await rejects("closed client rejects operations", () => client.cid(first.bytes));
+        await rejects("closed client rejects operations", () => client.hash(first.bytes));
         const noRng = await Slop86Crypto.create({ workerUrl: new URL("/rng-disabled-worker.js", location.href) });
         try {
             const id = await noRng.deriveIdentity(fixture.username, fixture.password, "main");

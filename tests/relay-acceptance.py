@@ -1,7 +1,7 @@
 """Disposable Ethernet guest against a real relay; no passwords or seeds on disk.
 
 Use Python with tests/relay-requirements.txt. MY98_RELAY_ADMIN is a trusted
-shell-quoted command prefix for seedbox.py (executed without a shell). Tests
+shell-quoted command prefix for the installed relay administrator (executed without a shell). Tests
 authorize a random Ed25519 key and always revoke it in finally.
 """
 import argparse
@@ -47,7 +47,7 @@ def signed_bytes(public, challenge):
     return b'my98/relay-challenge/v1\0' + b''.join(struct.pack('!I', len(b))+b for b in fields)
 
 def admin(command, public=None):
-    prefix = shlex.split(os.environ.get('MY98_RELAY_ADMIN', 'python3 scripts/seedbox.py --relay-socket build/relay-pilot/admin.sock'))
+    prefix = shlex.split(os.environ['MY98_RELAY_ADMIN'])
     result = subprocess.run(prefix + ['relay-'+command] + ([public] if public else []), check=True, stdout=subprocess.PIPE, text=True)
     return json.loads(result.stdout)
 

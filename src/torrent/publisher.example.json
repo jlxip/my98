@@ -1,0 +1,37 @@
+{
+  "nodes": [
+    {
+      "name": "nuc",
+      "api": "https://nuc.jlxip.net:8444",
+      "peer": [
+        "nuc.jlxip.net",
+        51413
+      ]
+    },
+    {
+      "name": "piensa",
+      "api": "https://piensa.jlxip.net:8444",
+      "peer": [
+        "piensa.jlxip.net",
+        51413
+      ]
+    },
+    {
+      "name": "oregon",
+      "api": "https://oregon.jlxip.net:8444",
+      "peer": [
+        "oregon.jlxip.net",
+        51413
+      ]
+    }
+  ],
+  "trackers": [
+    "wss://nuc.jlxip.net:8444/tracker",
+    "wss://oregon.jlxip.net:8444/tracker"
+  ],
+  "webseeds": [
+    "https://nuc.jlxip.net:8444/content/",
+    "https://piensa.jlxip.net:8444/content/",
+    "https://oregon.jlxip.net:8444/content/"
+  ]
+}

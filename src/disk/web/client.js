@@ -1,3 +1,7 @@
+import {WindowTorrentPort} from "./torrent-port.js";
+import {WindowTorrents} from "./torrent-window.js";
+import {clearTorrentCache} from "./torrent-store.js";
+
 function decodeReadKey(readKey) {
     const invalid = message => Object.assign(new Error(message), {code:'INVALID_READ_KEY'});
     if(typeof readKey === 'string' && readKey.startsWith('my98-ro-v1.'))
@@ -24,6 +28,11 @@ export class Slop86Disk {
         this.worker = new Worker(url, { type: "module" });
         this.pending = new Map(); this.next = 0; this.closed = false; this.cancelEpoch = 0;
         this.closeListeners = new Set();
+        const channel=new MessageChannel();
+        this.torrentHost=new WindowTorrentPort(channel.port1,
+            (sources,onProgress)=>new WindowTorrents({sources,onProgress}),clearTorrentCache);
+        this.worker.postMessage({op:"torrentPort",port:channel.port2},[channel.port2]);
+        this.closeListeners.add(()=>{void this.torrentHost.close();});
         if(globalThis.crossOriginIsolated && typeof SharedArrayBuffer !== "undefined") {
             this.cancelView = new Int32Array(new SharedArrayBuffer(4));
             this.worker.postMessage({ op: "configure", buffer: this.cancelView.buffer });
@@ -74,22 +83,28 @@ export class Slop86Disk {
     signRelayChallenge(challenge) {return this.call("signRelayChallenge", challenge);}
     createEmpty(sizeBytes) {return this.call("createEmpty", {sizeBytes});}
     open(file) {return this.call("open", {file});}
-    openRemote({gateway, servers, onlyLocalhost = false, prefetch, persistentCache = {}} = {}) {return this.call("openRemote", {gateway,servers,onlyLocalhost,prefetch,persistentCache});}
+    openRemote(options={}) {return this.call("openRemote",options);}
+    async openRemoteReadOnly({readKey,...options}={}) {
+        const bytes=decodeReadKey(readKey);
+        try{return await this.call("openRemoteReadOnly",{...options,readKey:bytes},[bytes.buffer]);}
+        finally{if(bytes.byteLength)bytes.fill(0);}
+    }
+    preparePublishedState() {return this.call("prepareState",{published:true});}
     async exportReadOnlyKey() {
         const bytes = await this.call("exportReadOnlyKey");
         try { return "my98-ro-v2." + btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, ''); }
         finally { bytes.fill(0); }
     }
-    async openReadOnly({cid, readKey, gateway, servers, onlyLocalhost = false, prefetch, preloadState = false, stateTransport = 'auto', persistentCache = {}} = {}) {
+    async openReadOnly({file, readKey} = {}) {
         const bytes = decodeReadKey(readKey);
-        try { return await this.call("openReadOnly", {cid, readKey:bytes, gateway, servers, onlyLocalhost, prefetch, preloadState, stateTransport, persistentCache}, [bytes.buffer]); }
+        try { return await this.call("openReadOnly", {file, readKey:bytes}, [bytes.buffer]); }
         finally { if(bytes.byteLength) bytes.fill(0); }
     }
     describe() {return this.call("describe");}
     read(offset,length) {return this.call("read", {offset,length});}
     write(offset,data) {const bytes=new Uint8Array(data).slice();return this.call("write", {offset,bytes}, [bytes.buffer]);}
     saveState(state, metadata) {return this.call("saveState",{state,metadata},[state]);}
-    prepareState(input) {return this.call("prepareState",{input});}
+    prepareState(input) {return input?.publication===true?this.preparePublishedState():this.call("prepareState",{input});}
     commitState(token) {return this.call("commitState",{token});}
     discardState(token) {return this.call("discardState",{token});}
     stateDisk(token) {
@@ -121,7 +136,7 @@ export class Slop86Disk {
         this.worker.postMessage({ op: "cancel", epoch: this.cancelEpoch });
     }
     async close() {
-        if(!this.closed) { try { await this.call("close"); } finally { this.terminate(); } }
+        if(!this.closed) { this.cancel();try { await this.call("close"); } finally { this.terminate(); } }
     }
     terminate() { this.fail(new Error("Disk Worker closed")); }
 }

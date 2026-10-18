@@ -1,3 +1,4 @@
+import {diskAction} from "./encrypted.mjs";
 // Optional real-Windows acceptance, using only an existing public test fixture.
 import assert from "node:assert/strict";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
@@ -27,10 +28,9 @@ for(const mode of ["none", "worker", "headers"]) {
         await page.waitForFunction(() => document.body && !document.body.inert);
         const clock = await clockResolution(page);
         assert.equal(clock.isolated, mode !== "none");
-        await page.locator("#disk-autoboot").uncheck();
         await page.locator("#disk-user").fill("disk fixtures"); await page.locator("#disk-password").fill("public compatibility password");
         await page.locator("#disk-login button").click(); await page.locator("#disk-workspace").waitFor({ state: "visible" });
-        const chooser = page.waitForEvent("filechooser"); await page.locator("#disk-open").click(); await (await chooser).setFiles(encrypted);
+        const chooser = page.waitForEvent("filechooser"); await diskAction(page,"disk-open"); await (await chooser).setFiles(encrypted);
         await page.waitForFunction(() => !document.querySelector("#disk-boot").disabled);
         const started = Date.now(); await page.locator("#disk-boot").click();
         console.log(mode + ": boot started; clock " + JSON.stringify(clock));

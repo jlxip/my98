@@ -1,4 +1,4 @@
-import init, { derive_identity, verify, object_cid } from "../pkg/slop86_crypto.js";
+import init, { derive_identity, verify, object_hash } from "../pkg/slop86_crypto.js";
 
 const identities = new Map();
 const disks = new Map();
@@ -31,16 +31,16 @@ function dropIdentity(handle) {
 function addDisk(value, owner, descriptor) {
     const handle = ++nextHandle;
     disks.set(handle, { disk: value, owner });
-    return { handle, diskId: value.id(), descriptor, cid: object_cid(descriptor) };
+    return { handle, diskId: value.id(), descriptor, sha256: object_hash(descriptor) };
 }
-function encrypted(bytes) { return { bytes, cid: object_cid(bytes) }; }
+function encrypted(bytes) { return { bytes, sha256: object_hash(bytes) }; }
 function execute(op, a) {
     switch(op) {
     case "derive": {
         const value = derive_identity(a.username, a.password, a.machine);
         const handle = ++nextHandle;
         identities.set(handle, value);
-        return { handle, ipnsName: value.ipns_name(), publicKey: value.public_key() };
+        return { handle, publicKey: value.public_key() };
     }
     case "createDisk": {
         const owner = identity(a.identity);
@@ -57,7 +57,7 @@ function execute(op, a) {
     case "relayPublicKey": return identity(a.identity).relay_public_key();
     case "signRelayChallenge": return identity(a.identity).sign_relay_challenge(a.url,a.origin,a.nonce,BigInt(a.expires));
     case "verify": return verify(a.publicKey, a.message, a.signature);
-    case "cid": return object_cid(a.bytes);
+    case "hash": return object_hash(a.bytes);
     case "closeDisk": disk(a.disk); dropDisk(a.disk); return null;
     case "closeIdentity": identity(a.identity); dropIdentity(a.identity); return null;
     case "shutdown": for(const handle of identities.keys()) dropIdentity(handle); stopped = true; return null;

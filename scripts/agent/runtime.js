@@ -1,8 +1,8 @@
-import {Slop86Disk,DiskBuffer} from '/build/disk/web/client.js';
+import {DiskBuffer} from '/build/disk/web/client.js';
 import {createMachine,compatibility} from '/src/browser/machine-factory.js';
-import {validateConfig,DEFAULT_CONFIG} from '/src/browser/machine-state.js';
+import {validateConfig} from '/src/browser/machine-state.js';
 import {chordCodes,textCodes} from './input.js';
-let vm,adapter,config,source,pendingState;
+let vm,adapter,config,pendingState;
 const headers=()=>({'X-My98-Agent':globalThis.agentToken});
 async function request(route,{method='GET',body,offset}={}){
     const response=await fetch('/_agent/'+route,{method,headers:{...headers(),...(offset!==undefined?{'X-Offset':String(offset)}:{})},body});
@@ -30,41 +30,6 @@ function requireRunning(){requireVM();if(!vm.is_running())throw new Error('Machi
 async function releaseInput(){if(!vm)return;await vm.keyboard_send_scancodes([...Array.from({length:88},(_,i)=>0x81+i),...[0x1d,0x38,0x47,0x48,0x49,0x4b,0x4d,0x4f,0x50,0x51,0x52,0x53,0x5b,0x5c].flatMap(c=>[0xe0,c|0x80])]);vm.bus.send('mouse-click',[false,false,false]);}
 const delay=ms=>new Promise(r=>setTimeout(r,ms));
 globalThis.my98Agent={
-    async prepareImport(credentials,gateway,coldBoot=false){
-        if(source)throw new Error('Import already active');
-        const disk=await Slop86Disk.create();
-        try{
-            await disk.unlock(credentials.username,credentials.password,credentials.machine);credentials.password='';
-            const description=await disk.openRemote({...(gateway?{gateway,servers:[{url:gateway,resolution:'gateway',discovery:false}]}:{}),prefetch:{enabled:false},persistentCache:{publication:false}});
-            if(coldBoot){
-                config={...DEFAULT_CONFIG};source={disk,prepared:{size:description.size},view:disk};
-                return {size:description.size,config,compatibility:await compatibility(),running:true,source:description.remote,initialization:'local-cold-boot'};
-            }
-            if(!description.remote?.stateCid)throw new Error('The publication has no machine snapshot: '+JSON.stringify(description.remote));
-            const prepared=await disk.prepareState({published:true});
-            if(prepared.metadata.version!==1||typeof prepared.metadata.running!=='boolean')throw new Error('Invalid published state metadata');
-            if(prepared.metadata.compatibility!==await compatibility())throw new Error('Published state requires a different emulator/BIOS build');
-            config=validateConfig(prepared.metadata.config);
-            const container=document.createElement('div');container.innerHTML='<div></div><canvas></canvas>';document.body.append(container);
-            const probeAdapter=new DiskBuffer(disk.stateDisk(prepared.token),prepared.size);let probe;
-            try{
-                probe=await createMachine(probeAdapter,config,container,{disableSpeaker:true});
-                probeAdapter.snapshotReady=true;await probe.restore_state(prepared.state);await probeAdapter.drain();
-                if(probe.v86.cpu.devices.cdrom.has_disk()||probe.get_disk_fda()||probe.get_disk_fdb())throw new Error('Published snapshot contains removable media');
-            }finally{await probe?.destroy();probeAdapter.dispose();container.remove();}
-            source={disk,prepared,view:disk.stateDisk(prepared.token)};
-            return {size:prepared.size,config,compatibility:prepared.metadata.compatibility,running:prepared.metadata.running,source:description.remote};
-        }catch(e){await disk.close().catch(()=>{});throw e;}
-    },
-    async exportImport(){
-        try{
-            for(let offset=0;offset<source.prepared.size;offset+=1048576){
-                const bytes=await source.view.read(offset,Math.min(1048576,source.prepared.size-offset));
-                await request('import/disk',{method:'POST',body:bytes,offset});
-            }
-            if(source.prepared.state)await transfer('import/state',source.prepared.state);
-        }finally{if(source){await source.disk.discardState(source.prepared.token).catch(()=>{});await source.disk.close().catch(()=>{});source=undefined;}}
-    },
     async boot(metadata){
         if(vm)throw new Error('Machine already loaded');
         config=validateConfig(metadata.config);adapter=new DiskBuffer(client,metadata.size,async()=>{await vm?.stop();});

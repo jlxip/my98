@@ -3,9 +3,40 @@ export function diskControls({busy, working, client, state, active, adapter, ana
     const locked = busy || working;
     const open = !!state;
     const remote = !!state?.remote;
-    const publishedState = !!state?.remote?.stateCid;
+    const readOnly=!!state?.readOnly;
+    const publishedState = !!state?.remote?.stateInfoHash;
     const failed = !!adapter?.failed;
     const stateInProgress = !!stateAbort;
+    // Availability excludes transient locks so an operation does not erase its controls.
+    const unavailable = {
+        empty: open,
+        'empty-size': open,
+        'empty-submit': open,
+        'empty-cancel': open,
+        create: open,
+        open: open,
+        'relay-key': readOnly,
+        boot: !open || active || failed,
+        save: readOnly || !open || !active || failed || analyzing,
+        download: !open || !!state?.dirty_bytes || analyzing,
+        discard: !open || analyzing,
+        verify: !open || analyzing,
+        'clear-cache': !open || analyzing,
+        'resume-state': !publishedState || active || analyzing || failed,
+        analyze: (!analyzing && (!remote || failed)),
+        'analyze-boot': !remote || !!state?.dirty_bytes || analyzing,
+        'analyze-resume': !publishedState || analyzing,
+        'analyze-file': !remote || analyzing,
+        retry: !prepared || analyzing,
+        resume: !failed,
+        'load-state': !open || analyzing,
+        'save-state': readOnly || !active || analyzing || failed,
+        'cancel-state': false,
+        cancel: !capturing && !stateInProgress,
+    };
+    const disabled=Object.fromEntries(Object.entries(unavailable).map(([id,value])=>[id,locked||value]));
+    disabled.cancel=unavailable.cancel;
+    disabled['cancel-state']=false;
     return {
         authenticated: !!client,
         hideEmptyForm: !client || open,
@@ -13,31 +44,7 @@ export function diskControls({busy, working, client, state, active, adapter, ana
         showRetry: failed,
         showCancel: capturing || stateInProgress,
         showStateCancel: stateInProgress,
-        disabled: {
-            empty: locked || open,
-            'empty-size': locked || open,
-            'empty-submit': locked || open,
-            'empty-cancel': locked || open,
-            create: locked || open,
-            open: locked || open,
-            remote: locked || open,
-            'only-localhost': locked || open,
-            boot: locked || !open || active || failed,
-            save: locked || !open || !active || failed || analyzing,
-            download: locked || !open || !!state?.dirty_bytes || analyzing,
-            discard: locked || !open || analyzing,
-            verify: locked || !open || analyzing,
-            'resume-state': locked || !publishedState || active || analyzing || failed,
-            analyze: locked || (!analyzing && (!remote || failed)),
-            'analyze-boot': locked || !remote || !!state?.dirty_bytes || analyzing,
-            'analyze-resume': locked || !publishedState || analyzing,
-            'analyze-file': locked || !remote || analyzing,
-            retry: locked || !prepared || analyzing,
-            resume: locked || !failed,
-            'load-state': locked || !open || analyzing,
-            'save-state': locked || !active || analyzing || failed,
-            'cancel-state': false,
-            cancel: !capturing && !stateInProgress,
-        },
+        hidden: unavailable,
+        disabled,
     };
 }

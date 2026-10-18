@@ -85,7 +85,7 @@ fn main() {
             let e = engine();
             println!(
                 "{}",
-                serde_json::json!({"ipnsName":e.identity().unwrap().ipns_name().unwrap(),"publicKey":e.identity().unwrap().public_key().unwrap()})
+                serde_json::json!({"publicKey":e.identity().unwrap().public_key().unwrap()})
             );
         }
         Some("sign") => {

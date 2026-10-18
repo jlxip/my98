@@ -21,11 +21,11 @@ class Deploy(unittest.TestCase):
         with self.assertRaises(ValueError): deploy.configuration(URL,'Linux',origins=['http://public.example:8686'])
         with self.assertRaises(ValueError): deploy.configuration(URL+'?x=1','Linux')
     def test_proxy_edit_preserves_other_vhosts_and_is_idempotent(self):
-        old='server { listen 80; server_name seeder.example; }\nserver { listen 443 ssl; server_name other.example; location / { return 404; } }\nserver { listen 443 ssl; server_name seeder.example; location /ipfs/ { proxy_pass http://127.0.0.1:8081; } }'
+        old='server { listen 80; server_name seeder.example; }\nserver { listen 443 ssl; server_name other.example; location / { return 404; } }\nserver { listen 443 ssl; server_name seeder.example; location /legacy/ { proxy_pass http://127.0.0.1:8081; } }'
         new=deploy.nginx_config(old,'seeder.example')
         self.assertEqual(new.count('include /etc/my98-relay/nginx.conf;'),1)
         self.assertIn('server_name other.example; location / { return 404; }',new)
-        self.assertIn('location /ipfs/ { proxy_pass http://127.0.0.1:8081; }',new)
+        self.assertIn('location /legacy/ { proxy_pass http://127.0.0.1:8081; }',new)
         self.assertEqual(deploy.nginx_config(new,'seeder.example'),new)
         with self.assertRaises(ValueError): deploy.nginx_config(old,'unknown.example')
     def test_openbsd_limits_override_inherited_cur_max_and_upgrade_old_class(self):

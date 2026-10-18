@@ -64,7 +64,7 @@ impl Vault {
         })
     }
     pub fn identity(&self) -> Result<String> {
-        Ok(serde_json::json!({"ipnsName":self.engine.identity()?.ipns_name().map_err(operation)?,"publicKey":self.engine.identity()?.public_key().map_err(operation)?}).to_string())
+        Ok(serde_json::json!({"publicKey":self.engine.identity()?.public_key().map_err(operation)?}).to_string())
     }
     pub fn relay_public_key(&self) -> Result<Vec<u8>> {
         self.engine

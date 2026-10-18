@@ -1,8 +1,8 @@
 export const RANGE_SLOTS = 32;
 
 // Profiles are hints for one immutable file, never authority for its contents.
-export function matchingRanges(profile, cid, units) {
-    if(typeof cid!=='string' || !cid || !profile || profile.version!==1 || profile.cid!==cid || profile.unitBytes!==65536 ||
+export function matchingRanges(profile, infoHash, units) {
+    if(typeof infoHash!=='string' || !infoHash || !profile || profile.version!==1 || profile.infoHash!==infoHash || profile.unitBytes!==65536 ||
        !Array.isArray(profile.ranges) || profile.ranges.length!==RANGE_SLOTS) return undefined;
     const ranges=[];
     for(const range of profile.ranges) {
@@ -52,7 +52,7 @@ export class RangePrefetchOrder {
             const next=scan(i,this.ranges[i][0]);
             if(next>=0)return next;
         }
-        return -1; // RemoteDisk then continues its normal full-file download.
+        return -1; // The transport can continue its normal full-file download.
     }
     stats() {
         let units=0,completed=0;

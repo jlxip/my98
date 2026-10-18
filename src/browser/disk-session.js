@@ -42,6 +42,16 @@ export class DiskSession {
         this.prepared=false;
         return this.description;
     }
+    async openRemoteReadOnly(options,events) {
+        const module=await import('../../build/disk/web/client.js');
+        this.BufferClass=module.DiskBuffer;
+        const candidate=await module.Slop86Disk.create(events);
+        try {
+            this.description=await candidate.openRemoteReadOnly(options);
+            this.client=candidate;this.prepared=false;
+            return this.description;
+        } catch(error) {await candidate.close().catch(()=>{});throw error;}
+    }
     async boot({analyze=false,onDiskError}={}) {
         if(this.description.size%512)throw new Error('The image is preserved exactly, but its length does not allow booting it as an HDD.');
         try {
@@ -50,7 +60,7 @@ export class DiskSession {
                 this.analyzing=true;
                 this.analysisError=undefined;
             }
-            await this.client.setLoadPrefetch({origin:'boot',scope:'disk'});
+            await this.client.setLoadPrefetch({origin:'boot',scope:analyze?'disk':'auto'});
             await this.client.read(0,512);
             this.adapter?.dispose();
             this.adapter=new this.BufferClass(this.client,this.description.size,onDiskError);
@@ -106,6 +116,10 @@ export class DiskSession {
     async verifyImage() {
         await this.host.stop();
         return this.client.verifyImage();
+    }
+    async clearCaches() {
+        await this.host.stop();
+        await this.client.clearCaches();
     }
     retryDownload() {return this.client.retryDownload();}
     async finishLoadAnalysis() {

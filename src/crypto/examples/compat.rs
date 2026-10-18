@@ -11,8 +11,8 @@ fn main() {
         let value: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         for item in value.as_array().unwrap() {
             assert_eq!(
-                identity.ipns_name().unwrap(),
-                item["ipns"].as_str().unwrap()
+                hex::encode(identity.public_key().unwrap()),
+                item["publicKey"].as_str().unwrap()
             );
             let disk = identity.open_disk(&hx(&item["descriptor"])).unwrap();
             assert_eq!(
@@ -39,9 +39,9 @@ fn main() {
     let unit = disk.seal_unit(&[0; 12], plain.clone()).unwrap();
     println!(
         "{}",
-        json!({"username":username,"password":password,"ipns":identity.ipns_name().unwrap(),
+        json!({"username":username,"password":password,
         "publicKey":hex::encode(identity.public_key().unwrap()),"descriptor":hex::encode(identity.seal_descriptor(&disk).unwrap()),
-        "plain":hex::encode(plain),"unit":hex::encode(&unit),"cid":object_cid(&unit),
+        "plain":hex::encode(plain),"unit":hex::encode(&unit),"sha256":object_hash(&unit),
         "metadata":hex::encode(disk.seal_metadata(b"native metadata".to_vec()).unwrap()),
         "signature":hex::encode(identity.sign(b"native signed").unwrap())})
     );

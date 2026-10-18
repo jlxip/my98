@@ -19,7 +19,6 @@ function relayState(state) {
 }
 $("relay-retry").onclick=()=>emulator?.network_adapter?.retry();
 const relayOptions=()=>({relaySigner:diskController?.relaySigner(),
-    relayGateways:()=>diskController?.relayGateways(),
     onRelayState:(state,network)=>{
     if(!emulator || emulator.network_adapter===network)relayState(state);
 }});
@@ -444,7 +443,7 @@ diskController = setupDisk({
             emulator.add_listener("emulator-started",updateControls);
             emulator.add_listener("emulator-stopped",updateControls);
             if(analyze)await disk.startLoadAnalysis({origin:'restored'});
-            await disk.setLoadPrefetch({origin:'restored',scope:'disk'});
+            await disk.setLoadPrefetch({origin:'restored',scope:analyze?'disk':'auto'});
             if(restored.running || analyze)emulator.run();
             fitScreen();status("State restored.");
             return restored;

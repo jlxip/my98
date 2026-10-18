@@ -110,7 +110,6 @@ async function daemon(){
     }
     async function openTransfer(kind,dir,size){
         transfer={kind,state:{handle:await fs.open(path.join(dir,'state.bin'),'wx',0o600),offset:0,limit:1073741824}};
-        if(kind==='import')transfer.disk={handle:await fs.open(path.join(dir,'disk.img'),'wx',0o600),offset:0,limit:size};
     }
     async function closeTransfer(){if(!transfer)return;for(const key of ['disk','state'])if(transfer[key]){await transfer[key].handle.sync();await transfer[key].handle.close();}transfer=undefined;}
     async function checkpoint(){
@@ -128,20 +127,6 @@ async function daemon(){
         if(closing)throw new Error('Controller is stopping');
         switch(request.command){
         case 'status':return {...(page?await call('status'):{loaded:false,running:false,headless:true}),pid:process.pid,checkpoint:current?.id||null,...(media?{media:{files:media.files,bytes:media.bytes}}:{})};
-        case 'init':{
-            try{await fs.access(path.join(root,'latest.json'));throw new Error('Machine already imported; use start');}catch(e){if(e.code!=='ENOENT')throw e;}
-            await openPage();if((await call('status')).loaded)throw new Error('Machine already loaded; save it with checkpoint');let dir;
-            try{
-                const metadata=await call('prepareImport',request.credentials,request.gateway,request.coldBoot===true);dir=await staging(root);
-                await openTransfer('import',dir,metadata.size);await call('exportImport');await closeTransfer();
-                if(request.coldBoot){
-                    await copyLocalFile(path.join(dir,'disk.img'),path.join(root,'working.img'));await fs.chmod(path.join(root,'working.img'),0o600);
-                    disk=await fs.open(path.join(root,'working.img'),'r+');diskSize=metadata.size;current={meta:metadata};
-                    await call('boot',metadata);await checkpoint();return {...await call('status'),checkpoint:current.id};
-                }
-                await commit(root,dir,metadata);await restore();await call('resume');return {...await call('status'),checkpoint:current.id};
-            }finally{request.credentials=undefined;await closeTransfer();if(dir)await fs.rm(dir,{recursive:true,force:true});}
-        }
         case 'start':if(!page||!(await call('status')).loaded)await restore();return call('resume');
         case 'cold-local':{
             if(page&&(await call('status')).loaded)throw new Error('Stop the local machine before cold-local');
@@ -208,10 +193,11 @@ async function daemon(){
 
 try{
     if(command==='daemon')await daemon();
-    else if(!command||command==='--help')console.log('Usage: node scripts/agent.mjs COMMAND [ARG] [--state-dir PATH]\ninit reads {username,password,machine,gateway?} from stdin. init --cold explicitly clones only the disk and creates its own local state. cold-local RAM_MIB [DISK_MIB] cold boots the latest local disk with 16–512 MiB RAM and optional disk growth up to 32 GiB; partition/format new space inside the guest. No import or publication. Commands: start status screenshot type TEXT key Ctrl+A mouse JSON wait MS send FILE... eject checkpoint pause resume stop. send inserts a local read-only CD (files/ZIPs, up to 256 MiB); copy to C: inside Windows and eject before checkpoint/stop.');
+    else if(!command||command==='--help')console.log('Usage: node scripts/agent.mjs COMMAND [ARG] [--state-dir PATH]\ncold-local RAM_MIB [DISK_MIB] cold boots the latest local disk with 16–512 MiB RAM and optional disk growth up to 32 GiB; partition/format new space inside the guest. No import or publication. Commands: start status screenshot type TEXT key Ctrl+A mouse JSON wait MS send FILE... eject checkpoint pause resume stop. send inserts a local read-only CD (files/ZIPs, up to 256 MiB); copy to C: inside Windows and eject before checkpoint/stop.');
     else{
+        if(!['start','status','screenshot','type','key','mouse','wait','send','eject','checkpoint','pause','resume','stop','cold-local'].includes(command))throw new Error('Unknown command: '+command);
         let request={command};
-        if(command==='init'){let data='';for await(const b of process.stdin){data+=b;if(data.length>8192)throw new Error('Credentials input too large');}const {gateway,...credentials}=JSON.parse(data);request={command,credentials,gateway,coldBoot:args.includes('--cold')};}
+
         if(command==='type')request.text=args.join(' ');
         if(command==='key')request.key=args.join(' ');
         if(command==='mouse')request.mouse=JSON.parse(args.join(' '));
@@ -219,6 +205,6 @@ try{
         if(command==='wait')request.ms=Number(args[0]);
         if(command==='cold-local'){request.memoryMiB=Number(args[0]);if(args[1]!==undefined)request.diskMiB=Number(args[1]);}
         if(command==='status'&&!(await available())){let saved;try{saved=await latest(root);}catch(e){if(e.code!=='ENOENT')throw e;}console.log(JSON.stringify({ok:true,loaded:false,running:false,controller:false,checkpoint:saved?.id||null}));}
-        else{if(['start','init','cold-local'].includes(command))await launch();const result=await rpc(request);console.log(JSON.stringify(result));if(!result.ok)process.exitCode=1;}
+        else{if(['start','cold-local'].includes(command))await launch();const result=await rpc(request);console.log(JSON.stringify(result));if(!result.ok)process.exitCode=1;}
     }
 }catch(e){console.log(JSON.stringify({ok:false,error:errorText(e)}));process.exitCode=1;}

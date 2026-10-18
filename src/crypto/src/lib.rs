@@ -5,7 +5,6 @@ use chacha20poly1305::{
     aead::{Aead, Payload},
     ChaCha20Poly1305, KeyInit, Nonce,
 };
-use cid::{multibase::Base, multihash::Multihash, Cid};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use hkdf::Hkdf;
 use sha2::{Digest, Sha256};
@@ -219,17 +218,7 @@ impl Identity {
             .to_bytes()
             .to_vec())
     }
-    pub fn ipns_name(&self) -> Result<String> {
-        self.check()?;
-        // libp2p PublicKey protobuf: Type=Ed25519(1), Data=32-byte public key.
-        let mut protobuf = vec![0x08, 0x01, 0x12, 0x20];
-        protobuf.extend_from_slice(&self.public_key);
-        let hash = Multihash::<64>::wrap(0, &protobuf).expect("36-byte identity multihash");
-        Cid::new_v1(0x72, hash)
-            .to_string_of_base(Base::Base36Lower)
-            .map_err(|_| "CID encoding failed".into())
-    }
-    /// Signs exact bytes. IPNS callers must supply the standard IPNS signing payload.
+    /// Signs the exact application-provided payload.
     pub fn sign(&self, message: &[u8]) -> Result<Vec<u8>> {
         self.check()?;
         if message.len() > MAX_UNIT_BYTES {
@@ -464,11 +453,10 @@ pub fn verify(public_key: &[u8], message: &[u8], signature: &[u8]) -> bool {
     key.verify_strict(message, &signature).is_ok()
 }
 
-/// IPFS CIDv1/raw/SHA-256 of the exact immutable envelope bytes.
+/// SHA-256 of exact immutable ciphertext, independent of its transport.
 #[wasm_bindgen]
-pub fn object_cid(bytes: &[u8]) -> String {
-    let hash = Multihash::<64>::wrap(0x12, &Sha256::digest(bytes)).expect("32-byte SHA-256");
-    Cid::new_v1(0x55, hash).to_string()
+pub fn object_hash(bytes: &[u8]) -> String {
+    Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 #[cfg(test)]

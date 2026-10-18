@@ -16,7 +16,7 @@ async function readAsset(path) {
     return response.arrayBuffer();
 }
 
-export async function createMachine(diskAdapter, config, container, {disableSpeaker = false, relaySigner, onRelayState, relayURL, relayGateways} = {}) {
+export async function createMachine(diskAdapter, config, container, {disableSpeaker = false, relaySigner, onRelayState, relayURL} = {}) {
     await compatibility();
     const hda = {disk_adapter:diskAdapter};
     const [bios, vgaBios, wasm] = await Promise.all([
@@ -54,7 +54,7 @@ export async function createMachine(diskAdapter, config, container, {disableSpea
     } catch(error) { await vm.destroy(); throw error; }
     if(relaySigner) {
         vm.network_adapter=new RelayNetworkAdapter(vm.bus,{url:relayURL,
-            resolveURL:async signal=>discoverRelay({signal,gateways:await relayGateways?.() || []}),
+            resolveURL:async signal=>discoverRelay({signal}),
             signer:relaySigner,onState:onRelayState});
     } else onRelayState?.('identity-closed');
     return vm;

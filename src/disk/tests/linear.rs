@@ -599,13 +599,13 @@ fn read_only_rejects_bad_keys_headers_and_records() {
             reader.read(&io, CHUNK as u64, 1).await.unwrap_err().code,
             "CORRUPTION"
         );
-        // A valid CID alone must not authenticate an unsigned replacement header.
+        // A valid ciphertext hash alone must not authenticate an unsigned replacement header.
         let mut changed_signature = base.clone();
         changed_signature[197] ^= 1;
-        io.put("cid-verified", changed_signature);
+        io.put("hash-verified", changed_signature);
         assert!(Engine::open_read_only(
             &io,
-            "cid-verified".into(),
+            "hash-verified".into(),
             base.len() as u64,
             key.to_vec()
         )

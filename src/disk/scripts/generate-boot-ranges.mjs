@@ -1,11 +1,11 @@
 // Usage: node src/disk/scripts/generate-boot-ranges.mjs profile.json [minimum-utilization=0.5]
-// Input: a prefetch-boot trace, {cid,trace}, or {diskRootCID,firstTouchUnits}.
+// Input: a load trace with {infoHash,trace} or {infoHash,firstTouchUnits}.
 // Output is a JSON array of profiles for explicit prefetch.bootProfile injection; no downloads.
 import {readFile} from 'node:fs/promises';
-import {CID} from 'multiformats/cid';
 import {selectBootRanges} from './range-profile.mjs';
 const input=JSON.parse(await readFile(process.argv[2],'utf8'));
-const cid=CID.parse(input.cid || input.diskRootCID || input.disk?.remote?.cid).toString();
+const infoHash=input.infoHash || input.disk?.remote?.infoHash;
+if(typeof infoHash!=='string' || !/^[0-9a-f]{40}$/.test(infoHash))throw Error('A torrent infohash is required');
 let units=input.firstTouchUnits;
 if(!units) {
     if(!Array.isArray(input.trace) || input.stats?.remote?.traceDropped || input.errors?.length)throw Error('A complete guest trace is required');
@@ -17,5 +17,5 @@ if(!units) {
 }
 const result=selectBootRanges(units,{minUtilization:Number(process.argv[3] || 0.5)});
 const {details,rankSum,...profile}=result;
-console.log(JSON.stringify([{version:1,cid,unitBytes:65536,...profile}],null,2));
+console.log(JSON.stringify([{version:1,infoHash,unitBytes:65536,...profile}],null,2));
 console.error(JSON.stringify({rangeCount:details.length,...result}));

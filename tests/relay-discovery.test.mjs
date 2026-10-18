@@ -2,13 +2,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {discoverRelay} from '../src/disk/web/relay-discovery.js';
 import {DEFAULT_SERVERS} from '../src/disk/web/network-config.js';
-const source=url=>({url,resolution:'routing',discovery:true,seeder:true});
+const source=url=>({url,relay:true});
 const announcement=url=>({version:1,relay:{url,protocol:'my98-relay.v1',authorization:'ed25519-allowlist'}});
 const json=value=>new Response(JSON.stringify(value),{headers:{'content-type':'application/json'}});
-test('service discovery uses query sources and verified providers, accepts the first valid announcement',async()=>{
-    assert(DEFAULT_SERVERS.every(s=>!('relay' in s)));
+test('service discovery uses explicit relay sources, accepts the first valid announcement',async()=>{
+    assert(DEFAULT_SERVERS.every(s=>s.relay===true));
     const requests=[];
-    const url=await discoverRelay({servers:[source('https://slow.example'),source('https://off.example'),{url:'https://public-query.example',resolution:'routing',discovery:true}],gateways:['https://provider.example'],
+    const url=await discoverRelay({servers:[source('https://slow.example'),source('https://off.example'),{url:'https://public-query.example',relay:false}],sources:['https://provider.example'],
         fetcher:async(url,options)=>{
             requests.push({url,options});
             if(url.includes('off.example'))return json({version:1,relay:null});

@@ -1,17 +1,16 @@
-import {DEFAULT_SERVERS, gatewayURL} from './network-config.js';
+import {DEFAULT_SERVERS, serviceURL} from './network-config.js';
 
 export const RELAY_CAPABILITIES_PATH='/.well-known/my98-relay.json';
 const LIMIT=4096;
-// Service discovery shares the resolution inventory and verified provider origins.
-// Disk/IPNS records never grant egress permission; the service still checks its allowlist.
-export async function discoverRelay({servers=DEFAULT_SERVERS, gateways=[], signal, timeout=4000, fetcher=globalThis.fetch}={}) {
+// Relay access is independent of publication discovery and requires its own allowlist.
+export async function discoverRelay({servers=DEFAULT_SERVERS, sources=[], signal, timeout=4000, fetcher=globalThis.fetch}={}) {
     const origins=new Set();
     if(!Array.isArray(servers) || servers.length>16)throw Error('Invalid relay discovery sources');
     for(const source of servers) {
-        if(!source || ![false,'gateway','routing'].includes(source.resolution) || typeof source.discovery!=='boolean')throw Error('Invalid relay discovery source');
-        if(source.seeder===true && (source.resolution || source.discovery))origins.add(new URL(gatewayURL(source.url)).origin);
+        if(!source || typeof source.relay!=='boolean')throw Error('Invalid relay discovery source');
+        if(source.relay)origins.add(new URL(serviceURL(source.url)).origin);
     }
-    for(const gateway of gateways.slice(0,16)) origins.add(new URL(gatewayURL(gateway)).origin);
+    for(const gateway of sources.slice(0,16)) origins.add(new URL(serviceURL(gateway)).origin);
     const controller=new AbortController(), abort=()=>controller.abort();
     signal?.addEventListener('abort',abort,{once:true});
     if(signal?.aborted)abort();

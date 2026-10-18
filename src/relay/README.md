@@ -1,7 +1,7 @@
 # Private seeder relay
 
 The optional relay grants Internet egress only to explicitly authorized relay
-public keys. Following an IPNS name never authorizes network access. Each
+public keys. Following a publication never authorizes network access. Each
 authenticated WebSocket owns one isolated libslirp stack. The browser keeps the
 signing seed inside its identity Worker; saved machine states carry no signer.
 
@@ -14,7 +14,7 @@ Use `cargo test --manifest-path src/relay/Cargo.toml --locked` for protocol and
 firewall tests; `node --test tests/relay-network.test.mjs` tests the adapter.
 On small seeders, build with one Cargo job and a supervised memory limit;
 run tests in the debug profile. Release-test linking can exhaust a 2 GiB
-host while Kubo is running. Build artifacts must live outside `/tmp` so a
+host while other services are running. Build artifacts must live outside `/tmp` so a
 reboot does not discard them.
 
 The daemon takes a JSON configuration path (see `ops/config.example.json`).
@@ -33,24 +33,20 @@ limits, automatic restart, and protected filesystem. Install the executable
 under `/usr/local/lib/my98-relay`, config under `/etc/my98-relay`, authorization
 file under `/var/lib/my98-relay`. Run administration as that service user:
 
-```sh
-sudo -u my98-relay my98-seedbox relay-status
-sudo -u my98-relay my98-seedbox relay-allow PUBLIC_KEY_HEX
-sudo -u my98-relay my98-seedbox relay-revoke PUBLIC_KEY_HEX
-```
+Administration uses the configured local UNIX socket. Existing installed
+administrative CLIs on deployed servers remain independent of this checkout.
 
-These commands do not require Kubo, modify subscriptions or export disk keys.
+Relay administration does not grant access to publication identities or export disk keys.
 Revocation closes active sessions and persists before success is returned.
 Back up the previous executable, configuration, authorization file and TLS
 proxy configuration before upgrades. Roll back by stopping `my98-relay` and
 restoring the TLS proxy configuration without its relay route; validate before
-reloading the proxy. Existing IPFS routes remain independent of this service.
+reloading the proxy. Existing services remain independent of this service.
 
 ## Discovery and deployment
 
-The client queries `/.well-known/my98-relay.json` on its existing Resolution /
-Discovery servers marked as seeders and verified disk-provider origins. Public
-query-only services are not queried for relay capabilities. There is no relay
+The client queries `/.well-known/my98-relay.json` on its explicit relay-service
+inventory and any additional verified service origins. There is no relay
 URL in the compiled inventory. The first valid announcement wins; the round
 is limited to 16 origins, four seconds, and 4 KiB per response, without
 redirects, cookies or caching. Only same-origin WSS at `/my98-relay/v1` with
@@ -86,7 +82,7 @@ Activation and deactivation are separate root commands:
 
 ```sh
 sudo python3 scripts/deploy-relay.py enable
-sudo -u my98-relay python3 scripts/seedbox.py relay-allow PUBLIC_KEY_HEX
+# Grant the relay public key through the local administration socket.
 sudo python3 scripts/deploy-relay.py disable
 ```
 

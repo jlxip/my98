@@ -168,17 +168,14 @@ fn official_ed25519_rfc8032() {
 fn identity_normalization_and_literal_password() {
     let a = derive_identity("café", b" literal ".to_vec(), "main").unwrap();
     let b = derive_identity("cafe\u{301}", b" literal ".to_vec(), "main").unwrap();
-    assert_eq!(a.ipns_name().unwrap(), b.ipns_name().unwrap());
+    assert_eq!(a.public_key().unwrap(), b.public_key().unwrap());
     let c = derive_identity("café", b"literal".to_vec(), "main").unwrap();
     let d = derive_identity("Café", b" literal ".to_vec(), "main").unwrap();
     let e = derive_identity(" café", b" literal ".to_vec(), "main").unwrap();
-    assert_ne!(a.ipns_name().unwrap(), c.ipns_name().unwrap());
-    assert_ne!(a.ipns_name().unwrap(), d.ipns_name().unwrap());
-    assert_ne!(a.ipns_name().unwrap(), e.ipns_name().unwrap());
-    let cid: Cid = a.ipns_name().unwrap().parse().unwrap();
-    assert_eq!(cid.codec(), 0x72);
-    assert_eq!(&cid.hash().digest()[..4], &[8, 1, 18, 32]);
-    assert_eq!(&cid.hash().digest()[4..], a.public_key().unwrap());
+    assert_ne!(a.public_key().unwrap(), c.public_key().unwrap());
+    assert_ne!(a.public_key().unwrap(), d.public_key().unwrap());
+    assert_ne!(a.public_key().unwrap(), e.public_key().unwrap());
+
 }
 #[test]
 fn descriptor_recovery_wrong_identity_and_closing() {
@@ -245,14 +242,14 @@ fn unit_roundtrip_preserves_all_bytes() {
         .flat_map(|(unit, blob)| disk.open_unit(unit, blob).unwrap())
         .collect();
     assert_eq!(restored, image);
-    let before: Vec<String> = objects.iter().map(|(_, blob)| object_cid(blob)).collect();
+    let before: Vec<String> = objects.iter().map(|(_, blob)| object_hash(blob)).collect();
     let changed = disk
         .seal_unit(&objects[2].0, image[1024..1536].to_vec())
         .unwrap();
-    assert_ne!(object_cid(&changed), before[2]);
+    assert_ne!(object_hash(&changed), before[2]);
     objects[2].1 = changed;
     for i in [0, 1, 3] {
-        assert_eq!(object_cid(&objects[i].1), before[i]);
+        assert_eq!(object_hash(&objects[i].1), before[i]);
     }
     assert_eq!(
         objects
@@ -290,10 +287,6 @@ fn identity_v2_frozen_compatibility_vector() {
         "main",
     )
     .unwrap();
-    assert_eq!(
-        id.ipns_name().unwrap(),
-        "k51qzi5uqu5dgdlw0tx7xd43vjs8hndfm8dychj8jvmigb8g8x7or3a1ax94yc"
-    );
     assert_eq!(
         hex::encode(id.public_key().unwrap()),
         "07d2860c1066244fa0d7973545b4dd822466d8b2c9fd83fb84331716949b3a54"
@@ -376,4 +369,21 @@ fn stable_read_capability_opens_multiple_disks() {
     }
     owner.close();
     assert!(owner.export_read_key().is_err());
+}
+
+#[test]
+fn python_bep44_signature_vectors() {
+    // Public compatibility credentials; signatures frozen with PyNaCl1.6.2.
+    let id = derive_identity("café", b"public compatibility test password ".to_vec(), "main").unwrap();
+    assert_eq!(hex::encode(id.public_key().unwrap()), "07d2860c1066244fa0d7973545b4dd822466d8b2c9fd83fb84331716949b3a54");
+    for (sequence, byte, signature) in [
+        (123u64, 0x12u8, "512b1784e462afb245621af1ea416b1bbf35556f15d1f31372fa6a23c787f489b980fbb56f60dc0ca133904e41bac76796ee3a9c698ef09e251f2c8e6076f50b"),
+        (9007199254740991u64, 0x34u8, "d69cbee3bba77d17a2023e2ad59a2cffd313df77e4273f22bc17d713970e726a05f8067004df1ca1b8172c143849d4456a77e0cc82c86192c914d00d0d808504"),
+    ] {
+        let mut payload = format!("4:salt19:my98/publication/v13:seqi{sequence}e1:vd2:ih20:").into_bytes();
+        payload.extend_from_slice(&[byte;20]);
+        payload.push(b'e');
+        assert_eq!(hex::encode(id.sign(&payload).unwrap()), signature);
+        assert!(verify(&id.public_key().unwrap(), &payload, &hx(signature)));
+    }
 }

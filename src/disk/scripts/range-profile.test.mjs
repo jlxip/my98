@@ -44,10 +44,10 @@ test('empty slots, repeats and sparse disks do not force wasteful ranges',()=>{
     assert.deepEqual(few.ranges[0],[8,10]);assert.equal(few.ranges.filter(r=>r===null).length,31);
     assert.throws(()=>selectBootRanges([-1]));assert.throws(()=>selectBootRanges([0],{minUtilization:0}));
 });
-test('CID binding, bounds, overlaps and slot count are validated',()=>{
-    const p={version:1,cid:'snapshot',unitBytes:65536,ranges:[[7,9],[1,3],...Array(30).fill(null)]};
+test('Infohash binding, bounds, overlaps and slot count are validated',()=>{
+    const p={version:1,infoHash:'snapshot',unitBytes:65536,ranges:[[7,9],[1,3],...Array(30).fill(null)]};
     assert.deepEqual(matchingRanges(p,'snapshot',10),[[7,9],[1,3]]);
-    for(const bad of [{...p,cid:'other'},{...p,unitBytes:512},{...p,ranges:[[0,1]]},{...p,ranges:[[1,4],[3,5],...Array(30).fill(null)]},{...p,ranges:[[1,10],...Array(31).fill(null)]}])assert.equal(matchingRanges(bad,'snapshot',10),undefined);
+    for(const bad of [{...p,infoHash:'other'},{...p,unitBytes:512},{...p,ranges:[[0,1]]},{...p,ranges:[[1,4],[3,5],...Array(30).fill(null)]},{...p,ranges:[[1,10],...Array(31).fill(null)]}])assert.equal(matchingRanges(bad,'snapshot',10),undefined);
 });
 test('range order follows new demand, skips resident units and ends without covering unrelated data',()=>{
     const c=new Uint8Array(100),r=new RangePrefetchOrder([[70,72],[20,22]],c);

@@ -4,20 +4,7 @@
 hooks:
 	git config --local core.hooksPath .githooks
 
-.PHONY: seedbox-test seedbox-integration seedbox-renewal-integration seedbox-state-integration
-seedbox-test:
-	PYTHONDONTWRITEBYTECODE=1 python3 scripts/seedbox_test.py
-
-seedbox-state-integration:
-	PYTHONDONTWRITEBYTECODE=1 python3 scripts/seedbox_state_integration.py
-
-seedbox-renewal-integration:
-	PYTHONDONTWRITEBYTECODE=1 python3 scripts/seedbox_renewal_integration.py
-
-seedbox-integration:
-	PYTHONDONTWRITEBYTECODE=1 python3 scripts/seedbox_integration.py
-
-.PHONY: prefetch-test remote-test all emulator prepare-emulator run crypto crypto-test crypto-test-browser disk disk-test disk-test-browser test-stop
+.PHONY: prefetch-test all emulator prepare-emulator run crypto crypto-test crypto-test-browser disk disk-test disk-test-browser test-stop
 all: emulator crypto disk
 
 prepare-emulator:
@@ -54,52 +41,10 @@ disk-test-browser: emulator disk
 test-stop: prepare-emulator
 	$(MAKE) -C build/slop86 stop-test
 
-.PHONY: parallel-test parallel-test-browser discovery-test discovery-test-browser resolution-test resolution-test-browser
-parallel-test: node_modules/.package-lock.json
-	node --test src/disk/scripts/parallel.test.mjs
-
-parallel-test-browser: disk
-	node scripts/run-browser-test.mjs tests/pages/parallel.mjs
-
-discovery-test: disk
-	node --test src/disk/scripts/discovery.test.mjs
-
-discovery-test-browser: disk
-	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo run --manifest-path src/disk/Cargo.toml --locked --release --example compat
-	node scripts/run-browser-test.mjs tests/pages/discovery.mjs
-	node scripts/run-browser-test.mjs tests/pages/network-scheduler.mjs
-
-resolution-test: disk
-	node --test src/disk/scripts/resolution.test.mjs
-	node --test src/disk/scripts/network.test.mjs
-	node --test src/disk/scripts/state-stream.test.mjs
-	node --test src/disk/scripts/car.test.mjs
-
-resolution-test-browser: site
-	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo build --manifest-path src/disk/Cargo.toml --locked --release --example compat
-	node scripts/run-browser-test.mjs tests/pages/resolution.mjs
-
-remote-test: disk
-	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo run --manifest-path src/disk/Cargo.toml --locked --release --example compat
-	node src/disk/browser-tests/remote-run.mjs
-
-# Uses only disposable fixtures and a local, offline Kubo gateway; requires nasm.
-.PHONY: read-only-test
-read-only-test: disk emulator
-	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo build --manifest-path src/disk/Cargo.toml --locked --release --example compat
-	node scripts/run-browser-test.mjs src/disk/browser-tests/read-only-run.mjs
-
-.PHONY: read-only-key-test
-read-only-key-test: disk
-	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo run --manifest-path src/disk/Cargo.toml --locked --release --example compat
-	node scripts/read-only-key-test.mjs
-
 prefetch-test: disk
 	node --test src/disk/scripts/range-profile.test.mjs
 	node --test src/disk/scripts/boot-analysis.test.mjs
 	node --test src/disk/scripts/load-profiles.test.mjs
-	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo run --manifest-path src/disk/Cargo.toml --locked --release --example compat
-	node src/disk/browser-tests/prefetch-run.mjs
 
 .PHONY: site site-test site-test-clean
 site-test-clean:
@@ -109,43 +54,29 @@ site: all
 	python3 scripts/package-site.py
 
 site-test: site
+	node --test src/disk/scripts/range-profile.test.mjs src/disk/scripts/boot-analysis.test.mjs src/disk/scripts/load-profiles.test.mjs
 	PYTHONDONTWRITEBYTECODE=1 python3 scripts/clean-site-test.test.py
 	PYTHONDONTWRITEBYTECODE=1 python3 tests/prepare-emulator.test.py
 	PYTHONDONTWRITEBYTECODE=1 python3 tests/server_test.py
 	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo run --manifest-path src/disk/Cargo.toml --locked --release --example compat
 	node --test scripts/run-browser-test.test.mjs
 	node --test tests/pages/server.test.mjs
-	node --test src/disk/scripts/network.test.mjs
-	node --test src/disk/scripts/state-stream.test.mjs
-	node --test src/disk/scripts/car.test.mjs
-	node --test src/disk/scripts/resolution.test.mjs
-	node --test src/disk/scripts/discovery.test.mjs
-	node --test src/disk/scripts/parallel.test.mjs
-	node scripts/run-browser-test.mjs tests/pages/parallel.mjs
 	node scripts/run-browser-test.mjs tests/pages/audio.mjs
 	node scripts/run-browser-test.mjs tests/pages/run.mjs
 	node scripts/run-browser-test.mjs tests/pages/login.mjs
-	node scripts/run-browser-test.mjs tests/pages/disk-progress.mjs
 	node scripts/run-browser-test.mjs tests/pages/empty-disk.mjs
-	node scripts/run-browser-test.mjs tests/pages/integration.mjs
-	node scripts/run-browser-test.mjs tests/pages/resolution.mjs
-	node scripts/run-browser-test.mjs tests/pages/discovery.mjs
-	node scripts/run-browser-test.mjs tests/pages/network-scheduler.mjs
-	node scripts/run-browser-test.mjs tests/pages/boot-analysis.mjs
-	node scripts/run-browser-test.mjs tests/pages/load-profiles.mjs
-	node scripts/run-browser-test.mjs tests/pages/published-state.mjs
-	node scripts/run-browser-test.mjs tests/pages/published-state-network.mjs
-	node scripts/run-browser-test.mjs tests/pages/car-stream.mjs
-	node scripts/run-browser-test.mjs tests/pages/persistent-cache.mjs
-	node scripts/run-browser-test.mjs tests/pages/persistent-cache-api.mjs
-	node scripts/run-browser-test.mjs tests/pages/publication-cache.mjs
-	node scripts/run-browser-test.mjs tests/pages/publication-cache-api.mjs
 	node scripts/run-browser-test.mjs tests/pages/state-api.mjs
 	node scripts/run-browser-test.mjs tests/pages/state-large.mjs
 	node scripts/run-browser-test.mjs tests/pages/state.mjs
 	node scripts/run-browser-test.mjs tests/pages/media.mjs
 	node scripts/run-browser-test.mjs tests/pages/mobile.mjs
 	node scripts/run-browser-test.mjs tests/pages/controls.mjs
+	node --test tests/torrent-browser-protocol.test.mjs
+	node scripts/run-browser-test.mjs tests/torrent-store.mjs
+	node scripts/run-browser-test.mjs tests/torrent-records.mjs
+	node scripts/run-browser-test.mjs tests/torrent-window.mjs
+	node scripts/run-browser-test.mjs tests/torrent-state.mjs
+	node scripts/run-browser-test.mjs tests/torrent-client.mjs
 	node scripts/run-browser-test.mjs tests/pages/direct-pointer.mjs
 	node scripts/run-browser-test.mjs tests/pages/display.mjs
 
@@ -154,26 +85,14 @@ site-test: site
 agent-test: site
 	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo build --manifest-path src/disk/Cargo.toml --locked --release --example compat
 	node --test tests/agent.test.mjs
-	node scripts/run-browser-test.mjs tests/agent-integration.mjs
-	node scripts/run-browser-test.mjs tests/agent-cold-init.mjs
 
 state-test: site
-	node --test src/disk/scripts/network.test.mjs
-	node --test src/disk/scripts/state-stream.test.mjs
-	node --test src/disk/scripts/car.test.mjs
 	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo build --manifest-path src/disk/Cargo.toml --locked --release --example compat
-	node scripts/run-browser-test.mjs tests/pages/published-state.mjs
-	node scripts/run-browser-test.mjs tests/pages/published-state-network.mjs
-	node scripts/run-browser-test.mjs tests/pages/car-stream.mjs
-	node scripts/run-browser-test.mjs tests/pages/persistent-cache.mjs
-	node scripts/run-browser-test.mjs tests/pages/persistent-cache-api.mjs
-	node scripts/run-browser-test.mjs tests/pages/publication-cache.mjs
-	node scripts/run-browser-test.mjs tests/pages/publication-cache-api.mjs
 	node scripts/run-browser-test.mjs tests/pages/state-api.mjs
 	node scripts/run-browser-test.mjs tests/pages/state-large.mjs
 	node scripts/run-browser-test.mjs tests/pages/state.mjs
 
-.PHONY: relay relay-test relay-test-browser
+.PHONY: relay relay-test
 relay:
 	CARGO_TARGET_DIR="$(CURDIR)/build/relay-target" cargo build --manifest-path src/relay/Cargo.toml --locked --release --jobs 1
 
@@ -182,7 +101,27 @@ relay-test:
 	node --test tests/relay-network.test.mjs
 	node --test tests/relay-discovery.test.mjs
 	PYTHONDONTWRITEBYTECODE=1 python3 tests/relay-deploy.test.py
-	PYTHONDONTWRITEBYTECODE=1 python3 tests/seedbox-relay.test.py
 
-relay-test-browser: site
-	node scripts/run-browser-test.mjs tests/pages/relay.mjs
+# Private native torrent runtime. No global Python or service dependencies.
+TORRENT_ROOT ?= build/torrent-native/mac
+TORRENT_PYTHON ?= $(TORRENT_ROOT)/venv/bin/python
+TORRENT_WEBRTC ?= off
+.PHONY: torrent-native torrent-python torrent-test
+torrent-native:
+	python3 scripts/build-torrent.py --root $(TORRENT_ROOT) --webrtc $(TORRENT_WEBRTC) --jobs 1
+
+torrent-python:
+	python3 scripts/install-torrent-python.py --python $(TORRENT_PYTHON)
+
+torrent-test:
+	$(TORRENT_PYTHON) tests/torrent-protocol.test.py
+	$(TORRENT_PYTHON) tests/torrent-native.test.py
+	$(TORRENT_PYTHON) tests/torrent-transfer.test.py
+	$(TORRENT_PYTHON) tests/torrent-service.test.py
+	$(TORRENT_PYTHON) tests/torrent-publisher.test.py
+	$(TORRENT_PYTHON) tests/torrent-cli.test.py
+	$(TORRENT_PYTHON) tests/torrent-tracker.test.py
+
+.PHONY: torrent-webtorrent-test
+torrent-webtorrent-test: disk
+	node scripts/run-browser-test.mjs tests/torrent-webtorrent.mjs

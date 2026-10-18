@@ -3,7 +3,7 @@ export function setupDiskProgress(element, getSession) {
     if(!element) return {update() {}};
     const arc = element.querySelector("circle:last-child"), label = element.querySelector("span");
     let timer, pending = false, source, generation = 0;
-    const same = (a, b) => a?.client === b?.client && a?.adapter === b?.adapter && a?.cid === b?.cid;
+    const same = (a, b) => a?.client === b?.client && a?.adapter === b?.adapter && a?.infoHash === b?.infoHash;
     function hide() {
         element.hidden = true;
         element.removeAttribute("aria-valuenow");

@@ -24,21 +24,54 @@
             <label>Username <input class="input" id="disk-user" autocomplete="off" autocapitalize="none" spellcheck="false" required></label>
             <label>Password <input class="input" id="disk-password" type="password" autocomplete="off" required></label>
             <label>Machine <input class="input" id="disk-machine" value="main" autocomplete="off" autocapitalize="none" spellcheck="false" required></label>
-            <label class="boot-option"><input class="input" id="disk-only-localhost" type="checkbox" autocomplete="off"> Only localhost</label>
-            <label class="boot-option"><input class="input" id="disk-cache-publication" type="checkbox" autocomplete="off"> Cache downloads in this browser</label>
-            <label class="boot-option"><input class="input" id="disk-cold-login" type="checkbox" autocomplete="off"> Cold boot</label>
-            <label class="boot-option"><input class="input" id="disk-autoboot" type="checkbox" checked> Boot</label>
             <button class="btn primary" type="submit" data-variant="primary">Log in</button>
         </form>
+        <form id="disk-reader" autocomplete="off" hidden>
+            <label>Read key <input class="input" id="disk-read-key" type="password" autocomplete="off" spellcheck="false" required></label>
+            <button class="btn primary" type="submit" data-variant="primary">Open read-only publication</button>
+        </form>
+        <button id="disk-auth-switch" type="button" aria-controls="disk-login disk-reader">Or use a read key</button>
         <div id="disk-workspace" hidden>
             <p id="disk-identity" class="hint"></p>
+            <div id="disk-primary-actions" class="disk-action-row">
+                <button id="disk-resume-state" class="btn" data-variant="primary" data-disk-action="resume-state" hidden>Resume state</button>
+                <button id="disk-boot" class="btn" data-variant="secondary" data-disk-action="boot" hidden>Boot</button>
+            </div>
+            <div id="disk-menu-bar">
+                <details id="disk-menu-disk" class="disk-menu">
+                    <summary class="btn" data-variant="ghost">Disk <span aria-hidden="true">⌄</span></summary>
+                    <div class="disk-menu-items">
+                        <button id="disk-open" class="btn" data-variant="ghost" data-disk-action="open">Open encrypted disk…</button>
+                        <button id="disk-create" class="btn" data-variant="ghost" data-disk-action="create">Create disk from image…</button>
+                        <button id="disk-empty" class="btn" data-variant="ghost" data-disk-action="empty" aria-expanded="false" aria-controls="disk-empty-form">Create empty disk…</button>
+                        <button id="disk-save" class="btn" data-variant="ghost" data-disk-action="save">Save full disk after Windows shutdown…</button>
+                        <button id="disk-download" class="btn" data-variant="ghost" data-disk-action="download">Download full disk</button>
+                        <button id="disk-discard" class="btn" data-variant="ghost" data-disk-action="discard">Discard pending writes…</button>
+                        <button id="disk-retry" class="btn" data-variant="ghost" data-disk-action="retry">Retry download</button>
+                    </div>
+                </details>
+                <details id="disk-menu-state" class="disk-menu" hidden>
+                    <summary class="btn" data-variant="ghost">State <span aria-hidden="true">⌄</span></summary>
+                    <div class="disk-menu-items">
+                        <button id="disk-save-state" class="btn" data-variant="ghost" data-disk-action="save-state">Save state…</button>
+                        <button id="disk-load-state" class="btn" data-variant="ghost" data-disk-action="load-state">Load state…</button>
+                    </div>
+                </details>
+                <details id="disk-menu-tools" class="disk-menu">
+                    <summary class="btn" data-variant="ghost">Tools <span aria-hidden="true">⌄</span></summary>
+                    <div class="disk-menu-items">
+                        <button id="disk-analyze" class="btn" data-variant="ghost" data-disk-action="analyze">Analyze loads</button>
+                        <button id="disk-verify" class="btn" data-variant="ghost" data-disk-action="verify">Verify full disk</button>
+                        <button id="disk-clear-cache" class="btn" data-variant="ghost" data-disk-action="clear-cache">Clear cache</button>
+                        <button id="disk-relay-key" class="btn" data-variant="ghost" data-disk-action="relay-key">Copy relay public key</button>
+                    </div>
+                </details>
+                <button id="disk-close" class="disk-text-action" type="button">Close identity</button>
+            </div>
             <div class="disk-action-row">
                 <span id="relay-status" class="hint" role="status" aria-live="polite">Internet available after boot.</span>
                 <button id="relay-retry" class="btn" data-variant="secondary" hidden>Retry Internet</button>
-                <button id="disk-relay-key" class="btn" data-variant="secondary">Copy relay public key</button>
             </div>
-            <button id="disk-create" class="btn" data-variant="secondary">Create disk from image</button>
-            <button id="disk-empty" class="btn" data-variant="secondary" aria-expanded="false" aria-controls="disk-empty-form">Create empty disk</button>
             <form id="disk-empty-form" hidden>
                 <label for="disk-empty-size">Size (MiB)</label>
                 <input class="input" id="disk-empty-size" type="number" min="1" max="1048576" step="1" value="1024" required aria-describedby="disk-empty-hint">
@@ -46,25 +79,6 @@
                 <button id="disk-empty-submit" class="btn" type="submit" data-variant="primary">Create</button>
                 <button id="disk-empty-cancel" class="btn" type="button" data-variant="secondary">Cancel</button>
             </form>
-            <button id="disk-open" class="btn" data-variant="secondary">Open encrypted disk</button>
-            <button id="disk-remote" class="btn" data-variant="secondary">Open remote disk</button>
-            <p class="hint">A remote disk must already be published for this identity. Local saves are not uploaded.</p>
-            <div class="disk-action-row">
-                <button id="disk-boot" class="btn" data-variant="secondary">Boot</button>
-                <button id="disk-resume-state" class="btn" data-variant="secondary" disabled>Resume state</button>
-                <button id="disk-load-state" class="btn" data-variant="secondary">Load state</button>
-            </div>
-            <div class="disk-action-row">
-                <button id="disk-save" class="btn" data-variant="secondary">Save full disk after Windows shutdown</button>
-                <button id="disk-discard" class="btn" data-variant="secondary">Discard pending writes</button>
-                <button id="disk-download" class="btn" data-variant="secondary">Download full disk</button>
-            </div>
-            <div class="disk-action-row">
-                <button id="disk-analyze" class="btn" data-variant="secondary">Analyze loads</button>
-                <button id="disk-retry" class="btn" data-variant="secondary">Retry download</button>
-                <button id="disk-verify" class="btn" data-variant="secondary">Verify full disk</button>
-                <button id="disk-close" class="btn" data-variant="secondary">Close identity</button>
-            </div>
             <div id="disk-analysis-options" hidden>
                 <p class="hint">Choose the starting point. Perform the expected actions, then stop analyzing to download its load profile.</p>
                 <div class="disk-action-row">
@@ -77,7 +91,6 @@
         </div>
         <button id="disk-resume" hidden class="btn" data-variant="secondary">Retry and resume</button>
         <button id="disk-cancel" hidden class="btn" data-variant="secondary">Cancel operation</button>
-        <p id="disk-cache-notice" class="hint" role="status" hidden>Browser cache could not be completed. Downloads will continue normally.</p>
         <p id="disk-status" class="alert" role="status" aria-live="polite"></p>
         <p id="disk-notice" class="hint" hidden>Saving the disk downloads a complete disk. A state file requires its original base disk. Your password, pending changes and prepared download are lost when you close this page.</p>
         <p id="acceleration-status" class="alert" role="status" aria-live="polite"></p>

@@ -1,17 +1,16 @@
 export interface IdentityHandle {
     handle: number;
-    ipnsName: string;
     publicKey: Uint8Array;
 }
 export interface DiskHandle {
     handle: number;
     diskId: Uint8Array;
     descriptor: Uint8Array;
-    cid: string;
+    sha256: string;
 }
 export interface EncryptedObject {
     bytes: Uint8Array;
-    cid: string;
+    sha256: string;
 }
 export class Slop86Crypto {
     static create(options?: { workerUrl?: URL | string }): Promise<Slop86Crypto>;
@@ -27,7 +26,7 @@ export class Slop86Crypto {
     relayPublicKey(identity: number): Promise<Uint8Array>;
     signRelayChallenge(identity: number, challenge: {url:string;origin:string;nonce:Uint8Array;expires:number}): Promise<Uint8Array>;
     verify(publicKey: Uint8Array, message: Uint8Array, signature: Uint8Array): Promise<boolean>;
-    cid(bytes: Uint8Array): Promise<string>;
+    hash(bytes: Uint8Array): Promise<string>;
     closeDisk(disk: number): Promise<void>;
     closeIdentity(identity: number): Promise<void>;
     close(): Promise<void>;

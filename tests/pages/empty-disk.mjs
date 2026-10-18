@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import {mkdir, stat, writeFile} from "node:fs/promises";
 import {chromium, webkit} from "playwright";
 import {serveSite} from "./server.mjs";
-import {unlockIdentity} from "./encrypted.mjs";
+import {unlockIdentity,diskAction} from "./encrypted.mjs";
 
 const output = "build/empty-disk";
 await mkdir(output, {recursive:true});
@@ -82,7 +82,7 @@ for(const [name, type] of Object.entries({chromium, webkit})) {
         });
         console.log(name+": "+core.length+" empty disk API checks PASS");
         await unlockIdentity(page);
-        await page.locator("#disk-empty").click();
+        await diskAction(page,"disk-empty");
         assert.equal(await page.locator("#disk-empty-size").inputValue(), "1024");
         assert.equal(await page.evaluate(()=>document.activeElement.id), "disk-empty-size");
         const tabKey=name==="webkit" && process.platform==="darwin" ? "Alt+Tab" : "Tab";
@@ -92,9 +92,9 @@ for(const [name, type] of Object.entries({chromium, webkit})) {
         assert.equal(await page.evaluate(()=>document.activeElement.id), "disk-empty-cancel");
         await page.keyboard.press("Enter");
         assert.equal(await page.locator("#disk-empty-form").isVisible(), false);
-        assert.equal(await page.evaluate(()=>document.activeElement.id), "disk-empty");
+        assert.equal(await page.locator("#disk-menu-disk > summary").evaluate(el=>document.activeElement===el),true);
         assert.equal(downloads.length,0);
-        await page.locator("#disk-empty").click();
+        await diskAction(page,"disk-empty");
         for(const size of ["","0","-1","1.5","1048577"]) {
             await page.locator("#disk-empty-size").fill(size);
             await page.locator("#disk-empty-submit").click();
@@ -110,6 +110,9 @@ for(const [name, type] of Object.entries({chromium, webkit})) {
         }
         // A large capacity makes the real Worker operation cancellable even on fast hosts.
         await page.locator("#disk-empty-submit").click();
+        assert.equal(await page.locator("#disk-menu-disk > summary").getAttribute("aria-disabled"),"true");
+        await page.locator("#disk-menu-disk > summary").focus();await page.keyboard.press("Enter");
+        assert.equal(await page.locator("#disk-menu-disk").evaluate(el=>el.open),false);
         await page.locator("#disk-cancel").click();
         await page.waitForFunction(()=>document.querySelector("#disk-status").textContent.includes("cancelled") && !document.querySelector("#disk-empty-submit").disabled);
         assert.equal(downloads.length,0);
@@ -135,9 +138,9 @@ for(const [name, type] of Object.entries({chromium, webkit})) {
         await page.locator("#disk-close").click();
         await page.waitForFunction(()=>!document.querySelector("#disk-login").hidden && !document.querySelector("#disk-user").disabled);
         await unlockIdentity(page);
-        const chooser=page.waitForEvent("filechooser");await page.locator("#disk-open").click();await(await chooser).setFiles(file);
+        const chooser=page.waitForEvent("filechooser");await diskAction(page,"disk-open");await(await chooser).setFiles(file);
         await page.waitForFunction(()=>!document.querySelector("#disk-boot").disabled);
-        await page.locator("#disk-verify").click();
+        await diskAction(page,"disk-verify");
         await page.waitForFunction(()=>document.querySelector("#disk-status").textContent.startsWith("Disk verified."));
         const {createHash}=await import("node:crypto");
         assert((await page.locator("#disk-status").textContent()).includes(createHash("sha256").update(Buffer.alloc(1048576)).digest("hex")));
@@ -145,7 +148,7 @@ for(const [name, type] of Object.entries({chromium, webkit})) {
         if(process.env.MY98_EMPTY_LARGE==="1") {
             await page.locator("#disk-close").click();
             await page.waitForFunction(()=>!document.querySelector("#disk-login").hidden && !document.querySelector("#disk-user").disabled);
-            await unlockIdentity(page);await page.locator("#disk-empty").click();
+            await unlockIdentity(page);await diskAction(page,"disk-empty");
             assert.equal(await page.locator("#disk-empty-size").inputValue(),"1024");
             const started=Date.now(),event=page.waitForEvent("download",{timeout:240000});
             await page.locator("#disk-empty-submit").click();

@@ -17,6 +17,8 @@
   "build/libv86.mjs": "build/libv86.mjs",
   "build/v86.wasm": "build/v86.wasm",
   "build/disk/web/client.js": "build/disk/web/client.js",
+  "build/torrent/webtorrent.min.js": "build/torrent/webtorrent.min.js",
+  "licenses/webtorrent.txt": "node_modules/webtorrent/LICENSE",
   "build/disk/web/worker.js": "build/disk/web/worker.js",
   "build/disk/pkg/slop86_disk.js": "build/disk/pkg/slop86_disk.js",
   "build/disk/pkg/slop86_disk_bg.wasm": "build/disk/pkg/slop86_disk_bg.wasm",
@@ -39,5 +41,11 @@
   "vendor/lucide-1.17.0/source.json": "vendor/lucide-1.17.0/source.json",
   "src/browser/relay-network.js": "src/browser/relay-network.js",
   "src/disk/web/network-config.js": "src/disk/web/network-config.js",
-  "src/disk/web/relay-discovery.js": "src/disk/web/relay-discovery.js"
+  "src/disk/web/relay-discovery.js": "src/disk/web/relay-discovery.js",
+  "build/torrent/webtorrent.min.js.LEGAL.txt": "build/torrent/webtorrent.min.js.LEGAL.txt",
+  "licenses/events.txt": "node_modules/events/LICENSE",
+  "licenses/path-browserify.txt": "node_modules/path-browserify/LICENSE",
+  "licenses/process.txt": "node_modules/process/LICENSE",
+  "licenses/buffer.txt": "node_modules/buffer/LICENSE",
+  "src/browser/publication-options.js": "src/browser/publication-options.js"
 }

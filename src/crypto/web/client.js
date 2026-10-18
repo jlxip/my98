@@ -79,7 +79,7 @@ export class Slop86Crypto {
     relayPublicKey(identity) { return this.#request("relayPublicKey", {identity}); }
     signRelayChallenge(identity, {url,origin,nonce,expires}) { return this.#request("signRelayChallenge", {identity,url,origin,nonce:copy(nonce),expires}); }
     verify(publicKey, message, signature) { return this.#request("verify", { publicKey: copy(publicKey), message: copy(message), signature: copy(signature) }); }
-    cid(bytes) { return this.#request("cid", { bytes: copy(bytes) }); }
+    hash(bytes) { return this.#request("hash", { bytes: copy(bytes) }); }
     closeDisk(disk) { return this.#request("closeDisk", { disk }); }
     closeIdentity(identity) { return this.#request("closeIdentity", { identity }); }
     async close() {

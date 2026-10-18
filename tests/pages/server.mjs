@@ -14,6 +14,16 @@ export async function serveSite(options = {}) {
             if(!pathname.startsWith(prefix)) { res.writeHead(404).end(); return; }
             let relative = decodeURIComponent(pathname.slice(prefix.length));
             if(!relative || relative.endsWith("/")) relative += "index.html";
+            // Automatic publication lookup in general VM fixtures stays local.
+            if(relative === "torrent-sources.json") {
+                const api=`http://127.0.0.1:${server.address().port}${prefix.slice(0,-1)}`;
+                res.writeHead(200,{"Content-Type":"application/json","Cache-Control":"no-store"})
+                    .end(JSON.stringify({apis:[api],trackers:[],webseeds:[]}));return;
+            }
+            if(/^v1\/names\/[0-9a-f]{64}$/.test(relative)) {
+                res.writeHead(options.publicationStatus || 404,{"Content-Type":"application/json","Cache-Control":"no-store"})
+                    .end(JSON.stringify({error:"Fixture publication unavailable"}));return;
+            }
             const file = resolve(root, relative);
             if(!file.startsWith(root + sep)) { res.writeHead(404).end(); return; }
             if(relative === "coi-serviceworker.js") {

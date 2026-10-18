@@ -1,18 +1,39 @@
 import {setupDiskProgress} from './disk-progress.js';
 import {diskControls} from './disk-controls.js';
 import {DiskSession} from './disk-session.js';
+import {publicationOptions} from './publication-options.js';
 
-/** Local file/VM controls. Secret contexts stay in the independent disk Worker. */
+/** Disk/VM controls. Secret contexts stay in the independent disk Worker. */
 export function setupDisk(host) {
     const $ = id => document.getElementById("disk-" + id);
     const session=new DiskSession(host);
-    let working=false,capturing=false;
+    let working=false,capturing=false,readOnlyAccess=false;
+    const menus=[...$("workspace").querySelectorAll(".disk-menu")];
+    function closeMenu(menu,restoreFocus=false) {
+        const focused=menu.querySelector(".disk-menu-items").contains(document.activeElement);
+        menu.open=false;
+        if((focused||restoreFocus)&&!menu.hidden)menu.querySelector("summary").focus();
+    }
+    for(const menu of menus) {
+        menu.querySelector("summary").addEventListener("click",event=>{
+            if(working||host.busy())event.preventDefault();
+        });
+        menu.addEventListener("toggle",()=>{
+            if(menu.open)for(const other of menus)if(other!==menu)closeMenu(other);
+        });
+    }
+    $("workspace").addEventListener("click",event=>{
+        if(event.target.closest(".disk-menu-items button"))for(const menu of menus)if(menu.open)closeMenu(menu);
+    });
+    document.addEventListener("click",event=>{
+        if(!event.target.closest(".disk-menu"))for(const menu of menus)if(menu.open)closeMenu(menu);
+    });
+    $("workspace").addEventListener("keydown",event=>{
+        const menu=event.target.closest(".disk-menu");
+        if(event.key==="Escape"&&menu?.open){event.preventDefault();event.stopPropagation();closeMenu(menu,true);}
+    });
     const progress = setupDiskProgress($("progress"), () => session.active && host.hasSession() && session.description?.remote ?
-        {client:session.client, adapter:session.adapter, cid:session.description.remote.cid, busy:working || host.busy()} : null);
-    const cachePreference='my98-cache-publication';
-    $('cache-publication').checked=false;
-    try {$('cache-publication').checked=localStorage.getItem(cachePreference)==='true';}catch{}
-    $('cache-publication').onchange=()=>{try{localStorage.setItem(cachePreference,String($('cache-publication').checked));}catch{}};
+        {client:session.client, adapter:session.adapter, infoHash:session.description.remote.infoHash, busy:working || host.busy()} : null);
     const stateSaveButton=document.getElementById("save-state"), stateLoadButton=document.getElementById("load-state"), stateCancelButton=document.getElementById("cancel-state");
     const message = (text,error=false) => { $("status").textContent=text;$("status").classList.toggle("error",error); if(session.stateAbort) {const target=document.getElementById("session-status");target.textContent=text;target.classList.toggle("error",error);} };
     const stateMessage = (text,error=false) => {
@@ -23,10 +44,26 @@ export function setupDisk(host) {
     function syncControls(busy) {
         progress.update();
         const view=diskControls({busy,working,client:session.client,state:session.description,active:session.active,adapter:session.adapter,analyzing:session.analyzing,prepared:session.prepared,capturing,stateAbort:session.stateAbort});
-        $("workspace").hidden=!view.authenticated;$("login").hidden=view.authenticated;
+        $("workspace").hidden=!view.authenticated;
+        $("login").hidden=view.authenticated||readOnlyAccess;
+        $("reader").hidden=view.authenticated||!readOnlyAccess;
+        $("auth-switch").hidden=view.authenticated;
+        $("auth-switch").textContent=readOnlyAccess?"Or log in":"Or use a read key";
         $("brand").hidden=view.authenticated;$("notice").hidden=!view.authenticated;
         document.getElementById("welcome").classList.toggle("authenticated",view.authenticated);
+        if(busy||working||!view.authenticated)for(const menu of menus)if(menu.open)closeMenu(menu);
         $("panel").querySelectorAll("button,input").forEach(element=>element.disabled=busy||working);
+        $("workspace").querySelectorAll("[data-disk-action]").forEach(element=>{
+            element.hidden=!!view.hidden[element.dataset.diskAction];
+        });
+        $("primary-actions").hidden=![...$("primary-actions").querySelectorAll("[data-disk-action]")].some(element=>!element.hidden);
+        $("boot").dataset.variant=view.hidden['resume-state']?"primary":"secondary";
+        $("save-state").disabled=view.disabled['save-state'];
+        for(const menu of menus) {
+            menu.hidden=![...menu.querySelectorAll("[data-disk-action]")].some(element=>!element.hidden);
+            menu.querySelector("summary").setAttribute("aria-disabled",String(busy||working));
+            if(menu.hidden&&menu.open)closeMenu(menu);
+        }
         if(view.hideEmptyForm) {$("empty-form").hidden=true;$("empty").setAttribute("aria-expanded","false");}
         $("analyze").textContent=view.analyzing ? "Stop analyzing" : "Analyze loads";
         $("resume").hidden=!view.showRetry;
@@ -54,10 +91,16 @@ export function setupDisk(host) {
         host.download(result.blob,`${session.description.disk_id.slice(0,4).map(n=>n.toString(16).padStart(2,"0")).join("")}.my98`);
         message(`Full download prepared (${(result.size/1048576).toFixed(2)} MiB). Check that the file was saved.`);
     }
+    $("auth-switch").onclick=()=>{
+        if(working || host.busy() || session.client)return;
+        readOnlyAccess=!readOnlyAccess;
+        syncControls(false);
+        $(readOnlyAccess?"read-key":"user").focus();
+    };
     $("login").onsubmit=event=>{
         event.preventDefault();
         if(working || host.busy() || session.client)return;
-        const autoBoot=$("autoboot").checked;
+
         let username=$("user").value,password=$("password").value,machine=$("machine").value;$("password").value="";
         run("Unlocking identity…",async()=>{
             let identity;
@@ -66,7 +109,7 @@ export function setupDisk(host) {
                 message(session.analysisError, true);
                 void session.cancelLoadAnalysis().then(() => syncControls(host.busy())).catch(error => message(error.message, true));
             },onProgress:p=>{
-                if(p.phase==="cache-error") {$("cache-notice").hidden=false;return;}
+                if(p.error){stateMessage(p.error.message,true);return;}
                 if(session.stateAbort) {
                     const labels={compress:"Compressing state", "encrypt-state":"Encrypting state", "decrypt-state":"Decrypting state", "download-state":"Downloading state", decompress:"Decompressing state"};
                     message(`${labels[p.phase] || "Preparing state"}: ${(p.completed/1048576).toFixed(1)} MiB…`);
@@ -74,12 +117,26 @@ export function setupDisk(host) {
                 if(capturing && p.phase==="resolve") message("Finding remote disk…");
                 else if(capturing) message(`${({verify:"Verifying",encrypt:"Encrypting",download:"Downloading",resolve:"Finding remote disk"})[p.phase]||"Working"}: ${(p.completed/1048576).toFixed(1)} MiB…`);
             }});} finally {username=password=machine="";}
-            $("identity").textContent=identity.ipnsName;message("Identity unlocked. Create a disk, open a .my98 file, or find your remote disk.");
-            if(autoBoot) {
-                await openRemote();
-                if(session.description.remote?.stateCid && !$("cold-login").checked) await restorePublishedState();
-                else await boot();
-            }
+            $("identity").textContent=identity.publicKey.map(n=>n.toString(16).padStart(2,"0")).join("");
+            message("Opening publication…");capturing=true;syncControls(true);
+            await session.openRemote(await publicationOptions());
+            message("Publication opened.");
+        });
+    };
+    $("reader").onsubmit=event=>{
+        event.preventDefault();
+        if(working || host.busy() || session.client)return;
+        let readKey=$("read-key").value;
+        $("read-key").value="";
+        run("Opening read-only publication…",async()=>{
+            capturing=true;syncControls(true);
+            try {
+                const description=await session.openRemoteReadOnly({readKey,...await publicationOptions()},{
+                    onProgress:p=>{if(p.error)stateMessage(p.error.message,true);}
+                });
+                $("identity").textContent=description.remote.publicKey;
+                message("Read-only publication opened. Pending changes stay in memory.");
+            } finally {readKey="";}
         });
     };
     $("create").onclick=()=>run("Choosing image…",async()=>{
@@ -98,7 +155,7 @@ export function setupDisk(host) {
     };
     $("empty-cancel").onclick=()=>{
         if(working || host.busy())return;
-        $("empty-form").hidden=true;$("empty").setAttribute("aria-expanded","false");$("empty").focus();
+        $("empty-form").hidden=true;$("empty").setAttribute("aria-expanded","false");$("menu-disk").querySelector("summary").focus();
     };
     $("empty-form").onsubmit=event=>{
         event.preventDefault();
@@ -117,17 +174,6 @@ export function setupDisk(host) {
         const [file]=await host.pickFiles();if(!file)return;
         await session.open(file);message("Header authenticated. Disk data will be read and verified on demand.");
     });
-    $("only-localhost").checked=false;
-    $("only-localhost").onchange=()=>syncControls(host.busy());
-    async function openRemote() {
-        message("Finding remote disk…");capturing=true;syncControls(true);
-        try {
-            await session.openRemote({gateway:$("only-localhost").checked ? "http://127.0.0.1:8080" : undefined, onlyLocalhost:$("only-localhost").checked,prefetch:{enabled:false},persistentCache:{publication:$("cache-publication").checked}});
-            message("Remote disk authenticated. Choose Boot or a state; its load profile is downloaded first, then the rest of the disk. Changes are saved locally.");
-        } finally {capturing=false;syncControls(true);}
-    }
-    $("remote").onclick=()=>run("Finding remote disk…",openRemote);
-    $("cold-login").checked=false;
     async function boot(analyze = false) {
         message("Booting encrypted disk…");
         if(host.hasSession()&&!window.confirm("Close the current Windows session and boot this disk? Save its disk first."))return;
@@ -158,11 +204,12 @@ export function setupDisk(host) {
         if(file)await restoreState(file,{analyze});
     }
     function restorePublishedState(analyze=false) {
-        return restoreState({published:true},{analyze,published:true});
+        return restoreState({publication:true},{analyze,published:true});
     }
     $("load-state").onclick=()=>run("Restoring state…",()=>restoreLocalState());
     if(stateLoadButton) stateLoadButton.onclick=$("load-state").onclick;
-    if(stateSaveButton) stateSaveButton.onclick=()=>run("Saving state…",saveMachineState);
+    $("save-state").onclick=()=>run("Saving state…",saveMachineState);
+    if(stateSaveButton) stateSaveButton.onclick=$("save-state").onclick;
     if(stateCancelButton) stateCancelButton.onclick=()=>session.stateAbort?.abort();
     $("resume-state").onclick=()=>run("Restoring published state…",()=>restorePublishedState());
     $("boot").onclick=()=>run("Booting encrypted disk…",()=>boot());
@@ -192,6 +239,11 @@ export function setupDisk(host) {
         capturing=true;syncControls(true);const hash=await session.verifyImage();
         message("Disk verified. SHA-256: "+Array.from(hash,b=>b.toString(16).padStart(2,"0")).join("")+". The VM remains stopped.");
     });
+    $("clear-cache").onclick=()=>run("Clearing cache…",async()=>{
+        capturing=true;syncControls(true);
+        await session.clearCaches();
+        message("Cached pieces cleared. Pending writes are preserved. The VM remains stopped.");
+    });
     $("resume").onclick=()=>run("Retrying disk access…",async()=>{await session.retryAdapter();message("Disk access restored. Windows retains its RAM and writes.");});
     $("discard").onclick=()=>run("Discarding writes…",async()=>{
         if(!window.confirm("Discard pending writes and close this Windows session? The source file is preserved."))return;
@@ -201,9 +253,8 @@ export function setupDisk(host) {
     $("close").onclick=()=>run("Closing identity…",async()=>{
         if(!window.confirm("Close the identity? Pending changes and the prepared download for this session will be lost."))return;
         await session.close();$("identity").textContent="";$("analysis-options").hidden=true;
-        $("cache-notice").hidden=true;$("password").value="";$("autoboot").checked=true;$("cold-login").checked=false;$("empty-size").value="1024";
+        $("password").value="";$("empty-size").value="1024";
         message("");
     });
-    return {syncControls,relaySigner:()=>session.client,
-        relayGateways:async()=>((await session.client?.readStats())?.remote?.endpoints || []).map(e=>e.url)};
+    return {syncControls,relaySigner:()=>session.description?.readOnly?undefined:session.client};
 }

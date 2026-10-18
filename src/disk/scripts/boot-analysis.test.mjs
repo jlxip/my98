@@ -12,7 +12,7 @@ test('first-touch order, repeated and crossing reads match the range generator',
     assert.deepEqual([...a.units], [8, 0, 1, 2]);
     const {details, rankSum, ...expected} = selectBootRanges([8, 0, 1, 2]);
     const result = a.finish();
-    assert.deepEqual(result, [{version:1, cid:'snapshot', unitBytes:65536, ...expected}]);
+    assert.deepEqual(result, [{version:1, infoHash:'snapshot', unitBytes:65536, ...expected}]);
     a.observe(12 * 65536, 512);
     assert.deepEqual(a.finish(), result);
 });

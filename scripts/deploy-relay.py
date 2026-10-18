@@ -61,7 +61,7 @@ def backup(paths):
     print('Backup:', directory)
 
 def nginx_config(text, host):
-    # Only edit the HTTPS server for this exact name; preserve IPFS and ACME.
+    # Only edit the HTTPS server for this exact name; preserve existing routes and ACME.
     import re
     for match in re.finditer(r'\bserver\s*\{', text):
         depth=1; end=match.end()

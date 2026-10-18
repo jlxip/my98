@@ -4,9 +4,10 @@ import {chromium,webkit} from 'playwright';
 import {readFile,writeFile} from 'node:fs/promises';
 import {execFileSync} from 'node:child_process';
 import {chordCodes,textCodes} from '../../scripts/agent/input.js';
-import {unlockIdentity,bootEncrypted} from './encrypted.mjs';
+import {unlockIdentity,bootEncrypted,diskAction} from './encrypted.mjs';
 const fixture=JSON.parse(await readFile(process.env.MY98_RELAY_WIN98_FIXTURE || 'build/relay-pilot/win98-fixture.json','utf8'));
-const prefix=JSON.parse(process.env.MY98_RELAY_ADMIN_JSON || '["python3","scripts/seedbox.py"]');
+const prefix=JSON.parse(process.env.MY98_RELAY_ADMIN_JSON || 'null');
+if(!Array.isArray(prefix)||!prefix.length)throw Error('Set MY98_RELAY_ADMIN_JSON to the installed relay administrator command');
 const admin=(command,publicKey)=>JSON.parse(execFileSync(prefix[0],[...prefix.slice(1),'relay-'+command,...(publicKey?[publicKey]:[])],{encoding:'utf8'}));
 const results=[];
 for(const [name,type] of Object.entries({chromium,webkit})) {
@@ -27,7 +28,7 @@ for(const [name,type] of Object.entries({chromium,webkit})) {
   await unlockIdentity(page);
   publicKey=await page.evaluate(async()=>Array.from(await disk.relayPublicKey(),b=>b.toString(16).padStart(2,'0')).join(''));
   admin('allow',publicKey);
-  const chooser=page.waitForEvent('filechooser');await page.locator('#disk-open').click();await(await chooser).setFiles(fixture.file);
+  const chooser=page.waitForEvent('filechooser');await diskAction(page,"disk-open");await(await chooser).setFiles(fixture.file);
   await page.waitForFunction(()=>!document.querySelector('#disk-boot').disabled);
   await page.locator('#disk-boot').click();
   await page.waitForFunction(()=>window.vm&&document.querySelector('#relay-status').textContent==='Internet connected.',null,{timeout:60000});

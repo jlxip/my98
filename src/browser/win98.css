@@ -11,15 +11,28 @@ body { margin: 0; }
 #welcome { min-height: 100dvh; display: flex; padding: 32px 24px; }
 #disk-panel { width: min(100%, 360px); margin: auto; }
 #disk-brand { margin: 0 0 28px; text-align: center; color: var(--muted-foreground); font-size: 20px; font-weight: 500; letter-spacing: .13em; }
-#disk-login .input:not([type=checkbox]) { display: block; width: 100%; height: 44px; margin-top: 6px; font-size: 16px; }
+:is(#disk-login, #disk-reader) .input:not([type=checkbox]) { display: block; width: 100%; height: 44px; margin-top: 6px; font-size: 16px; }
 #disk-panel .boot-option { display: flex; align-items: center; gap: 8px; min-height: 32px; margin: 0; cursor: pointer; }
 #disk-login .boot-option:last-of-type { margin-bottom: 12px; }
 #disk-panel .boot-option input { width: 16px; height: 16px; margin: 0; }
-#disk-login .btn { width: 100%; min-height: 44px; font-size: 14px; }
+:is(#disk-login, #disk-reader) .btn { width: 100%; min-height: 44px; font-size: 14px; }
 #welcome.authenticated { min-height: 0; padding: 16px 24px; }
 #welcome.authenticated #disk-panel { width: min(100%, 64rem); }
 #disk-workspace .btn { margin: .25rem; max-width: 100%; height: auto; min-height: 36px; white-space: normal; }
 #disk-workspace .disk-action-row { display: flex; flex-wrap: wrap; }
+#disk-primary-actions { gap: 8px; margin-bottom: 12px; }
+#disk-menu-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; position: relative; }
+#disk-menu-bar .disk-menu::details-content { block-size: auto; opacity: 1; transition: none; }
+#disk-menu-bar .disk-menu:not([open])::details-content { display: none; }
+#disk-menu-bar summary { list-style: none; min-height: 44px; cursor: pointer; }
+#disk-menu-bar summary::-webkit-details-marker { display: none; }
+#disk-menu-bar summary span { margin-left: 8px; color: var(--muted-foreground); }
+#disk-menu-bar summary[aria-disabled=true] { opacity: .5; cursor: default; }
+#disk-menu-bar details[open] summary { background: var(--secondary); }
+#disk-menu-bar .disk-menu-items { position: absolute; top: calc(100% + 8px); left: 0; z-index: 20; width: min(280px, 100%); padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--popover); color: var(--popover-foreground); }
+#disk-menu-bar .disk-menu-items .btn { display: flex; justify-content: flex-start; text-align: left; width: 100%; min-height: 44px; margin: 0; }
+.disk-text-action { min-height: 44px; padding: 8px; border: 0; background: transparent; color: var(--muted-foreground); font: inherit; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+#disk-close { margin-left: auto; }
 #disk-empty-form { max-width: 28rem; margin: 1rem 0; padding: 1rem; border: 1px solid var(--border); border-radius: .5rem; }
 #disk-empty-size { display: block; width: 100%; height: 44px; margin-top: 6px; font-size: 16px; }
 #disk-identity, #disk-status { overflow-wrap: anywhere; }
@@ -96,3 +109,5 @@ html.vm-expanded, html.vm-expanded body { overflow: hidden; overscroll-behavior:
 #direct-pointer[aria-checked=true] { color: var(--primary-foreground); background: var(--primary); }
 #vm-view.direct-input .touch-control { display: none !important; }
 #vm-view.direct-input:not(.expanded) #view-controls { display: none; }
+
+#disk-auth-switch { display: block; margin: 12px auto 0; min-height: 44px; padding: 8px; border: 0; background: transparent; color: var(--muted-foreground); font: inherit; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
