@@ -26,6 +26,34 @@ class MetadataTest(unittest.TestCase):
             with self.assertRaises(PublicationError):inspect(data,kind="descriptor")
 
 class TransferTest(unittest.IsolatedAsyncioTestCase):
+    async def test_production_seeder_accepts_two_readers_behind_the_same_ip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);source=root/"source";source.mkdir()
+            data=bytes(range(256))*2200
+            (source/"disk.my98").write_bytes(data)
+            ih,metadata=create(source/"disk.my98","disk")
+            # Exercise production defaults: isolated=True used to hide this bug
+            # by enabling multiple connections per IP only in test sessions.
+            settings={"enable_dht":False,"dht_bootstrap_nodes":"",
+                "enable_incoming_utp":False,"enable_outgoing_utp":False}
+            engines=[Engine(listen="127.0.0.1:0",settings=settings) for _ in range(3)]
+            try:
+                ports=await asyncio.gather(*(e.listening() for e in engines))
+                seed=engines[0].add(ih,source,metadata=metadata,kind="disk",direct_only=True)
+                await engines[0].complete(seed,15)
+                for i in [1,2]:
+                    target=engines[i].add(ih,root/str(i),kind="disk",
+                        peers=[("127.0.0.1",ports[0])],direct_only=True)
+                    self.assertEqual(await engines[i].metadata(target,ih,kind="disk",timeout=10),metadata)
+                    await engines[i].complete(target,15)
+                    self.assertEqual((root/str(i)/"disk.my98").read_bytes(),data)
+                peers=seed.get_peer_info()
+                self.assertEqual(len(peers),2)
+                self.assertEqual({peer.ip[0] for peer in peers},{"127.0.0.1"})
+                self.assertEqual(len({peer.ip[1] for peer in peers}),2)
+            finally:
+                for engine in engines:engine.close()
+
     async def test_persistent_transfer_exact_same_node_and_magnet_metadata(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);source=root/"source";source.mkdir()

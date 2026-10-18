@@ -49,6 +49,8 @@ class Engine:
         self.loop=asyncio.get_running_loop()
         options={"listen_interfaces":listen,"enable_dht":True,"enable_lsd":False,
             "enable_upnp":False,"enable_natpmp":False,"connections_limit":128,
+            # Independent readers may share the public IP of an existing seeder.
+            "allow_multiple_connections_per_ip":True,
             "close_redundant_connections":False,"max_retry_port_bind":0,"listen_system_port_fallback":False,
             "alert_mask":int(lt.alert_category.error|lt.alert_category.storage|lt.alert_category.status|lt.alert_category.dht|lt.alert_category.dht_operation|lt.alert_category.stats),
             "max_metadata_size":96*1024*1024}
