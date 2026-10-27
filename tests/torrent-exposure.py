@@ -9,6 +9,10 @@ import socket
 import time
 
 
+def ports(args):
+    return [(8445,socket.SOCK_STREAM),(51414,socket.SOCK_STREAM),(51414,socket.SOCK_DGRAM)]+([(51415,socket.SOCK_DGRAM)] if args.webrtc else [])
+
+
 def serve(args):
     selector=selectors.DefaultSelector();sockets=[];stopping=False
     def stop(*_):
@@ -17,14 +21,14 @@ def serve(args):
     for number in [signal.SIGTERM,signal.SIGINT]:signal.signal(number,stop)
     try:
         for host,family in [("0.0.0.0",socket.AF_INET),("::",socket.AF_INET6)]:
-            for port,kind in [(8444,socket.SOCK_STREAM),(51413,socket.SOCK_STREAM),(51413,socket.SOCK_DGRAM)]:
+            for port,kind in ports(args):
                 listener=socket.socket(family,kind);sockets.append(listener)
                 if family==socket.AF_INET6:listener.setsockopt(socket.IPPROTO_IPV6,socket.IPV6_V6ONLY,1)
                 if kind==socket.SOCK_STREAM:listener.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
                 listener.bind((host,port))
                 if kind==socket.SOCK_STREAM:listener.listen(8)
                 listener.setblocking(False);selector.register(listener,selectors.EVENT_READ,(port,kind))
-        print(json.dumps({"ready":True,"ports":["8444/tcp","51413/tcp","51413/udp"]}),flush=True)
+        print(json.dumps({"ready":True,"ports":["8445/tcp","51414/tcp","51414/udp"]+(["51415/udp"] if args.webrtc else [])}),flush=True)
         deadline=time.monotonic()+args.seconds
         while not stopping and time.monotonic()<deadline:
             for key,_ in selector.select(.25):
@@ -52,7 +56,7 @@ def check(args):
     results=[]
     for address in addresses:
         family=socket.AF_INET6 if ipaddress.ip_address(address).version==6 else socket.AF_INET
-        for port,kind in [(8444,socket.SOCK_STREAM),(51413,socket.SOCK_STREAM),(51413,socket.SOCK_DGRAM)]:
+        for port,kind in ports(args):
             protocol="tcp" if kind==socket.SOCK_STREAM else "udp"
             with socket.socket(family,kind) as probe:
                 probe.settimeout(5);probe.connect((address,port));probe.sendall(args.token.encode())
@@ -68,6 +72,7 @@ if __name__=="__main__":
     parser.add_argument("--token",required=True)
     parser.add_argument("--host")
     parser.add_argument("--seconds",type=int,default=120)
+    parser.add_argument("--webrtc",action="store_true",help="Also verify Linux fixed ICE UDP port 51415")
     args=parser.parse_args()
     assert len(args.token)==64 and all(c in "0123456789abcdef" for c in args.token)
     assert 1<=args.seconds<=300

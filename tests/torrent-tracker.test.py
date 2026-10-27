@@ -46,19 +46,15 @@ class TrackerTest(unittest.IsolatedAsyncioTestCase):
             children=[]
             try:
                 with patch("my98_torrent.tracker.platform.system",return_value="Linux"):
-                    await tracker.start({"11"*20})
+                    await tracker.start()
                 children=list(tracker.children)
                 seen=root/"tracker/tracker-0.seen"
-                self.assertEqual(seen.read_text(),"11"*20+"\n")
-                tracker.update({"22"*20})
-                for _ in range(100):
-                    if seen.read_text()=="22"*20+"\n":break
-                    await asyncio.sleep(.01)
-                self.assertEqual(seen.read_text(),"22"*20+"\n")
-                self.assertEqual(tracker.access_list.read_text(),"22"*20+"\n")
+                self.assertEqual(seen.read_text(),"")
+                self.assertEqual(tracker.access_list.read_text(),"")
+                config=(root/"tracker/tracker-0.toml").read_text()
+                self.assertIn('mode = "deny"',config)
                 children[0].terminate()
                 self.assertIn("exited",await asyncio.wait_for(tracker.failed,5))
-                with self.assertRaises(PublicationError):tracker.update({"33"*20})
             finally:await tracker.stop()
             self.assertTrue(all(child.returncode is not None for child in children))
 
@@ -68,7 +64,7 @@ class TrackerTest(unittest.IsolatedAsyncioTestCase):
             tracker=Aquatic(Path(directory)/"tracker",{"binary":sys.executable,
                 "listen":[{"host":"127.0.0.1","port":busy.getsockname()[1]}]})
             with patch("my98_torrent.tracker.platform.system",return_value="Linux"):
-                with self.assertRaises(OSError):await tracker.start(set())
+                with self.assertRaises(OSError):await tracker.start()
             self.assertEqual(tracker.children,[])
             await tracker.stop()
 

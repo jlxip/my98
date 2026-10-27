@@ -20,7 +20,7 @@ class Tracker:
     def __init__(self):self.allowed=set();self.history=[]
     def update(self,hashes):
         self.allowed=set(hashes);self.history.append(self.allowed.copy())
-    async def start(self,hashes):self.update(hashes)
+    async def start(self):pass
     async def stop(self):pass
 
 
@@ -60,15 +60,15 @@ class ServiceTest(unittest.IsolatedAsyncioTestCase):
                         for h in handles:h.connect_peer(("127.0.0.1",ports[1]))
                         await asyncio.sleep(.1)
                 connector=asyncio.create_task(connect())
-                payload={"record":record.as_json(),"torrent":base64.b64encode(publisher.metadata(ih)).decode()}
+                payload={"record":record.as_json()}
                 async with ClientSession() as client:
                     # Reject arbitrary identities before writing anything.
                     bad=Record.sign(bytes(reversed(range(32))),100,ih)
-                    async with client.post(url+"/v1/candidates",json={**payload,"record":bad.as_json()}) as response:self.assertEqual(response.status,400)
+                    async with client.post(url+"/v2/candidates",json={**payload,"record":bad.as_json()}) as response:self.assertEqual(response.status,400)
                     self.assertEqual(tracker.allowed,set())
                     for _ in range(2):
-                        async with client.post(url+"/v1/candidates",json=payload) as response:self.assertEqual(response.status,202)
-                    async with client.get(url+"/v1/names/"+key.hex()) as response:self.assertEqual(response.status,404)
+                        async with client.post(url+"/v2/candidates",json=payload) as response:self.assertEqual(response.status,202)
+                    self.assertIsNone(node.store.public(key))
                     for _ in range(200):
                         if Engine.first_complete_seedbox(handles,[("127.0.0.1",ports[1])]):break
                         await asyncio.sleep(.05)
@@ -76,15 +76,15 @@ class ServiceTest(unittest.IsolatedAsyncioTestCase):
                     self.assertIsNone(node.store.public(key))
                     self.assertIsNone(node.store.adopted(key))
                     self.assertEqual(len(node.store.candidates()),1)
-                    self.assertEqual(tracker.allowed,{ih,disk})
-                    self.assertIn({ih},tracker.history)  # Root before verified children.
+                    self.assertEqual(node.owned_hashes(),{ih,disk})
+                    self.assertTrue(node.owned_hashes())
                     # The name changes only after the publisher's separate DHT commit.
                     await engines[0].put(record)
                     await node.poll_once()
                     await asyncio.wait_for(node.jobs[(key,100)],15)
                     self.assertEqual(node.store.adopted(key)[0],record)
                     self.assertEqual(node.store.candidates(),[])
-                    async with client.get(url+"/v1/names/"+key.hex()) as response:
+                    async with client.get(url+"/v2/dht/"+key.hex()+"/"+b"my98/publication/v1".hex()) as response:
                         self.assertEqual(Record.from_json(await response.json()),record)
                 connector.cancel();await asyncio.gather(connector,return_exceptions=True);connector=None
                 engines[0].close()  # Publisher is gone; persistence and name remain.
@@ -101,11 +101,11 @@ class ServiceTest(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(node.jobs[(key,100)],15)
                 self.assertEqual(node.catalog.path(disk,"disk").read_bytes(),path.read_bytes())
                 self.assertTrue((node.catalog.public/disk/"disk.my98").exists())
-                self.assertEqual(tracker.allowed,{ih,disk})
+                self.assertEqual(node.owned_hashes(),{ih,disk})
                 # Persistent references of an identity removed from the explicit
                 # follow configuration must never authorize a tracker swarm.
                 removed=Node(root/"node",[],engine=engines[1])
-                self.assertEqual(removed.tracker_hashes(),set())
+                self.assertEqual(removed.owned_hashes(),set())
                 await engines[1].put(node.store.public(key))
                 self.assertEqual(await engines[2].resolve(key,10),record)
             finally:

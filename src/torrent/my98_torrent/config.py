@@ -35,8 +35,10 @@ def validate_isolated(value,*,service=False):
 
 def load(path):
     value=json.loads(Path(path).read_text()) if path else {}
-    if type(value) is not dict or set(value)-{"nodes","trackers","webseeds","data","publisherData","follow","listen","api","aquatic"}:
+    if type(value) is not dict or set(value)-{"nodes","trackers","webseeds","data","publisherData","follow","listen","api","aquatic","webrtcPort"}:
         raise PublicationError("Invalid configuration fields")
+    if "webrtcPort" in value and (type(value["webrtcPort"]) is not int or not 0<=value["webrtcPort"]<=65535):
+        raise PublicationError("Invalid WebRTC UDP port")
     if "aquatic" in value:
         from .tracker import configuration
         configuration(value["aquatic"])
@@ -58,7 +60,7 @@ def load(path):
         if type(key) is not str or len(key)!=64 or key!=key.lower():raise PublicationError("Invalid followed key")
         try:bytes.fromhex(key)
         except ValueError as error:raise PublicationError("Invalid followed key") from error
-    api=value.get("api",{"host":"127.0.0.1","port":17498})
+    api=value.get("api",{"host":"127.0.0.1","port":17598})
     if type(api) is not dict or set(api)!={"host","port"} or type(api["port"]) is not int or not 1<=api["port"]<=65535:
         raise PublicationError("Invalid administrative API listener")
     try:local=ipaddress.ip_address(api["host"]).is_loopback

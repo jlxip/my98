@@ -38,17 +38,22 @@ async def main(args):
         **({"upload_rate_limit":131072} if args.webseed else {})})
     runner=None;stop_task=None;nginx=None;nginx_log=None
     try:
-        await tracker.start({ih})
+        await tracker.start()
         handle=engine.add(ih,content,metadata=metadata,kind="disk",trackers=[f"ws://127.0.0.1:{port}"])
         await engine.complete(handle,20)
         info={"infoHash":ih,"size":len(data),"sha256":hashlib.sha256(data).hexdigest(),
             "trackerPort":port,"libtorrent":engine.session.get_settings().get("user_agent"),
             "conventionalPeerTransportsEnabled":False,"webseedConfigured":args.webseed}
         async def describe(request):return web.json_response(info)
-        async def torrent(request):return web.Response(body=metadata,content_type="application/x-bittorrent")
+        async def info_dictionary(request):
+            import libtorrent as lt
+            if request.match_info["ih"]!=ih:raise web.HTTPNotFound()
+            return web.Response(body=lt.bencode(lt.bdecode(metadata)[b"info"]),content_type="application/octet-stream")
+        async def health(request):return web.json_response({"ready":True})
         app=web.Application()
         app.router.add_get("/fixture.json",describe)
-        app.router.add_get("/fixture.torrent",torrent)
+        app.router.add_get("/v2/info/{ih}",info_dictionary)
+        app.router.add_get("/health",health)
         runner=web.AppRunner(app);await runner.setup()
         site=web.TCPSite(runner,"127.0.0.1",args.http_port);await site.start()
         info["httpPort"]=site._server.sockets[0].getsockname()[1]
@@ -71,13 +76,13 @@ async def main(args):
                 # Comparable fixture bandwidth makes both normal sources
                 # observable without introducing application scheduling policy.
                 conf=Path(config["root"])/"config/nginx.conf"
-                conf.write_text(conf.read_text().replace("location /content/ {", "location /content/ {\nlimit_rate 128k;"))
+                conf.write_text(conf.read_text().replace("location /content/ {", "location /content/ {\nlimit_rate 16k;"))
             subprocess.run(helper.nginx_command(config,"-t"),check=True)
             nginx_log=(args.root/"https-process.log").open("ab")
             nginx=subprocess.Popen(helper.nginx_command(config,"-g","daemon off;"),stdout=nginx_log,stderr=nginx_log)
             for attempt in range(100):
                 if nginx.poll() is not None:raise RuntimeError("Private WSS Nginx exited")
-                try:await helper.request(config,"/v1/names/"+("01"*32));break
+                try:await helper.request(config,"/health");break
                 except OSError:
                     if attempt==99:raise
                     await asyncio.sleep(.05)
@@ -86,13 +91,6 @@ async def main(args):
         print(json.dumps(info),flush=True)
         stop=asyncio.Event();loop=asyncio.get_running_loop()
         for sig in (signal.SIGTERM,signal.SIGINT):loop.add_signal_handler(sig,stop.set)
-        allowed_probe=False
-        def reload_probe():
-            nonlocal allowed_probe
-            allowed_probe=not allowed_probe
-            tracker.update({ih,"fe"*20} if allowed_probe else {ih})
-        # Private fixture control only; production API has no such endpoint.
-        loop.add_signal_handler(signal.SIGUSR2,reload_probe)
         stop_task=asyncio.create_task(stop.wait())
         done,_=await asyncio.wait([stop_task,tracker.failed],return_when=asyncio.FIRST_COMPLETED)
         if tracker.failed in done and not stop.is_set():raise RuntimeError(tracker.failed.result())

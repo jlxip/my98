@@ -22,13 +22,14 @@ function encode(value) {
     if(Number.isInteger(value))return Buffer.from("i"+value+"e");
     if(typeof value==="string")value=Buffer.from(value);
     if(value instanceof Uint8Array)return Buffer.concat([Buffer.from(value.length+":"),value]);
+    if(Array.isArray(value))return Buffer.concat([Buffer.from("l"),...value.map(encode),Buffer.from("e")]);
     return Buffer.concat([Buffer.from("d"),...Object.keys(value).sort().flatMap(k=>[encode(k),encode(value[k])]),Buffer.from("e")]);
 }
 function add(data,name) {
     const pieces=[];
     for(let offset=0;offset<data.length;offset+=262144)pieces.push(createHash("sha1").update(data.subarray(offset,offset+262144)).digest());
     const info={name,length:data.length,"piece length":262144,pieces:Buffer.concat(pieces)},hash=createHash("sha1").update(encode(info)).digest("hex");
-    objects.set(hash,{data,name,metadata:encode({info})});return hash;
+    objects.set(hash,{data,name,metadata:encode({info}),info:encode(info)});return hash;
 }
 const disk=add(encrypted,"disk.my98");
 let record,descriptor,mode="online",sequence=1000;
@@ -56,11 +57,16 @@ const server=createServer(async(req,res)=>{
             publish(Buffer.concat(parts));res.writeHead(200,{...headers,"Content-Type":"application/json"}).end(JSON.stringify({descriptor,publicKey}));return;
         }
         if(path.startsWith("/mode/")){mode=path.split("/").at(-1);res.writeHead(200,headers).end();return;}
-        if(path.startsWith("/v1/")||path.startsWith("/content/")) {
+        if(path.startsWith("/v2/")||path.startsWith("/content/")) {
             if(mode==="offline"){res.writeHead(503,headers).end();return;}
-            if(path==="/v1/names/"+publicKey) {res.writeHead(200,{...headers,"Content-Type":"application/json"}).end(JSON.stringify(record));return;}
-            const match=path.match(/^\/v1\/torrents\/([a-f0-9]{40})\.torrent$/);
-            if(match && objects.has(match[1])){res.writeHead(200,headers).end(objects.get(match[1]).metadata);return;}
+            if(path==="/v2/dht/"+publicKey+"/"+salt.toString("hex")) {res.writeHead(200,{...headers,"Content-Type":"application/json"}).end(JSON.stringify(record));return;}
+            if(path==="/v2/dht/"+publicKey+"/"+Buffer.from("my98/locations/v1").toString("hex")) {
+                const locationsSalt=Buffer.from("my98/locations/v1"),value=encode({version:1,origins:[url]});
+                const payload=Buffer.concat([Buffer.from("4:salt"+locationsSalt.length+":"),locationsSalt,Buffer.from("3:seqi1e1:v"),value]);
+                res.writeHead(200,{...headers,"Content-Type":"application/json"}).end(JSON.stringify({publicKey,sequence:1,origins:[url],salt:locationsSalt.toString("hex"),signature:sign(null,payload,key).toString("hex")}));return;
+            }
+            const match=path.match(/^\/v2\/info\/([a-f0-9]{40})$/);
+            if(match && objects.has(match[1])){res.writeHead(200,headers).end(objects.get(match[1]).info);return;}
             const content=path.match(/^\/content\/([a-f0-9]{40})\/([^/]+)$/),object=objects.get(content?.[1]);
             if(object && content[2]===object.name) {
                 const range=req.headers.range?.match(/^bytes=(\d+)-(\d+)$/);requests.push({hash:content[1],range:req.headers.range});

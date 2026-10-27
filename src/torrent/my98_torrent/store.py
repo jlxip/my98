@@ -3,7 +3,7 @@ from contextlib import contextmanager
 import json
 from pathlib import Path
 import sqlite3
-from .protocol import Record, PublicationError, compare, descriptor
+from .protocol import Locations, Record, PublicationError, compare, descriptor
 
 class Store:
     def __init__(self, directory):
@@ -15,8 +15,9 @@ class Store:
                 CREATE TABLE IF NOT EXISTS observed (key BLOB PRIMARY KEY, record TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS public_names (key BLOB PRIMARY KEY, record TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS adopted (key BLOB PRIMARY KEY, record TEXT NOT NULL, descriptor TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS candidates (key BLOB NOT NULL, sequence INTEGER NOT NULL, record TEXT NOT NULL, metadata BLOB NOT NULL, PRIMARY KEY(key,sequence));
+                CREATE TABLE IF NOT EXISTS candidates (key BLOB NOT NULL, sequence INTEGER NOT NULL, record TEXT NOT NULL, metadata BLOB, PRIMARY KEY(key,sequence));
                 CREATE TABLE IF NOT EXISTS followed (key BLOB PRIMARY KEY);
+                CREATE TABLE IF NOT EXISTS locations (key BLOB PRIMARY KEY, record TEXT NOT NULL);
             """)
         self.database.chmod(0o600)
 
@@ -53,9 +54,9 @@ class Store:
             db.execute("BEGIN IMMEDIATE")
             return self._observe(db,record)
 
-    def accept_candidate(self, record, metadata):
+    def accept_candidate(self, record, metadata=None):
         record.verify()
-        if type(metadata) is not bytes or not 1 <= len(metadata) <= 16384:
+        if metadata is not None and (type(metadata) is not bytes or not 1 <= len(metadata) <= 16384):
             raise PublicationError("Invalid descriptor torrent metadata size")
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -87,7 +88,7 @@ class Store:
     def candidates(self):
         with self.connect() as db:
             rows=db.execute("SELECT record,metadata FROM candidates ORDER BY sequence").fetchall()
-        return [(Record.from_json(json.loads(record)),bytes(metadata)) for record,metadata in rows]
+        return [(Record.from_json(json.loads(record)),bytes(metadata) if metadata is not None else None) for record,metadata in rows]
 
     def public_records(self):
         with self.connect() as db:rows=db.execute("SELECT record FROM public_names").fetchall()
@@ -127,3 +128,17 @@ class Store:
         values=[r.sequence for r in [self.highest(key)] if r is not None]
         with self.connect() as db:row=db.execute("SELECT MAX(sequence) FROM candidates WHERE key=?",(key,)).fetchone()
         return max(values+[row[0] or 0])
+
+
+    def locations(self,key):
+        with self.connect() as db:
+            row=db.execute("SELECT record FROM locations WHERE key=?",(key,)).fetchone()
+            return Locations.from_json(json.loads(row[0]),key) if row else None
+
+    def set_locations(self,record):
+        record.verify()
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row=db.execute("SELECT record FROM locations WHERE key=?",(record.public_key,)).fetchone()
+            previous=Locations.from_json(json.loads(row[0]),record.public_key) if row else None
+            if compare(previous,record):db.execute("INSERT OR REPLACE INTO locations VALUES (?,?)",(record.public_key,json.dumps(record.as_json(),sort_keys=True)))

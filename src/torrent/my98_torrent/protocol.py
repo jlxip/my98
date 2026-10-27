@@ -3,10 +3,13 @@ from dataclasses import dataclass
 import json
 import re
 import time
+import ipaddress
+from urllib.parse import urlsplit
 from nacl.exceptions import BadSignatureError
 from nacl.signing import SigningKey, VerifyKey
 
 SALT = b"my98/publication/v1"
+LOCATIONS_SALT = b"my98/locations/v1"
 MAX_SEQUENCE = 2**53 - 1
 INFOHASH = re.compile(r"[0-9a-f]{40}\Z")
 
@@ -44,8 +47,12 @@ def value_bytes(info_hash):
     return b"d2:ih20:" + info_hash + b"e"
 
 
+def mutable_payload(salt, seq, value):
+    return b"4:salt" + str(len(salt)).encode() + b":" + salt + b"3:seqi" + str(sequence(seq)).encode() + b"e1:v" + value
+
+
 def signing_payload(seq, info_hash):
-    return b"4:salt" + str(len(SALT)).encode() + b":" + SALT + b"3:seqi" + str(sequence(seq)).encode() + b"e1:v" + value_bytes(info_hash)
+    return mutable_payload(SALT, seq, value_bytes(info_hash))
 
 
 @dataclass(frozen=True)
@@ -54,6 +61,12 @@ class Record:
     sequence: int
     info_hash: bytes
     signature: bytes
+
+    @property
+    def salt(self):return SALT
+
+    @property
+    def value(self):return value_bytes(self.info_hash)
 
     def verify(self):
         if type(self.public_key) is not bytes or len(self.public_key) != 32 or type(self.signature) is not bytes or len(self.signature) != 64:
@@ -96,12 +109,12 @@ def compare(previous, candidate):
     if previous is None:
         return True
     previous.verify()
-    if previous.public_key != candidate.public_key:
+    if previous.public_key != candidate.public_key or previous.salt != candidate.salt:
         raise PublicationError("Cannot compare different identities")
     if candidate.sequence < previous.sequence:
         raise Conflict("Publication is older than the highest observed version")
     if candidate.sequence == previous.sequence:
-        if candidate.info_hash != previous.info_hash:
+        if candidate.value != previous.value:
             raise Conflict("Conflicting publications have the same sequence")
         return False
     return True
@@ -134,3 +147,78 @@ def parse_descriptor(data):
         return descriptor(json.loads(data,object_pairs_hook=unique))
     except (UnicodeError,json.JSONDecodeError) as error:
         raise PublicationError("Invalid publication descriptor") from error
+
+
+def location_origins(origins):
+    if type(origins) not in (list,tuple) or not origins:
+        raise PublicationError("Configure at least one seedbox origin")
+    result=[]
+    for origin in origins:
+        if type(origin) is not str or not origin.isascii():raise PublicationError("Invalid seedbox origin")
+        try:
+            url=urlsplit(origin);port=url.port
+            host=url.hostname
+            if not host or url.username or url.password or url.query or url.fragment or url.path not in ("","/") or url.scheme not in ("https","http"):
+                raise ValueError()
+            try:
+                address=ipaddress.ip_address(host)
+                local=address.is_loopback;host=address.compressed
+                if address.version==6:host="["+host+"]"
+            except ValueError:
+                host=host.lower();local=host=="localhost"
+                if not re.fullmatch(r"[a-z0-9_.-]+",host) or host.rsplit(".",1)[-1].isdigit():raise ValueError()
+            if url.scheme=="http" and not local:raise ValueError()
+            suffix=":"+str(port) if port is not None and port!={"https":443,"http":80}[url.scheme] else ""
+            result.append(url.scheme+"://"+host+suffix)
+        except (ValueError,TypeError):raise PublicationError("Use an HTTPS seedbox origin without a path")
+    return tuple(sorted(set(result)))
+
+
+def locations_value(origins):
+    values=location_origins(origins)
+    value=b"d7:originsl"+b"".join(str(len(origin.encode())).encode()+b":"+origin.encode() for origin in values)+b"e7:versioni1ee"
+    if len(value)>1000:raise PublicationError("Seedbox locations exceed the BEP44 1000-byte limit")
+    return value
+
+
+@dataclass(frozen=True)
+class Locations:
+    public_key: bytes
+    sequence: int
+    origins: tuple
+    signature: bytes
+
+    @property
+    def salt(self):return LOCATIONS_SALT
+
+    @property
+    def value(self):return locations_value(self.origins)
+
+    def verify(self):
+        if type(self.public_key) is not bytes or len(self.public_key)!=32 or type(self.signature) is not bytes or len(self.signature)!=64 or self.origins!=location_origins(self.origins):
+            raise PublicationError("Invalid locations record")
+        try:VerifyKey(self.public_key).verify(mutable_payload(self.salt,self.sequence,self.value),self.signature)
+        except (BadSignatureError,ValueError) as error:raise PublicationError("Invalid locations signature") from error
+        return self
+
+    def as_json(self):
+        self.verify()
+        return {"publicKey":self.public_key.hex(),"sequence":self.sequence,"origins":list(self.origins),"signature":self.signature.hex(),"salt":self.salt.hex()}
+
+    @classmethod
+    def from_json(cls,value,expected_key=None):
+        if type(value) is not dict or set(value)!={"publicKey","sequence","origins","signature","salt"} or value["salt"]!=LOCATIONS_SALT.hex() or type(value["origins"]) is not list:
+            raise PublicationError("Invalid signed locations")
+        try:
+            for field,length in [("publicKey",64),("signature",128)]:
+                if type(value[field]) is not str or not re.fullmatch("[0-9a-f]{"+str(length)+"}",value[field]):raise ValueError()
+            result=cls(bytes.fromhex(value["publicKey"]),sequence(value["sequence"]),tuple(value["origins"]),bytes.fromhex(value["signature"])).verify()
+        except (ValueError,TypeError) as error:raise PublicationError("Invalid signed locations") from error
+        if expected_key is not None and result.public_key!=expected_key:raise PublicationError("Locations belong to another identity")
+        return result
+
+    @classmethod
+    def sign(cls,seed,seq,origins):
+        origins=location_origins(origins);key=SigningKey(seed)
+        signature=key.sign(mutable_payload(LOCATIONS_SALT,seq,locations_value(origins))).signature
+        return cls(bytes(key.verify_key),seq,origins,signature).verify()

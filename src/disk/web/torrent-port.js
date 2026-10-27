@@ -74,12 +74,17 @@ export class WindowTorrentPort {
             const transport=this.createTransport(args.sources,value=>{
                 if(!this.closed)this.port.postMessage({type:"progress",session,value});
             });
+            if(args.sourcesPending)transport.deferSources();
             this.sessions.set(session,transport);return null;
         }
         const transport=this.sessions.get(session);
         if(!transport)throw fail("TRANSPORT_ERROR","Ciphertext session is closed");
         switch(op) {
+        case "sources":transport.setSources(args.sources);return null;
         case "open":return transport.open(args);
+        case "metadata":
+            await transport.open(args);
+            return transport.entry(args.infoHash).metadata.slice();
         case "read":return transport.read(args,signal);
         case "background":transport.setBackground(args.infoHash,args.enabled);return null;
         case "stopPrefetch":await transport.stopPrefetch(args.infoHash);return null;

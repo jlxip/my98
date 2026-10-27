@@ -7,14 +7,14 @@ import shlex
 from .deployment import SERVICE_USER,nginx_command
 from .protocol import PublicationError
 
-MARKER="# Managed by my98 torrent services v1"
+MARKER="# Managed by my98 torrent services v2"
 
 
 def command(arguments):
     return shlex.join(map(str,arguments))
 
 
-def service_files(config,system,*,isolated=False,prefix="my98-torrent"):
+def service_files(config,system,*,isolated=False,prefix="my98-torrent-v2"):
     if not re.fullmatch(r"[a-z][a-z0-9-]+",prefix):raise PublicationError("Invalid service name")
     root=Path(config["root"]);runtime=Path(config["runtime"])
     user=pwd.getpwuid(os.getuid()).pw_name if isolated else SERVICE_USER

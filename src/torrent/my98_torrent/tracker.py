@@ -1,4 +1,4 @@
-"""Own Aquatic children and atomically maintain their shared access list."""
+"""Own public Aquatic signaling children; no publication admission or payload relay."""
 import asyncio
 import ipaddress
 import json
@@ -39,7 +39,7 @@ def configuration(value):
 class Aquatic:
     def __init__(self,root,config):
         self.config=configuration(config);self.root=Path(root).resolve()
-        self.access_list=self.root/"allowed.txt"
+        self.access_list=self.root/"denied.txt"
         self.children=[];self.watchers=[];self.failed=None;self.closing=False
         self.allowed=None
 
@@ -52,27 +52,12 @@ class Aquatic:
             result.append(f"ws://{host}:{listener['port']}")
         return tuple(result)
 
-    def update(self,hashes):
-        hashes=frozenset(hashes)
-        for value in hashes:hash_bytes(value)
-        if hashes==self.allowed:return
-        atomic_write(self.access_list,("".join(value+"\n" for value in sorted(hashes))).encode("ascii"))
-        self.allowed=hashes
-        # Only signal child Process objects created by this manager. Never read
-        # a PID file or signal a possibly reused/unrelated tracker PID.
-        for child in self.children:
-            if child.returncode is not None:
-                raise PublicationError("Own Aquatic tracker stopped")
-            try:child.send_signal(signal.SIGUSR1)
-            except ProcessLookupError as error:
-                raise PublicationError("Own Aquatic tracker stopped") from error
-
     async def watch(self,child):
         code=await child.wait()
         if not self.closing and not self.failed.done():
             self.failed.set_result(f"Own Aquatic tracker exited ({code}); see private tracker logs")
 
-    async def start(self,hashes):
+    async def start(self):
         if platform.system()!="Linux":
             raise PublicationError("Aquatic is supported on Linux only")
         binary=Path(self.config["binary"])
@@ -93,7 +78,7 @@ class Aquatic:
                 probe.listen(1)
         finally:
             for probe in sockets:probe.close()
-        self.update(hashes)
+        atomic_write(self.access_list,b"")
         try:
             for index,listener in enumerate(self.config["listen"]):
                 address=ipaddress.ip_address(listener["host"])
@@ -102,7 +87,7 @@ class Aquatic:
                     '[network]\naddress = '+json.dumps(f"{host}:{listener['port']}")+"\n"
                     +"only_ipv6 = "+str(address.version==6).lower()+"\n"
                     +"enable_http_health_checks = true\n"
-                    +'[access_list]\nmode = "allow"\npath = '+json.dumps(str(self.access_list))+"\n")
+                    +'[access_list]\nmode = "deny"\npath = '+json.dumps(str(self.access_list))+"\n")
                 config=self.root/f"tracker-{index}.toml"
                 atomic_write(config,text.encode())
                 with (self.root/f"tracker-{index}.log").open("ab",buffering=0) as output:

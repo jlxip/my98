@@ -25,18 +25,39 @@ export class RemotePublication {
         unhex(owner,32);
         if(publicKey && descriptorInfoHash)throw fail("INVALID_PUBLICATION","Choose a public key or descriptor infohash");
         if(publicKey!==undefined && publicKey!==owner)throw fail("INVALID_PUBLICATION","Publication belongs to a different identity");
-        const config=torrentSources(sources);
-        let record=null;
+        let config=torrentSources(sources);
+        let record=null,locationsTask,locationsController;
+        const abortLocations=()=>locationsController?.abort(signal?.reason||fail("CANCELLED","Locations lookup cancelled"));
         if(descriptorInfoHash!==undefined)infoHash(descriptorInfoHash);
         else {
-            record=await resolveRecord(publicKey||owner,config,verifySignature,{signal});
-            if(!record)throw fail("NO_PUBLICATION","No publication was found for this identity");
+            locationsController=new AbortController();
+            signal?.addEventListener("abort",abortLocations,{once:true});
+            if(signal?.aborted)abortLocations();
+            locationsTask=resolveRecord(publicKey||owner,config,verifySignature,
+                {signal:locationsController.signal,locations:true}).catch(()=>null);
+            try {
+                record=await resolveRecord(publicKey||owner,config,verifySignature,{signal});
+                if(!record)throw fail("NO_PUBLICATION","No publication was found for this identity");
+            } catch(error) {
+                abortLocations();signal?.removeEventListener("abort",abortLocations);
+                await locationsTask;throw error;
+            }
+            config=torrentSources({apis:[],trackers:config.trackers,webseeds:[]});
             descriptorInfoHash=record.infoHash;
         }
         const remote=new RemotePublication(io,config);
         remote.scope=prefetchScope;
+        remote.locationsTask=locationsTask;
+        remote.abortLocations=()=>{abortLocations();signal?.removeEventListener("abort",abortLocations);};
         try {
-            await io.call("create",{session:remote.session,sources:config},signal);
+            await io.call("create",{session:remote.session,sources:config,sourcesPending:!!locationsTask},signal);
+            if(locationsTask)remote.locationsTask=locationsTask.then(async locations=>{
+                if(remote.closed)return;
+                const origins=locationsController.signal.aborted?[]:locations?.origins??[];
+                const sources=torrentSources({apis:origins,trackers:config.trackers,webseeds:origins.map(origin=>origin+"/content")});
+                await io.call("sources",{session:remote.session,sources});
+                remote.sources=sources;
+            }).catch(()=>{}).finally(()=>signal?.removeEventListener("abort",abortLocations));
             const root=await remote.torrent(descriptorInfoHash,"descriptor",signal);
             const bytes=await remote.bytes(descriptorInfoHash,0,root.size,signal);
             remote.publication=parseDescriptor(bytes);
@@ -60,26 +81,11 @@ export class RemotePublication {
                 const parsed=await verifyMetadata(cached,hash,kind);this.metadata.set(hash,parsed);return parsed;
             } catch {} // Immutable metadata can be safely refetched after cache corruption.
         }
-        for(const api of this.sources.apis) {
-            if(signal?.aborted)throw signal.reason;
-            const controller=new AbortController();
-            const abort=()=>controller.abort(signal.reason||fail("CANCELLED","Metadata lookup cancelled"));
-            signal?.addEventListener("abort",abort,{once:true});
-            const timer=setTimeout(()=>controller.abort(fail("TRANSPORT_TIMEOUT","Torrent metadata lookup timed out")),10000);
-            try {
-                const response=await fetch(api+"/v1/torrents/"+hash+".torrent",{signal:controller.signal,
-                    credentials:"omit",redirect:"error",cache:"no-store"});
-                if(!response.ok)continue;
-                const data=await boundedBytes(response,kind==="descriptor"?16384:96*1024*1024);
-                const parsed=await verifyMetadata(data,hash,kind);
-                await metadataCache(hash,parsed.metadata);this.metadata.set(hash,parsed);return parsed;
-            } catch(error) {
-                if(signal?.aborted)throw signal.reason;
-                if(error.code==="STORAGE_FULL" || error.code==="STORAGE_ERROR")throw error;
-            } finally {clearTimeout(timer);signal?.removeEventListener("abort",abort);}
-        }
-        throw fail("PUBLICATION_UNAVAILABLE","No verified torrent metadata is available");
+        const data=await this.io.call("metadata",{session:this.session,infoHash:hash,kind},signal);
+        const parsed=await verifyMetadata(data,hash,kind);
+        await metadataCache(hash,parsed.metadata);this.metadata.set(hash,parsed);return parsed;
     }
+
     async torrent(hash,kind,signal) {
         const parsed=await this.metadataFor(hash,kind,signal);
         if(!this.opened.has(hash)) {
@@ -162,7 +168,7 @@ export class RemotePublication {
         if(!hash)throw fail("NO_PUBLISHED_STATE","This publication has no state");
         const meta=await this.torrent(hash,"state",signal),controller=new AbortController();
         const remote=this,pending=[];
-        let offset=0,next=0,stopped=false;
+        let offset=0,next=0,active=0,stopped=false;
         const finish=()=>signal?.removeEventListener("abort",abort);
         const stop=reason=>{
             if(stopped)return;
@@ -171,16 +177,17 @@ export class RemotePublication {
         const abort=()=>stop(signal.reason||fail("CANCELLED","Published state cancelled"));
         if(signal?.aborted)throw signal.reason;
         signal?.addEventListener("abort",abort,{once:true});
-        // Count completed but unconsumed reads as occupied slots too. A slow
-        // first piece must not let later pieces buffer the entire state.
+        // Refill when a request finishes, independently of ordered consumption.
+        // Four requests may run at once; retain at most sixteen 256 KiB ranges
+        // (4 MiB, including in-flight ranges) so a stalled head stays bounded.
         const fill=()=>{
-            while(!stopped && pending.length<4 && next<meta.size) {
-                const start=next,count=Math.min(262144,meta.size-start);next+=count;
+            while(!stopped && active<4 && pending.length<16 && next<meta.size) {
+                const start=next,count=Math.min(262144,meta.size-start);next+=count;active++;
                 const read=Promise.resolve().then(()=>remote.bytes(hash,start,count,controller.signal)).then(bytes=>{
                     if(!(bytes instanceof Uint8Array) || bytes.length!==count)
                         throw fail("TRANSPORT_ERROR","Short published state range");
                     return {bytes};
-                }).catch(error=>{stop(error);return {error};});
+                }).catch(error=>{stop(error);return {error};}).finally(()=>{active--;fill();});
                 // Observe every rejection immediately, including reads ahead of
                 // the consumer. All pending RPCs share the abort controller.
                 pending.push(read);
@@ -204,8 +211,9 @@ export class RemotePublication {
 
     async close() {
         if(this.closed)return;
-        this.closed=true;this.cancel();
+        this.closed=true;this.abortLocations?.();this.cancel();
         try{await this.io.call("close",{session:this.session});}catch{}
+        await this.locationsTask;
         this.opened.clear();this.metadata.clear();
     }
 }

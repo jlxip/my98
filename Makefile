@@ -71,9 +71,10 @@ site-test: site
 	node scripts/run-browser-test.mjs tests/pages/media.mjs
 	node scripts/run-browser-test.mjs tests/pages/mobile.mjs
 	node scripts/run-browser-test.mjs tests/pages/controls.mjs
-	node --test tests/torrent-browser-protocol.test.mjs
+	node --test tests/torrent-browser-protocol.test.mjs tests/torrent-metadata-race.test.mjs tests/torrent-state-queue.test.mjs
 	node scripts/run-browser-test.mjs tests/torrent-store.mjs
 	node scripts/run-browser-test.mjs tests/torrent-records.mjs
+	node scripts/run-browser-test.mjs tests/torrent-optional-locations.mjs
 	node scripts/run-browser-test.mjs tests/torrent-window.mjs
 	node scripts/run-browser-test.mjs tests/torrent-state.mjs
 	node scripts/run-browser-test.mjs tests/torrent-client.mjs
@@ -115,6 +116,8 @@ torrent-python:
 
 torrent-test:
 	$(TORRENT_PYTHON) tests/torrent-protocol.test.py
+	$(TORRENT_PYTHON) tests/torrent-discovery.test.py
+	$(TORRENT_PYTHON) tests/torrent-latency.test.py
 	$(TORRENT_PYTHON) tests/torrent-native.test.py
 	$(TORRENT_PYTHON) tests/torrent-transfer.test.py
 	$(TORRENT_PYTHON) tests/torrent-service.test.py
@@ -125,3 +128,9 @@ torrent-test:
 .PHONY: torrent-webtorrent-test
 torrent-webtorrent-test: disk
 	node scripts/run-browser-test.mjs tests/torrent-webtorrent.mjs
+
+.PHONY: torrent-discovery-browser-test
+torrent-discovery-browser-test: site
+	TORRENT_PYTHON="$(TORRENT_PYTHON)" node scripts/run-browser-test.mjs tests/torrent-discovery-browser.mjs
+	node scripts/run-browser-test.mjs tests/torrent-discovery-metadata.mjs
+	node scripts/run-browser-test.mjs tests/torrent-metadata-parallel.mjs

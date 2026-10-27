@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import runpy
 import shutil
 import subprocess
 import sys
@@ -21,14 +22,78 @@ SOURCES = {
 }
 
 
+ICE_TRANSFORM = {'name': 'webtorrent-ice-udp-port', 'sha256': 'e2ab825bd3003cbdbd4b885d5fb668b1ea3c93357aad38f352b4afa6ada89ee2', 'files': {'include/libtorrent/settings_pack.hpp': {'before': 'f4907af713a1632cbc4286acac2f15742a8bc842539d759d93ba9cc05b24cd3e', 'after': '62337e41eb67a56c4365352143cc4444a18fd1df7fa16154762c6ac6248bbe01'}, 'src/settings_pack.cpp': {'before': 'ebba4f2fb56101e6ff425350d008bf61b30282a16b614a85ad7adbfc1195f07a', 'after': '4ccb75f1a1923dd1d59cea3610dc5f9f4da9de2be9a5e81b80fcb9cec2a87a0d'}, 'src/rtc_signaling.cpp': {'before': '16058554f3d04a5532275e63c18da610ba22091d038c35145015fb4310b18308', 'after': '7b8ff1263da4ea20f5fd91c3ad17b96218784db9130cef1e3e830c34bb8e6c72'}}}
+
 BUILD_ENV = os.environ.copy()
+
+def file_digest(path):
+    with Path(path).open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def apply_native_transform(root, source, transformations):
+    transformer = transformations / "webtorrent_ice_udp_port.py"
+    if file_digest(transformer) != ICE_TRANSFORM["sha256"]:
+        raise RuntimeError("Native transformer checksum mismatch")
+    marker = root / "native-source-transform.json"
+    if marker.exists() and json.loads(marker.read_text()) != ICE_TRANSFORM:
+        raise RuntimeError("Native build cache belongs to a different source transformation")
+    actual = {name:file_digest(source/name) for name in ICE_TRANSFORM["files"]}
+    before = {name:value["before"] for name,value in ICE_TRANSFORM["files"].items()}
+    after = {name:value["after"] for name,value in ICE_TRANSFORM["files"].items()}
+    if marker.exists() and actual == before:
+        raise RuntimeError("Native sources were reverted underneath the transformation marker")
+    runpy.run_path(str(transformer))["apply"](source)
+    if any(file_digest(source/name) != digest for name,digest in after.items()):
+        raise RuntimeError("Transformed native source checksum mismatch")
+    marker.write_text(json.dumps(ICE_TRANSFORM, indent=2) + "\n")
+    return ICE_TRANSFORM
+
+
+def boost_ready(prefix, minor):
+    try:
+        return ((prefix/".boost-headers-complete").read_text().strip() == "1.92.0"
+            and (prefix/".boost-python-cmake-complete").read_text().strip() == "1.92.0 python"+minor
+            and (prefix/"include/boost/version.hpp").is_file()
+            and bool(list((prefix/"lib").glob("libboost_python"+minor+"*"))))
+    except FileNotFoundError:
+        return False
+
+
+def verify_boost(prefix, minor, archive):
+    if not boost_ready(prefix, minor):
+        raise RuntimeError("Reusable Boost prefix is incomplete or has a different Python ABI")
+    tree = hashlib.sha256(); count = 0; license_bytes = None
+    base = SOURCES["boost"][2] + "/"
+    with tarfile.open(archive) as package:
+        for member in package:
+            if member.name == base+"LICENSE_1_0.txt":
+                license_bytes = package.extractfile(member).read()
+            if not member.name.startswith(base+"boost/") or member.isdir():
+                continue
+            if not member.isfile():
+                raise RuntimeError("Review non-file Boost header member")
+            name = member.name[len(base):]
+            path = prefix/"include"/name
+            expected = hashlib.sha256(package.extractfile(member).read()).hexdigest()
+            if not path.is_file() or path.is_symlink() or file_digest(path) != expected:
+                raise RuntimeError("Reusable Boost header differs from pinned source: "+name)
+            tree.update(name.encode()+b"\0"+expected.encode()+b"\n"); count += 1
+    actual_count = sum(p.is_file() for p in (prefix/"include/boost").rglob("*"))
+    if actual_count != count or license_bytes is None:
+        raise RuntimeError("Reusable Boost header set differs from pinned source")
+    libraries = {p.name:file_digest(p) for p in sorted((prefix/"lib").glob("libboost_python"+minor+"*")) if p.is_file()}
+    if not libraries:
+        raise RuntimeError("Reusable Boost.Python library is missing")
+    return {"prefix":str(prefix),"headers":count,"headerTreeSha256":tree.hexdigest(),"libraries":libraries}, license_bytes
+
 
 def run(args, cwd=None):
     print("+ " + " ".join(map(str, args)), flush=True)
     subprocess.run(list(map(str, args)), cwd=cwd, check=True, env=BUILD_ENV)
 
 
-def unpack(name, directory):
+def source_archive(name, directory):
     url, digest, folder = SOURCES[name]
     archive = directory / url.rsplit("/", 1)[1]
     if not archive.exists():
@@ -43,7 +108,15 @@ def unpack(name, directory):
         actual = hashlib.file_digest(stream, "sha256").hexdigest()
     if actual != digest:
         raise RuntimeError("Source checksum mismatch: " + name)
+    return archive
+
+
+def unpack(name, directory):
+    archive = source_archive(name, directory)
+    folder = SOURCES[name][2]
     target = directory / folder
+    if (target / ".my98-license-only").exists():
+        raise RuntimeError("This cache has only the Boost license; use --reuse-boost-prefix or a fresh root")
     if not target.exists():
         with tempfile.TemporaryDirectory(prefix=".extract-", dir=directory) as staging:
             with tarfile.open(archive) as package:
@@ -57,6 +130,7 @@ def main():
     parser.add_argument("--root", type=Path, required=True, help="Private build/runtime directory")
     parser.add_argument("--webrtc", choices=["on", "off"], required=True)
     parser.add_argument("--jobs", type=int, default=1)
+    parser.add_argument("--reuse-boost-prefix", type=Path, help="Verify and reuse an existing Boost prefix read-only; avoid extracting its full source")
     parser.add_argument("--python-include", type=Path)
     parser.add_argument("--python-library", type=Path)
     parser.add_argument("--openssl-root", type=Path)
@@ -72,6 +146,12 @@ def main():
     root = args.root.resolve()
     if root == Path("/") or root == Path.home():
         parser.error("A dedicated directory is required")
+    if args.reuse_boost_prefix:
+        borrowed = args.reuse_boost_prefix.resolve()
+        if root == borrowed or root in borrowed.parents or borrowed in root.parents:
+            parser.error("The new build root and read-only Boost prefix must not overlap")
+    if args.webrtc == "off" and any((root/name).exists() for name in ("native-source-transform.json", "native-patch.json")):
+        parser.error("Use a fresh root when disabling WebRTC after a patched build")
     root.mkdir(parents=True, exist_ok=True)
     sources = root / "sources"; sources.mkdir(exist_ok=True)
     prefix = root / "prefix"; prefix.mkdir(exist_ok=True)
@@ -79,16 +159,29 @@ def main():
     if not (runtime / "bin/python").exists():
         run([sys.executable, "-m", "venv", "--without-pip", runtime])
     python = runtime / "bin/python"
-    boost = unpack("boost", sources)
     minor = str(sys.version_info.major) + str(sys.version_info.minor)
-    libraries = list((prefix / "lib").glob("libboost_python" + minor + "*"))
-    headers = prefix / "include/boost"
-    marker = prefix / ".boost-headers-complete"
-    if not marker.exists():
+    boost_prefix = args.reuse_boost_prefix.resolve() if args.reuse_boost_prefix else prefix
+    reuse_boost = None
+    if args.reuse_boost_prefix or boost_ready(prefix, minor):
+        archive = source_archive("boost", sources)
+        reuse_boost, license_bytes = verify_boost(boost_prefix, minor, archive)
+        boost = sources / SOURCES["boost"][2]
+        if not boost.exists():
+            boost.mkdir()
+            (boost/".my98-license-only").write_text("Reused verified Boost headers and library\n")
+        (boost/"LICENSE_1_0.txt").write_bytes(license_bytes)
+        if boost_prefix != prefix:
+            (prefix/"lib").mkdir(exist_ok=True)
+            for name in reuse_boost["libraries"]:
+                shutil.copy2(boost_prefix/"lib"/name, prefix/"lib"/name)
+    else:
+        boost = unpack("boost", sources)
+        headers = prefix / "include/boost"
+        marker = prefix / ".boost-headers-complete"
         shutil.copytree(boost / "boost", headers, dirs_exist_ok=True)
         marker.write_text("1.92.0\n")
     boost_marker = prefix / ".boost-python-cmake-complete"
-    if not libraries or not boost_marker.exists():
+    if reuse_boost is None:
         # Use the source list from upstream's CMake target, without modifying it.
         upstream = (boost / "libs/python/CMakeLists.txt").read_text().split("# Boost::python alias",1)[0]
         names = list(dict.fromkeys(re.findall(r"^  (src/[^\s]+\.cpp)$", upstream, re.M)))
@@ -120,6 +213,8 @@ def main():
         boost_marker.write_text("1.92.0 python" + minor + "\n")
     libtorrent = unpack("libtorrent", sources)
     adaptations = []
+    if args.webrtc == "on":
+        adaptations.append(apply_native_transform(root, libtorrent, args.bridge_source.resolve()/"patches"))
     if platform.system() == "OpenBSD":
         # 2.1.2 captures this unused constant unconditionally, although OpenBSD
         # has no RLIMIT_AS. Guard only its declaration; keep RLIMIT_NOFILE and
@@ -140,7 +235,7 @@ def main():
     rpath = str(prefix / "lib") if platform.system() in ("Darwin", "OpenBSD") else "$ORIGIN/../..;$ORIGIN"
     configure = ["cmake", "-S", libtorrent, "-B", output,
         "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_CXX_FLAGS_RELEASE=" + args.release_flags, "-DCMAKE_INSTALL_PREFIX=" + str(prefix),
-        "-DCMAKE_PREFIX_PATH=" + str(prefix), "-DBoost_ROOT=" + str(prefix),
+        "-DCMAKE_PREFIX_PATH=" + str(prefix) + ";" + str(boost_prefix), "-DBoost_ROOT=" + str(boost_prefix),
         "-DBoost_NO_BOOST_CMAKE=ON", "-DCMAKE_POLICY_DEFAULT_CMP0167=OLD",
         "-DCMAKE_INSTALL_RPATH=" + rpath, "-DBUILD_SHARED_LIBS=ON",
         "-Dpython-bindings=ON", "-Dpython-egg-info=OFF", "-Dpython-install-system-dir=OFF",
@@ -167,7 +262,7 @@ def main():
     bridge_build = root / "bridge-build"
     command = ["cmake", "-S", bridge, "-B", bridge_build,
         "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_CXX_FLAGS_RELEASE=" + args.release_flags, "-DCMAKE_INSTALL_PREFIX=" + str(prefix),
-        "-DCMAKE_PREFIX_PATH=" + str(prefix), "-DBoost_ROOT=" + str(prefix),
+        "-DCMAKE_PREFIX_PATH=" + str(prefix) + ";" + str(boost_prefix), "-DBoost_ROOT=" + str(boost_prefix),
         "-DBoost_NO_BOOST_CMAKE=ON", "-DCMAKE_POLICY_DEFAULT_CMP0167=OLD",
         "-DCMAKE_INSTALL_RPATH=" + rpath, "-DPython3_EXECUTABLE=" + str(python),
         "-DPython3_INCLUDE_DIR=" + str(include)]
@@ -189,7 +284,7 @@ def main():
             executable = match.group(1)
             compilers[kind] = {"path":executable,"version":subprocess.check_output(
                 [executable,"--version"],text=True,env=BUILD_ENV).splitlines()[0]}
-    (root / "native-build.json").write_text(json.dumps({"libtorrent":"2.1.2","boost":"1.92.0","python":platform.python_version(),"platform":platform.platform(),"webrtc":args.webrtc,"prefix":str(prefix),"release_flags":args.release_flags,"compilers":compilers,"sources":SOURCES,"adaptations":adaptations}, indent=2) + "\n")
+    (root / "native-build.json").write_text(json.dumps({"libtorrent":"2.1.2","boost":"1.92.0","python":platform.python_version(),"platform":platform.platform(),"webrtc":args.webrtc,"prefix":str(prefix),"release_flags":args.release_flags,"compilers":compilers,"sources":SOURCES,"adaptations":adaptations,"reusedBoost":reuse_boost}, indent=2) + "\n")
 
 
 if __name__ == "__main__":

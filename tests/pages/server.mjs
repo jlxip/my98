@@ -18,9 +18,9 @@ export async function serveSite(options = {}) {
             if(relative === "torrent-sources.json") {
                 const api=`http://127.0.0.1:${server.address().port}${prefix.slice(0,-1)}`;
                 res.writeHead(200,{"Content-Type":"application/json","Cache-Control":"no-store"})
-                    .end(JSON.stringify({apis:[api],trackers:[],webseeds:[]}));return;
+                    .end(JSON.stringify(options.sources||{apis:[api],trackers:[],webseeds:[]}));return;
             }
-            if(/^v1\/names\/[0-9a-f]{64}$/.test(relative)) {
+            if(/^v2\/dht\/[0-9a-f]{64}\/[0-9a-f]+$/.test(relative)) {
                 res.writeHead(options.publicationStatus || 404,{"Content-Type":"application/json","Cache-Control":"no-store"})
                     .end(JSON.stringify({error:"Fixture publication unavailable"}));return;
             }

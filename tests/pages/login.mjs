@@ -29,7 +29,7 @@ for(const [name,type] of Object.entries({chromium,webkit})) {
         assert.equal(await page.locator('#disk-remote').count(),0);
         assert.match(await page.locator('#disk-status').textContent(),/No publication was found/);
         assert.equal(await page.locator('#session').isVisible(),false);
-        assert.equal(server.requests.filter(r=>r.path.startsWith('/v1/names/')).length,1);
+        assert.equal(server.requests.filter(r=>r.path.startsWith('/v2/dht/')).length,2);
         assert.equal(await page.locator('#disk-auth-switch').isVisible(),false);
         assert.equal(await page.locator('#disk-only-localhost').isVisible(),false);
         assert.equal(await page.locator('#disk-boot').isDisabled(),true);
@@ -64,7 +64,7 @@ for(const [name,type] of Object.entries({chromium,webkit})) {
         await page.locator('#disk-menu-disk > summary').click();
         assert.equal(await page.locator('#disk-empty').isEnabled(),true);
         assert.equal(await page.locator('#disk-open').isVisible(),true);
-        assert.equal(server.requests.filter(r=>r.path.startsWith('/v1/names/')).length,2);
+        assert.equal(server.requests.filter(r=>r.path.startsWith('/v2/dht/')).length,4);
         assert(requests.every(url=>new URL(url).origin===new URL(server.url).origin));
         assert.deepEqual(errors,[]);console.log(name+': local identity, key stability, secret clearing and zero external requests PASS');
     } finally {await browser.close();await server.close();}

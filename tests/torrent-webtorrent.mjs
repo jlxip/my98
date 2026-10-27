@@ -23,14 +23,12 @@ assert(!(mixed&&webseedOnly));
 assert(!fixtureTLS || info.trackerTLS && info.fixtureCertificate,"WSS exception requires the generated isolated fixture certificate");
 assert.equal(info.conventionalPeerTransportsEnabled,false);
 assert.equal(info.webseedConfigured,mixed||webseedOnly);
-const metadata=Buffer.from(await (await fetch(api+"/fixture.torrent")).arrayBuffer());
 const modules=new Map();
 for(const name of ["torrent-window.js","torrent-store.js","torrent-protocol.js","torrent-sources.js"])
     modules.set("/"+name,await readFile("src/disk/web/"+name));
 const server=createServer((req,res)=>{
     if(modules.has(req.url))res.writeHead(200,{"Content-Type":"text/javascript"}).end(modules.get(req.url));
     else if(req.url==="/webtorrent.js")res.writeHead(200,{"Content-Type":"text/javascript"}).end(bundle);
-    else if(req.url==="/fixture.torrent")res.writeHead(200).end(metadata);
     else if(req.url==="/")res.writeHead(200,{"Content-Type":"text/html"}).end("<!doctype html>");
     else res.writeHead(404).end();
 });
@@ -41,6 +39,10 @@ try {
         const browser=await type.launch();
         try {
             const page=await browser.newPage({ignoreHTTPSErrors:fixtureTLS});
+            if(process.env.MY98_TRANSPORT_DEBUG) {
+                page.on("console",message=>console.log(name,message.text()));
+                await page.addInitScript(()=>{localStorage.debug="webtorrent:*,ut_metadata";});
+            }
             if(webseedOnly)await page.addInitScript(()=>{
                 for(const name of ["RTCPeerConnection","mozRTCPeerConnection","webkitRTCPeerConnection"])
                     Object.defineProperty(globalThis,name,{value:undefined});
@@ -56,21 +58,22 @@ try {
                     socket.onmessage=event=>{clearTimeout(timer);socket.close();resolve(JSON.parse(event.data));};
                     socket.onerror=()=>{clearTimeout(timer);reject(Error("Tracker connection failed"));};
                 });
-                if(denied["failure reason"]!=="Info hash not allowed")throw Error("Unknown swarm was not rejected");
+                if(denied["failure reason"])throw Error("Public tracker rejected an unrelated swarm");
                 const {WindowTorrents}=await import("/torrent-window.js");
                 const seed=tracker.replace(/^wss:/,"https:").replace(/^ws:/,"http:").replace(/\/tracker$/,"/content/");
-                const client=new WindowTorrents({sources:{apis:[],trackers:webseedOnly?[]:[tracker],webseeds:mixed||webseedOnly?[seed]:[]},
+                const client=new WindowTorrents({sources:{apis:mixed||webseedOnly?[tracker.replace(/^wss:/,"https:").replace(/^ws:/,"http:").replace(/\/tracker$/,"")]:[],trackers:webseedOnly?[]:[tracker],webseeds:mixed||webseedOnly?[seed]:[]},
                     clientFactory:async()=>WebTorrent,timeout:90000});
                 const warnings=[],wires=[];
                 try {
-                    const bytes=new Uint8Array(await (await fetch("/fixture.torrent")).arrayBuffer());
-                    await client.open({infoHash:info.infoHash,metadata:bytes,kind:"disk"});
+                    console.log("Opening metadata from infohash",info.infoHash);
+                    await client.open({infoHash:info.infoHash,kind:"disk"});
+                    console.log("Opened verified metadata");
                     const torrent=client.entry(info.infoHash).torrent;
                     torrent.on("warning",error=>warnings.push(error.message));
                     torrent.on("wire",wire=>wires.push(wire.type));
                     if(mixed) {
                         const deadline=Date.now()+45000;
-                        while(!torrent.wires.some(wire=>wire.type==="webrtc")) {
+                        while(!torrent.wires.some(wire=>wire.type==="webrtc" && !wire.peerChoking)) {
                             if(Date.now()>deadline)throw Error("Mixed-source WebRTC peer did not connect");
                             await new Promise(resolve=>setTimeout(resolve,50));
                         }
@@ -88,7 +91,7 @@ try {
                     } else if(mixed) {
                         if(!(received.webrtc>0 && received.webSeed>0))throw Error("Both offered sources must transfer bytes: "+JSON.stringify(received));
                     } else if(!wires.includes("webrtc") || wires.some(type=>type!=="webrtc"))throw Error("Transfer was not exclusively WebRTC");
-                    return {size:data.byteLength,sha256,wires,received,warnings,unknownSwarmRejected:true,indexedDBStore:true,lazyRange:true,mixedSources:mixed,webRTCUnavailable:webseedOnly};
+                    return {size:data.byteLength,sha256,wires,received,warnings,unrelatedSwarmAccepted:true,indexedDBStore:true,lazyRange:true,mixedSources:mixed,webRTCUnavailable:webseedOnly};
                 } finally {await client.close();}
             },{tracker,info,mixed,webseedOnly});
             results.push({browser:name,trackerTLS:fixtureTLS,fixtureCertificate:fixtureTLS,...result});

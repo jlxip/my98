@@ -114,7 +114,7 @@ def main():
         "probe":probe,"platform":platform.platform(),"libc":platform.libc_ver()},indent=2)+"\n")
     files=[{"path":str(path.relative_to(output)),"size":path.stat().st_size,"sha256":digest(path)}
         for path in sorted(output.rglob("*")) if path.is_file()]
-    manifest={"version":2,"system":system,"machine":platform.machine(),"python":[3,13],"files":files}
+    manifest={"version":2,"protocol":2,"system":system,"machine":platform.machine(),"python":[3,13],"files":files}
     (output/"artifact.json").write_text(json.dumps(manifest,indent=2)+"\n")
     archive=output.with_name(output.name+".tar.gz")
     if archive.exists():raise RuntimeError("Artifact archive already exists")

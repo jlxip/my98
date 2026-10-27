@@ -2,36 +2,36 @@
   "nodes": [
     {
       "name": "nuc",
-      "api": "https://nuc.jlxip.net:8444",
+      "api": "https://nuc.jlxip.net:8445",
       "peer": [
         "nuc.jlxip.net",
-        51413
+        51414
       ]
     },
     {
       "name": "piensa",
-      "api": "https://piensa.jlxip.net:8444",
+      "api": "https://piensa.jlxip.net:8445",
       "peer": [
         "piensa.jlxip.net",
-        51413
+        51414
       ]
     },
     {
       "name": "oregon",
-      "api": "https://oregon.jlxip.net:8444",
+      "api": "https://oregon.jlxip.net:8445",
       "peer": [
         "oregon.jlxip.net",
-        51413
+        51414
       ]
     }
   ],
   "trackers": [
-    "wss://nuc.jlxip.net:8444/tracker",
-    "wss://oregon.jlxip.net:8444/tracker"
+    "wss://nuc.jlxip.net:8445/tracker",
+    "wss://oregon.jlxip.net:8445/tracker"
   ],
   "webseeds": [
-    "https://nuc.jlxip.net:8444/content/",
-    "https://piensa.jlxip.net:8444/content/",
-    "https://oregon.jlxip.net:8444/content/"
+    "https://nuc.jlxip.net:8445/content/",
+    "https://piensa.jlxip.net:8445/content/",
+    "https://oregon.jlxip.net:8445/content/"
   ]
 }

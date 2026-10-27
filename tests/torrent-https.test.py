@@ -85,9 +85,10 @@ class HTTPS(unittest.IsolatedAsyncioTestCase):
                 async for item in stream:
                     await stream.send_json({"family":6 if family==socket.AF_INET6 else 4,"forwarded":request.headers.get("X-Forwarded-For")})
                 return stream
-            app.router.add_get("/v1/names/{key}",record);app.router.add_post("/v1/candidates",candidate)
-            app.router.add_get("/v1/torrents/{ih}.torrent",metadata)
+            app.router.add_get("/v2/dht/{key}/{salt}",record);app.router.add_post("/v2/candidates",candidate)
+            app.router.add_get("/v2/info/{ih}",metadata)
             app.router.add_get("/tracker",websocket)
+            app.router.add_get("/health",record)
             runner=web.AppRunner(app);await runner.setup()
             sites=[]
             for host in ["127.0.0.1","::1"]:
@@ -134,13 +135,13 @@ class HTTPS(unittest.IsolatedAsyncioTestCase):
                 status,_,_,_=await request(config,"/content/"+("ab"*20)+"/disk.my98",method="POST",body=b"no")
                 self.assertEqual(status,403)
                 status,_,_,_=await request(config,"/__my98_preflight");self.assertEqual(status,404)
-                status,headers,body,_=await request(config,"/v1/names/"+("01"*32))
+                status,headers,body,_=await request(config,"/health")
                 self.assertEqual(status,200);self.assertEqual(json.loads(body),{"signed":"fixture"})
                 self.assertEqual(headers.count(b"access-control-allow-origin:"),1)
-                status,headers,body,_=await request(config,"/v1/torrents/"+("ab"*20)+".torrent")
+                status,headers,body,_=await request(config,"/v2/info/"+("ab"*20))
                 self.assertEqual(status,200);self.assertEqual(body,b"torrent-fixture")
                 self.assertEqual(headers.count(b"access-control-allow-origin:"),1)
-                status,_,body,_=await request(config,"/v1/candidates",method="POST",body=b"{}")
+                status,_,body,_=await request(config,"/v2/candidates",method="POST",body=b"{}")
                 self.assertEqual(status,202);self.assertEqual(json.loads(body),{"admitted":True})
                 for path in ["/data/staging/partial","/content/../staging/partial","/config/node.json","/tls/current/key.pem"]:
                     status,_,body,_=await request(config,path);self.assertNotEqual(status,200);self.assertNotIn(b"NEVER EXPOSE",body)
@@ -169,11 +170,11 @@ class HTTPS(unittest.IsolatedAsyncioTestCase):
                 (source/"cert.pem").unlink();(source/"cert.pem").symlink_to("../2/cert.pem")
                 with self.assertRaises(PublicationError):copy_certificates(config)
                 self.assertEqual((state/"tls/current").readlink(),previous)
-                self.assertEqual((await request(config,"/v1/names/test"))[3],fingerprint)
+                self.assertEqual((await request(config,"/health"))[3],fingerprint)
                 (source/"key.pem").unlink();(source/"key.pem").symlink_to("../2/key.pem")
                 second=copy_certificates(config);self.assertTrue(second["changed"]);reload_nginx(config)
                 for _ in range(100):
-                    replacement=(await request(config,"/v1/names/test"))[3]
+                    replacement=(await request(config,"/health"))[3]
                     if replacement!=fingerprint:break
                     await asyncio.sleep(.05)
                 self.assertNotEqual(replacement,fingerprint)

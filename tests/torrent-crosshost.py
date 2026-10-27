@@ -17,6 +17,7 @@ from aiohttp import ClientSession,web
 from nacl.signing import SigningKey
 from my98_torrent.engine import Engine
 from my98_torrent.publisher import Publisher
+from my98_torrent.protocol import SALT
 from my98_torrent.service import Node
 
 
@@ -97,7 +98,7 @@ async def client(args):
         async with ClientSession() as session:
             for _ in range(100):
                 try:
-                    async with session.get(url+"/v1/names/"+key.hex()) as response:
+                    async with session.get(url+"/v2/dht/"+key.hex()+"/"+SALT.hex()) as response:
                         if response.status in [200,404]:break
                 except OSError:pass
                 await asyncio.sleep(.05)
@@ -131,7 +132,7 @@ async def client(args):
         # Copy confirmation above came exclusively from exact native peer bits.
         async with ClientSession() as session:
             for _ in range(160):
-                async with session.get(endpoint["api"]+"/v1/names/"+key.hex()) as response:
+                async with session.get(endpoint["api"]+"/v2/dht/"+key.hex()+"/"+SALT.hex()) as response:
                     if response.status==200 and (await response.json())==record.as_json():break
                 await asyncio.sleep(.5)
             else:raise RuntimeError("Follower did not persist the committed public record")

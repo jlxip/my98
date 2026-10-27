@@ -1,6 +1,5 @@
 """Prepare/copy/commit are separate durable steps. Secrets are never serialized."""
 import asyncio
-import base64
 from contextlib import suppress
 import json
 import ipaddress
@@ -14,7 +13,7 @@ from .engine import Engine
 from .files import Catalog,atomic_write,file_hash
 from .formats import validate_disk
 from .metadata import inspect,NAMES
-from .protocol import Record,PublicationError,Conflict,next_sequence,descriptor_bytes
+from .protocol import Record,Locations,SALT,LOCATIONS_SALT,PublicationError,Conflict,next_sequence,descriptor_bytes
 from .service import bounded
 from .store import Store
 
@@ -54,6 +53,7 @@ class Publisher:
         except FileNotFoundError:return None
         Record.from_json(value["record"],key)
         if value["base"] is not None:Record.from_json(value["base"],key)
+        Locations.from_json(value["locations"],key)
         return value
 
     def save(self,journal):
@@ -63,7 +63,7 @@ class Publisher:
     async def current(self,key):
         async def http(node):
             try:
-                async with self.client.get(node["api"].rstrip("/")+"/v1/names/"+key.hex(),allow_redirects=False) as response:
+                async with self.client.get(node["api"].rstrip("/")+"/v2/dht/"+key.hex()+"/"+SALT.hex(),allow_redirects=False) as response:
                     if response.status==404:return None
                     response.raise_for_status()
                     return Record.from_json(json.loads(await bounded(response,4096)),key)
@@ -86,8 +86,9 @@ class Publisher:
         except FileNotFoundError:pass
         for node in self.nodes:
             try:
-                async with self.client.get(node["api"].rstrip("/")+"/v1/torrents/"+info_hash+".torrent",allow_redirects=False) as response:
-                    response.raise_for_status();data=await bounded(response,16384 if kind=="descriptor" else 96*1024*1024)
+                async with self.client.get(node["api"].rstrip("/")+"/v2/info/"+info_hash,allow_redirects=False) as response:
+                    response.raise_for_status();raw=await bounded(response,16384 if kind=="descriptor" else 96*1024*1024)
+                    data=b"d4:info"+raw+b"e"
                     self.catalog.remember(data,info_hash,kind)
                     return self.catalog.metadata(info_hash)
             except (ClientError,OSError,TimeoutError):continue
@@ -143,7 +144,8 @@ class Publisher:
         # validate; it is never silently dropped or changed.
         await asyncio.to_thread(self.catalog.validate_publication,candidate)
         self.store.accept_candidate(candidate,self.catalog.metadata(descriptor_hash))
-        journal={"record":candidate.as_json(),"base":base.as_json() if base else None,"phase":"prepared","notified":[]}
+        locations=await self.prepare_locations(seed)
+        journal={"record":candidate.as_json(),"locations":locations.as_json(),"base":base.as_json() if base else None,"phase":"prepared","notified":[]}
         self.save(journal)
         return journal
 
@@ -163,10 +165,10 @@ class Publisher:
                 await self.engine.remove(handle);del self.handles[ih]
         await asyncio.gather(self.ensure(record.info_hash.hex(),"descriptor",connect=False),*(self.ensure(ih,kind,connect=False) for kind,ih in value.items() if kind in NAMES and ih))
         journal["phase"]="transferring";self.save(journal)
-        payload={"record":record.as_json(),"torrent":base64.b64encode(self.catalog.metadata(record.info_hash.hex())).decode()}
+        payload={"record":record.as_json()}
         for node in self.nodes:
             try:
-                async with self.client.post(node["api"].rstrip("/")+"/v1/candidates",json=payload,allow_redirects=False) as response:
+                async with self.client.post(node["api"].rstrip("/")+"/v2/candidates",json=payload,allow_redirects=False) as response:
                     if response.status==409:
                         journal["phase"]="conflict";self.save(journal)
                         raise Conflict((await bounded(response,4096)).decode())
@@ -194,7 +196,9 @@ class Publisher:
             journal["phase"]="conflict";self.save(journal)
             raise Conflict("A different publication appeared after this candidate was prepared; prepare a new publication")
         journal["phase"]="committing";self.save(journal)
-        try:await self.engine.put(record)
+        try:
+            await self.commit_locations(Locations.from_json(journal["locations"],record.public_key))
+            await self.engine.put(record)
         except Conflict:
             journal["phase"]="conflict";self.save(journal);raise
         readback=await self.engine.resolve(record.public_key,self.lookup_timeout)
@@ -209,3 +213,21 @@ class Publisher:
     async def publish(self,journal,timeout=3600,progress=None):
         await self.transfer(journal,timeout,progress)
         return await self.commit(journal)
+
+
+    async def prepare_locations(self,seed):
+        key=bytes(SigningKey(seed).verify_key)
+        current=await self.engine.resolve(key,self.lookup_timeout,salt=LOCATIONS_SALT)
+        previous=self.store.locations(key)
+        maximum=max([record.sequence for record in (current,previous) if record is not None],default=0)
+        return Locations.sign(seed,next_sequence(maximum),[node["api"] for node in self.nodes])
+
+    async def commit_locations(self,record):
+        await self.engine.put(record)
+        actual=await self.engine.resolve(record.public_key,self.lookup_timeout,salt=LOCATIONS_SALT)
+        if actual!=record:raise Conflict("DHT locations readback does not match the candidate")
+        self.store.set_locations(record)
+        return record
+
+    async def publish_locations(self,seed):
+        return await self.commit_locations(await self.prepare_locations(seed))

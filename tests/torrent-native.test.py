@@ -8,10 +8,22 @@ from collections import defaultdict
 from types import SimpleNamespace
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parent.parent/"src/torrent"))
-from my98_torrent.engine import Engine
+from my98_torrent.engine import Engine,check_listeners
 from my98_torrent.protocol import Record, Conflict, PublicationError, SALT
 
 class NativeTest(unittest.IsolatedAsyncioTestCase):
+    async def test_fixed_webrtc_udp_conflicts_fail_without_fallback(self):
+        for value in [True,-1,65536,"51415"]:
+            with self.subTest(value=value),self.assertRaises(PublicationError):
+                Engine(listen="127.0.0.1:0",isolated=True,webrtc_port=value)
+        with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as busy:
+            busy.bind(("127.0.0.1",0));port=busy.getsockname()[1]
+            with self.assertRaises(OSError):
+                check_listeners({"listen_interfaces":"127.0.0.1:0","webtorrent_ice_udp_port":port})
+            with self.assertRaises(PublicationError):
+                check_listeners({"listen_interfaces":"127.0.0.1:"+str(port),"webtorrent_ice_udp_port":port})
+        check_listeners({"listen_interfaces":"127.0.0.1:0","webtorrent_ice_udp_port":port})
+
     async def test_slow_lookup_follower_keeps_only_verified_highest_but_publisher_requires_completion(self):
         first=Record.sign(bytes(range(32)),100,"12"*20)
         highest=Record.sign(bytes(range(32)),101,"34"*20)

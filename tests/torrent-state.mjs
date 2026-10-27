@@ -52,8 +52,8 @@ try{
    let page=await setup(context);const failures=[];page.on('pageerror',e=>failures.push(String(e)));
    const controls=await page.evaluate(async()=>{
     const {RemotePublication}=await import('/torrent-remote.js'),sleep=ms=>new Promise(r=>setTimeout(r,ms)),assert=(v,m)=>{if(!v)throw Error(m);};
-    let calls=0;const source={publication:{state:'x'},torrent:async()=>({size:8*262144}),bytes:async(_hash,offset,length)=>{calls++;await sleep(offset===0?100:1);return new Uint8Array(length).fill(offset/262144);}};
-    let input=await RemotePublication.prototype.stateInput.call(source),reader=input.stream.getReader();const first=reader.read();await sleep(25);assert(calls===4,'Window did not issue four distinct reads or grew past its bound');assert((await first).value[0]===0,'Out-of-order state delivery');await sleep(25);assert(calls===5,'Completed unread pieces did not retain their window slots');await reader.cancel();
+    let calls=0;const source={publication:{state:'x'},torrent:async()=>({size:64*262144}),bytes:async(_hash,offset,length)=>{calls++;await sleep(offset===0?100:1);return new Uint8Array(length).fill(offset/262144);}};
+    let input=await RemotePublication.prototype.stateInput.call(source),reader=input.stream.getReader();const first=reader.read();await sleep(25);assert(calls===16,'Stalled head did not refill the bounded read-ahead window');assert((await first).value[0]===0,'Out-of-order state delivery');await sleep(25);assert(calls===17,'Completed unread pieces escaped the buffered range bound');await reader.cancel();
     for(const action of ['signal','reader','error','short']){
      let starts=0,aborted=0;const controller=new AbortController(),unhandled=[];const observe=e=>{unhandled.push(String(e.reason));e.preventDefault();};addEventListener('unhandledrejection',observe);
      const fake={publication:{state:'x'},torrent:async()=>({size:8*262144}),bytes:(_hash,offset,length,signal)=>new Promise((resolve,reject)=>{
@@ -84,7 +84,7 @@ try{
    phase=engine+'-partial';before=requests.length;await transport(page,{expectMissing:piece});assert(requests.slice(before).length>0&&requests.slice(before).every(r=>r.start===4*piece),'Partial cache fetched unrelated pieces');
    await page.evaluate(async()=>{const {clearTorrentCache}=await import('/torrent-store.js');await clearTorrentCache();});
    phase=engine+'-cancel-network';mode='delayed';before=requests.length;await transport(page,{expectMissing:data.length,abort:true});
-   const admitted=requests.slice(before);assert(admitted.length>0&&admitted.every(r=>r.start<4*piece),'Cancellation refilled the state window or downloaded unrelated pieces');
+   const admitted=requests.slice(before);assert(admitted.length>0&&admitted.every(r=>r.start<16*piece),'Cancellation escaped the bounded state window');
    await page.evaluate(async()=>{const {clearTorrentCache}=await import('/torrent-store.js');await clearTorrentCache();});assert.deepEqual(failures,[]);await page.close();await context.close();
    results.push({engine,...controls,cold,concurrentHttp:concurrent,warmNoGets:true,offline:true,corruptOffline:true,corruptRepair:true,partialCache:true});console.log(JSON.stringify(results.at(-1)));
   }finally{await browser.close();}

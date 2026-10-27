@@ -24,7 +24,7 @@ def main():
     args=parser.parse_args()
     artifact=args.artifact.resolve();root=args.root.resolve()
     manifest=json.loads((artifact/"artifact.json").read_text())
-    if manifest.get("version") not in [1,2] or platform.system()!=manifest["system"] or platform.machine()!=manifest["machine"] or list(sys.version_info[:2])!=manifest["python"]:
+    if (manifest.get("version")!=2 or manifest.get("protocol")!=2) or platform.system()!=manifest["system"] or platform.machine()!=manifest["machine"] or list(sys.version_info[:2])!=manifest["python"]:
         parser.error("Artifact does not match the target architecture/Python ABI")
     if root in (Path("/"),Path.home()) or root.is_relative_to(artifact) or artifact.is_relative_to(root) or (root.exists() and any(root.iterdir())):
         parser.error("Choose a fresh dedicated runtime root")
@@ -38,21 +38,36 @@ def main():
         expected.add(name)
     actual={str(path.relative_to(artifact)) for path in artifact.rglob("*") if path.is_file() and path.name!="artifact.json"}
     if actual!=expected:raise RuntimeError("Unexpected artifact files")
+    # Reject foreign platform wheels before creating any installation files.
+    # Use packaging from the already authenticated bootstrap wheel, so the
+    # check has exactly the same supported-tag semantics as the offline pip.
+    pip=json.loads((artifact/"python-bootstrap.json").read_text())["pip"]
+    wheel=artifact/"wheelhouse"/pip["filename"]
+    if digest(wheel)!=pip["sha256"]:raise RuntimeError("pip bootstrap checksum mismatch")
+    compatibility=("import sys,json,pathlib;sys.path.insert(0,sys.argv[1]);"
+        "from pip._vendor.packaging.tags import sys_tags;"
+        "from pip._vendor.packaging.utils import parse_wheel_filename;"
+        "supported=set(sys_tags());"
+        "print(json.dumps([p.name for p in pathlib.Path(sys.argv[2]).glob('*.whl') "
+        "if not (parse_wheel_filename(p.name)[3] & supported)]))")
+    incompatible=json.loads(subprocess.check_output([sys.executable,"-I","-c",compatibility,
+        str(wheel),str(artifact/"wheelhouse")],text=True))
+    if incompatible:
+        raise RuntimeError("Artifact wheels are incompatible with "+platform.platform()+": "+
+            ", ".join(incompatible)+"; rebuild the artifact for this platform")
     root.mkdir(parents=True,mode=0o700,exist_ok=True)
     shutil.copytree(artifact/"release",root/"release")
     # Service accounts must execute private binaries even under a root umask.
     for binary in (root/"release/bin").iterdir():binary.chmod(0o755)
     runtime=root/"venv";venv.EnvBuilder(with_pip=False).create(runtime)
-    python=runtime/"bin/python";pip=json.loads((artifact/"python-bootstrap.json").read_text())["pip"]
-    wheel=artifact/"wheelhouse"/pip["filename"]
-    if digest(wheel)!=pip["sha256"]:raise RuntimeError("pip bootstrap checksum mismatch")
+    python=runtime/"bin/python"
     cache=runtime/".cache/pip"
     entry="import sys;sys.path.insert(0,sys.argv.pop(1));from pip._internal.cli.main import main;raise SystemExit(main())"
     subprocess.run([python,"-c",entry,wheel,"--isolated","--cache-dir",cache,"install",
         "--no-index","--no-deps",wheel],check=True)
     subprocess.run([python,"-m","pip","--isolated","--cache-dir",cache,"install",
         "--no-index","--only-binary=:all:","--require-hashes","--find-links",artifact/"wheelhouse",
-        "-r",artifact/("requirements-wheels.lock" if manifest["version"]==2 else "requirements.lock")],check=True)
+        "-r",artifact/"requirements-wheels.lock"],check=True)
     site=subprocess.check_output([python,"-c","import sysconfig;print(sysconfig.get_path('platlib'))"],text=True).strip()
     native=root/"release/prefix/lib/python3.13/site-packages"
     Path(site,"my98-native.pth").write_text(str(native)+"\n")

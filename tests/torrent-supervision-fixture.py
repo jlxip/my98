@@ -58,7 +58,7 @@ async def main(args):
             async def ready():
                 for attempt in range(200):
                     try:
-                        if (await https.request(config,"/v1/names/"+("01"*32)))[0]==404:return
+                        if (await https.request(config,"/health"))[0]==200:return
                     except OSError:pass
                     await asyncio.sleep(.05)
                 raise RuntimeError("Private rc.d HTTPS did not become ready")
@@ -93,8 +93,8 @@ async def main(args):
         async def ready():
             for _ in range(200):
                 try:
-                    response=await https.request(config,"/v1/names/"+("01"*32))
-                    if response[0]==404:return
+                    response=await https.request(config,"/health")
+                    if response[0]==200:return
                 except OSError:pass
                 await asyncio.sleep(.05)
             raise RuntimeError("Supervised private API did not become ready")

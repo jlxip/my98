@@ -19,7 +19,7 @@ def prepare(config,isolated):
     if root.exists() and any(root.iterdir()) and not marker.exists():
         raise PublicationError("Refusing to reuse an unmarked data directory")
     root.mkdir(parents=True,exist_ok=True,mode=0o750)
-    expected={"kind":"my98-torrent-services/v1","hostname":config["hostname"],"runtime":config["runtime"]}
+    expected={"kind":"my98-torrent-services/v2","hostname":config["hostname"],"runtime":config["runtime"]}
     if marker.exists() and json.loads(marker.read_text())!=expected:
         raise PublicationError("The data directory belongs to a different deployment")
     atomic_write(marker,json.dumps(expected,sort_keys=True).encode())
@@ -58,11 +58,11 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config",type=Path,required=True)
     parser.add_argument("--isolated",action="store_true",help="Private fixtures with custom paths/ports only")
-    parser.add_argument("--prefix",default="my98-torrent",help="Private supervisor fixture name")
+    parser.add_argument("--prefix",default="my98-torrent-v2",help="Private supervisor fixture name")
     parser.add_argument("command",choices=["prepare","render","install","activate","stop","preflight","copy-certificates","renew","reload","watch-certificates"])
     args=parser.parse_args()
     config=configuration(json.loads(args.config.read_text()),isolated=args.isolated)
-    if not args.isolated and args.prefix!="my98-torrent":raise PublicationError("Public service names are fixed")
+    if not args.isolated and args.prefix!="my98-torrent-v2":raise PublicationError("Public service names are fixed")
     logging.basicConfig(level=logging.INFO,format="%(levelname)s %(message)s")
     if args.command=="watch-certificates":asyncio.run(watch(config));return
     if args.command=="prepare":result=prepare(config,args.isolated)

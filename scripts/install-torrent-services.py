@@ -22,10 +22,10 @@ def main():
     if os.geteuid()!=0:parser.error("Dedicated accounts and system supervision require root")
     artifact=args.artifact.resolve();config=args.config.resolve()
     value=json.loads(config.read_text());runtime=Path(value["runtime"])
-    if str(runtime)!="/opt/my98-torrent/runtime" or value.get("root")!="/var/lib/my98-torrent" or runtime.is_symlink():
+    if str(runtime)!="/opt/my98-torrent-v2/runtime" or value.get("root")!="/var/lib/my98-torrent-v2" or runtime.is_symlink():
         parser.error("Use the dedicated runtime/data roots")
     manifest=json.loads((artifact/"artifact.json").read_text())
-    if manifest.get("version")!=2:parser.error("Use an artifact with Nginx and the service installer")
+    if manifest.get("version")!=2 or manifest.get("protocol")!=2:parser.error("Use an artifact with Nginx and the service installer")
     if not runtime.exists():
         subprocess.run([sys.executable,str(artifact/"release/scripts/install-torrent-runtime.py"),
             "--artifact",str(artifact),"--root",str(runtime)],check=True)

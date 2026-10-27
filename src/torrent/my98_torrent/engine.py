@@ -2,18 +2,20 @@
 import asyncio
 import logging
 import ipaddress
-from collections import defaultdict
-from contextlib import suppress
+from contextlib import suppress, asynccontextmanager
 from pathlib import Path
 import socket
 import libtorrent as lt
 import my98_libtorrent as native
-from .protocol import Record, SALT, PublicationError, Conflict, value_bytes
+from .protocol import Record, Locations, SALT, LOCATIONS_SALT, PublicationError, Conflict
 
 
 def check_listeners(options):
     """Fail before creating a session if any requested TCP/UDP port is occupied."""
     probes=[]
+    rtc_port=options.get("webtorrent_ice_udp_port",0)
+    if type(rtc_port) is not int or not 0<=rtc_port<=65535:
+        raise PublicationError("Invalid WebRTC UDP port")
     try:
         for endpoint in options["listen_interfaces"].split(","):
             try:
@@ -23,6 +25,8 @@ def check_listeners(options):
                 if not 0<=port<=65535:raise ValueError()
             except (ValueError,TypeError):
                 raise PublicationError("Native listeners require explicit IP addresses and ports")
+            if rtc_port and rtc_port==port:
+                raise PublicationError("WebRTC UDP must use a separate port from BitTorrent/DHT")
             family=socket.AF_INET6 if address.version==6 else socket.AF_INET
             kinds=[]
             if options.get("enable_incoming_tcp",True):kinds.append(socket.SOCK_STREAM)
@@ -34,23 +38,36 @@ def check_listeners(options):
                 if kind==socket.SOCK_STREAM:probe.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
                 probe.bind((str(address),port))
                 if kind==socket.SOCK_STREAM:probe.listen(1)
+            if rtc_port:
+                probe=socket.socket(family,socket.SOCK_DGRAM);probes.append(probe)
+                if address.version==6:probe.setsockopt(socket.IPPROTO_IPV6,socket.IPV6_V6ONLY,1)
+                probe.bind((str(address),rtc_port))
     finally:
         for probe in probes:probe.close()
 
 
 def record_from_alert(alert):
-    if bytes(alert.salt) != SALT or type(alert.item) is not dict or set(alert.item) != {b"ih"}:
-        raise PublicationError("Wrong DHT publication salt or value")
-    return Record(bytes(alert.key), alert.seq, alert.item[b"ih"], bytes(alert.signature)).verify()
+    if type(alert.item) is not dict:raise PublicationError("Invalid DHT value")
+    if bytes(alert.salt)==SALT and set(alert.item)=={b"ih"}:
+        return Record(bytes(alert.key),alert.seq,alert.item[b"ih"],bytes(alert.signature)).verify()
+    if bytes(alert.salt)==LOCATIONS_SALT and set(alert.item)=={b"origins",b"version"} and type(alert.item[b"version"]) is int and alert.item[b"version"]==1:
+        try:origins=tuple(origin.decode("ascii") for origin in alert.item[b"origins"])
+        except (TypeError,AttributeError,UnicodeError) as error:raise PublicationError("Invalid DHT locations") from error
+        return Locations(bytes(alert.key),alert.seq,origins,bytes(alert.signature)).verify()
+    raise PublicationError("Wrong DHT salt or value")
 
 
 class Engine:
-    def __init__(self, *, listen="0.0.0.0:51413,[::]:51413", isolated=False, settings=None):
+    def __init__(self, *, listen="0.0.0.0:51414,[::]:51414", isolated=False, settings=None, webrtc_port=0):
+        if type(webrtc_port) is not int or not 0<=webrtc_port<=65535:
+            raise PublicationError("Invalid WebRTC UDP port")
         self.loop=asyncio.get_running_loop()
         options={"listen_interfaces":listen,"enable_dht":True,"enable_lsd":False,
             "enable_upnp":False,"enable_natpmp":False,"connections_limit":128,
             # Independent readers may share the public IP of an existing seeder.
             "allow_multiple_connections_per_ip":True,
+            # Each configured public/loopback tracker must have this seeder.
+            "announce_to_all_trackers":True,"announce_to_all_tiers":True,
             "close_redundant_connections":False,"max_retry_port_bind":0,"listen_system_port_fallback":False,
             "alert_mask":int(lt.alert_category.error|lt.alert_category.storage|lt.alert_category.status|lt.alert_category.dht|lt.alert_category.dht_operation|lt.alert_category.stats),
             "max_metadata_size":96*1024*1024}
@@ -60,12 +77,15 @@ class Engine:
         if logging.getLogger("my98.torrent").isEnabledFor(logging.DEBUG):
             options["alert_mask"] |= int(lt.alert_category.peer|lt.alert_category.connect)
         if settings:options.update(settings)
+        if webrtc_port:options["webtorrent_ice_udp_port"]=webrtc_port
         check_listeners(options)
+        if options.get("webtorrent_ice_udp_port") and "webtorrent_ice_udp_port" not in lt.default_settings():
+            raise PublicationError("The native runtime lacks fixed-port WebRTC support; rebuild it")
         self.listen_errors=[]
         self.session=lt.session(options)
         self.reader,self.writer=socket.socketpair()
         self.reader.setblocking(False);self.writer.setblocking(False)
-        self.waiters=[];self.listeners=set();self.locks=defaultdict(asyncio.Lock)
+        self.waiters=[];self.listeners=set();self.locks={}
         self.closed=False
         self.loop.add_reader(self.reader.fileno(),self._drain)
         self.session.set_alert_fd(self.writer.fileno())
@@ -116,21 +136,35 @@ class Engine:
     def add_node(self,endpoint):
         self.session.add_dht_node(tuple(endpoint))
 
-    async def resolve(self,key,timeout=20,*,require_authoritative=True):
+    @asynccontextmanager
+    async def serialized(self,identity):
+        # Count holders and waiters, including cancelled acquisitions. Public
+        # resolution must not retain a lock for every identity ever queried.
+        lock,users=self.locks.get(identity,(asyncio.Lock(),0))
+        self.locks[identity]=(lock,users+1)
+        try:
+            async with lock:yield
+        finally:
+            _,users=self.locks[identity]
+            if users==1:del self.locks[identity]
+            else:self.locks[identity]=(lock,users-1)
+
+    async def resolve(self,key,timeout=20,*,require_authoritative=True,salt=SALT):
         if type(key) is not bytes or len(key)!=32:raise PublicationError("Invalid publication public key")
         # One lookup per key. Non-authoritative replies must not terminate an
         # ongoing search before libtorrent has queried the closest DHT nodes.
-        async with self.locks[("get",key)]:
+        if salt not in (SALT,LOCATIONS_SALT):raise PublicationError("Unsupported DHT salt")
+        async with self.serialized(("get",key,salt)):
             best=None
             def received(alert):
                 nonlocal best
-                if not isinstance(alert,lt.dht_mutable_item_alert) or bytes(alert.key)!=key or bytes(alert.salt)!=SALT:return False
+                if not isinstance(alert,lt.dht_mutable_item_alert) or bytes(alert.key)!=key or bytes(alert.salt)!=salt:return False
                 # A completed empty lookup has no signature/value and sequence0.
                 # It is an absence result, never a signed version to persist.
                 if alert.authoritative and alert.seq==0 and alert.item in (None,b""):return True
                 try:record=record_from_alert(alert)
                 except PublicationError:return False
-                if best is not None and record.sequence==best.sequence and record.info_hash!=best.info_hash:
+                if best is not None and record.sequence==best.sequence and record.value!=best.value:
                     raise Conflict("Conflicting DHT records have the same sequence")
                 if best is None or record.sequence>best.sequence:best=record
                 return bool(alert.authoritative)
@@ -141,7 +175,7 @@ class Engine:
                 try:return received(alert)
                 except PublicationError as exc:error=exc;return True
             try:
-                await self.wait(guarded,lambda:self.session.dht_get_mutable_item(key,SALT),timeout)
+                await self.wait(guarded,lambda:self.session.dht_get_mutable_item(key,salt),timeout)
             except TimeoutError:
                 if best is None:return None
                 # Followers may retain the highest signature-verified record
@@ -154,14 +188,14 @@ class Engine:
 
     async def put(self,record,timeout=30):
         record.verify()
-        async with self.locks[("put",record.public_key)]:
+        async with self.serialized(("put",record.public_key,record.salt)):
             await self.dht_ready(min(timeout,30))
             result=None
             def start():
                 nonlocal result
-                result=native.put_signed(self.session,record.public_key,SALT,value_bytes(record.info_hash),record.sequence,record.signature)
+                result=native.put_signed(self.session,record.public_key,record.salt,record.value,record.sequence,record.signature)
             def done(alert):
-                return (isinstance(alert,lt.dht_put_alert) and bytes(alert.public_key)==record.public_key and bytes(alert.salt)==SALT)
+                return (isinstance(alert,lt.dht_put_alert) and bytes(alert.public_key)==record.public_key and bytes(alert.salt)==record.salt)
             alert=await self.wait(done,start,timeout)
             if result.conflict:raise Conflict("A newer or conflicting publication was found during DHT put")
             if not result.invoked or alert.seq!=record.sequence or bytes(alert.signature)!=record.signature or alert.num_success<1:

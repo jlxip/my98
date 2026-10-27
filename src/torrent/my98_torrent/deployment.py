@@ -16,7 +16,7 @@ import tempfile
 from .files import atomic_write,sync_directory
 from .protocol import PublicationError
 
-SERVICE_USER="my98torrent"
+SERVICE_USER="my98torrentv2"
 
 
 def path_value(value):
@@ -37,12 +37,12 @@ def configuration(value,*,isolated=False):
         value[key]=str(path_value(value.get(key)))
     if "trustCA" in value:value["trustCA"]=str(path_value(value["trustCA"]))
     if not isolated:
-        if value["root"]!="/var/lib/my98-torrent" or value["runtime"]!="/opt/my98-torrent/runtime":
+        if value["root"]!="/var/lib/my98-torrent-v2" or value["runtime"]!="/opt/my98-torrent-v2/runtime":
             raise PublicationError("Public deployment requires its dedicated runtime/data roots")
         if "trustCA" in value:raise PublicationError("Public TLS must use the system certificate trust store")
     if Path(value["root"]).is_symlink():raise PublicationError("The dedicated data root cannot be a symlink")
-    port=value.setdefault("httpsPort",8444)
-    if type(port) is not int or not 1024<=port<=65535 or (not isolated and port!=8444):
+    port=value.setdefault("httpsPort",8445)
+    if type(port) is not int or not 1024<=port<=65535 or (not isolated and port!=8445):
         raise PublicationError("Invalid dedicated HTTPS listener")
     node=value.get("node")
     if type(node) is not dict or not node.get("follow"):
@@ -51,14 +51,19 @@ def configuration(value,*,isolated=False):
     if "data" in node and Path(node["data"]).resolve()!=expected_data:
         raise PublicationError("Node data must use the dedicated data root")
     node=dict(node);node["data"]=str(expected_data)
-    api=node.get("api",{"host":"127.0.0.1","port":17498})
+    if not isolated:
+        expected_rtc=51415 if node.get("aquatic") else 0
+        if "webrtcPort" in node and node["webrtcPort"]!=expected_rtc:
+            raise PublicationError("Public Linux WebRTC requires dedicated UDP port 51415")
+        if expected_rtc:node["webrtcPort"]=expected_rtc
+    api=node.get("api",{"host":"127.0.0.1","port":17598})
     if type(node.get("listen")) is not str:raise PublicationError("Configure the native listener explicitly")
     if type(api) is not dict:raise PublicationError("Invalid administrative listener")
     if api.get("host")!="127.0.0.1" or type(api.get("port")) is not int or not 1024<=api["port"]<=65535:
         raise PublicationError("The deployment API must use its own IPv4 loopback listener")
     node["api"]=api
-    if not isolated and node.get("listen")!="0.0.0.0:51413,[::]:51413":
-        raise PublicationError("Public torrents require dedicated TCP and UDP port 51413")
+    if not isolated and node.get("listen")!="0.0.0.0:51414,[::]:51414":
+        raise PublicationError("Public torrents require dedicated TCP and UDP port 51414")
     value["node"]=node
     # Reuse the service's strict followed-key and trusted-source validation.
     from .config import load
@@ -76,7 +81,8 @@ def preflight(config):
         ports.append((listener["host"],listener["port"],socket.SOCK_STREAM))
     from .engine import check_listeners
     # Native engine performs the full BitTorrent TCP/UDP check as well.
-    check_listeners({"listen_interfaces":config["node"]["listen"],"enable_dht":True})
+    check_listeners({"listen_interfaces":config["node"]["listen"],"enable_dht":True,
+        "webtorrent_ice_udp_port":config["node"].get("webrtcPort",0)})
     with ExitStack() as stack:
         for host,port,kind in ports:
             address=ipaddress.ip_address(host)
@@ -110,11 +116,13 @@ def nginx_configuration(config,*,isolated=False):
         "error_page 405 =204 /__my98_preflight;\n}\n"
         "location = /__my98_preflight {\ninternal;\n"
         "alias "+str(root/"config/cors-preflight")+";\n}\n"
-        "location /v1/names/ {\nlimit_except GET { deny all; }\n"
+        "location /v2/dht/ {\nlimit_except GET { deny all; }\n"
         "proxy_pass http://127.0.0.1:"+str(api["port"])+";\n}\n"
-        "location /v1/torrents/ {\nlimit_except GET { deny all; }\n"
+        "location /v2/info/ {\nlimit_except GET { deny all; }\n"
         "proxy_pass http://127.0.0.1:"+str(api["port"])+";\n}\n"
-        "location = /v1/candidates {\nlimit_except POST { deny all; }\n"
+        "location = /v2/candidates {\nlimit_except POST { deny all; }\n"
+        "proxy_pass http://127.0.0.1:"+str(api["port"])+";\n}\n"
+        "location = /health {\nlimit_except GET { deny all; }\n"
         "proxy_pass http://127.0.0.1:"+str(api["port"])+";\n}\n"
         "location / { deny all; }\n")
     trackers={str(ipaddress.ip_address(item["host"]).version):item for item in node.get("aquatic",{}).get("listen",[])}

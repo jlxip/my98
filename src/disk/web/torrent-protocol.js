@@ -1,6 +1,7 @@
 /** Public protocol validation. The Worker supplies the existing Rust verifier. */
 const encoder=new TextEncoder(),decoder=new TextDecoder("utf-8",{fatal:true});
 export const PUBLICATION_SALT="my98/publication/v1";
+export const LOCATIONS_SALT="my98/locations/v1";
 export const COMPONENT_NAMES=Object.freeze({descriptor:"publication.json",disk:"disk.my98",state:"state.my98state",profile:"profile.json"});
 const limits={descriptor:4096,disk:2**40+2**30+198,state:2**30+65536,profile:65536};
 const error=(code,message)=>Object.assign(new Error(message),{code});
@@ -47,7 +48,7 @@ export function compareRecords(previous,candidate) {
     if(previous.publicKey!==candidate.publicKey)throw invalid("Cannot compare different publication identities");
     if(candidate.sequence<previous.sequence)throw error("PUBLICATION_CONFLICT","Publication is older than the highest observed version");
     if(candidate.sequence===previous.sequence) {
-        if(candidate.infoHash!==previous.infoHash)throw error("PUBLICATION_CONFLICT","Conflicting publications have the same sequence");
+        if((candidate.infoHash??JSON.stringify(candidate.origins))!==(previous.infoHash??JSON.stringify(previous.origins)))throw error("PUBLICATION_CONFLICT","Conflicting publications have the same sequence");
         return false;
     }
     return true;
@@ -153,4 +154,35 @@ export async function verifyMetadata(bytes,expected,kind) {
     // webseeds, URLs and paths cannot introduce network destinations.
     return {infoHash:actualHash,kind:actual,filename,size,pieces:Math.ceil(size/pieceLength),
         metadata:concat(encoder.encode("d4:info"),raw,encoder.encode("e"))};
+}
+
+
+export function verifyLocations(value,expectedKey,verifySignature) {
+    if(!keysAre(value,["publicKey","sequence","origins","signature","salt"]) ||
+        value.publicKey!==expectedKey || value.salt!==hex(encoder.encode(LOCATIONS_SALT)) ||
+        !Number.isSafeInteger(value.sequence) || value.sequence<1 || !Array.isArray(value.origins) || !value.origins.length)
+        throw invalid("Invalid signed locations");
+    let previous;
+    for(const origin of value.origins) {
+        if(typeof origin!=="string" || !/^[\x21-\x7e]+$/.test(origin) || origin.endsWith("/") || (previous!==undefined && origin<=previous))throw invalid("Noncanonical seedbox origins");
+        let url;try{url=new URL(origin);}catch{throw invalid("Invalid seedbox origin");}
+        if(url.username || url.password || url.hash || url.search || url.pathname!=="/" ||
+            !["https:","http:"].includes(url.protocol) || (url.protocol==="http:" && !["localhost","127.0.0.1","[::1]"].includes(url.hostname)))
+            throw invalid("Use an HTTPS seedbox origin without a path");
+        previous=origin;
+    }
+    const origins=value.origins.map(origin=>{const bytes=encoder.encode(origin);return concat(encoder.encode(bytes.length+":"),bytes);});
+    const wire=concat(encoder.encode("d7:originsl"),...origins,encoder.encode("e7:versioni1ee"));
+    if(wire.length>1000)throw invalid("Seedbox locations exceed BEP44 size limit");
+    const key=unhex(value.publicKey,32),signature=unhex(value.signature,64);
+    const payload=concat(encoder.encode("4:salt"+encoder.encode(LOCATIONS_SALT).length+":"+LOCATIONS_SALT+"3:seqi"+value.sequence+"e1:v"),wire);
+    if(typeof verifySignature!=="function" || verifySignature(key,payload,signature)!==true)throw invalid("Invalid locations signature");
+    return Object.freeze({...value,origins:Object.freeze([...value.origins])});
+}
+
+export function parseLocations(text,expectedKey,verifySignature) {
+    let value;try{value=JSON.parse(text);}catch{throw invalid("Invalid locations JSON");}
+    const fields=[...text.matchAll(/"sequence"\s*:\s*(0|[1-9][0-9]*)\s*(?=[,}])/g)];
+    if(fields.length!==1 || Number(fields[0][1])!==value?.sequence)throw invalid("Locations sequence must be an exact JSON integer");
+    return verifyLocations(value,expectedKey,verifySignature);
 }

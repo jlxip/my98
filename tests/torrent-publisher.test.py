@@ -77,7 +77,7 @@ class PublisherTest(unittest.IsolatedAsyncioTestCase):
                     prior=node.store.adopted(key)[0]
                     await publisher.transfer(journal,15)
                     self.assertEqual(node.store.adopted(key)[0],prior)
-                    self.assertIn(prior.info_hash.hex(),tracker.allowed)
+                    self.assertIn(prior.info_hash.hex(),node.owned_hashes())
                     self.assertTrue((node.catalog.public/prior.info_hash.hex()/"publication.json").exists())
                     await publisher.commit(journal)
                     await node.poll_once();await node.jobs[(key,record.sequence)]
@@ -86,7 +86,7 @@ class PublisherTest(unittest.IsolatedAsyncioTestCase):
                     value=publisher.catalog.descriptor(record.info_hash.hex())
                     self.assertEqual(value["disk"],disk_hash)
                     self.assertTrue((node.catalog.public/disk_hash/"disk.my98").exists())
-                    self.assertEqual(tracker.allowed,{record.info_hash.hex(),*(v for k,v in value.items() if k in ("disk","state","profile") and v)})
+                    self.assertEqual(node.owned_hashes(),{record.info_hash.hex(),*(v for k,v in value.items() if k in ("disk","state","profile") and v)})
                     return record,value
                 state=root/"state";state_fixture(state,header)
                 state_record,state_desc=await update("state",state=state)

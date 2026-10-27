@@ -15,7 +15,7 @@ from .protocol import PublicationError
 from .supervision import MARKER,service_files
 
 
-def render(config,*,isolated=False,prefix="my98-torrent"):
+def render(config,*,isolated=False,prefix="my98-torrent-v2"):
     root=Path(config["root"])/"supervision"
     paths=[]
     for name,content in service_files(config,platform.system(),isolated=isolated,prefix=prefix).items():
@@ -56,7 +56,8 @@ def verify_runtime(config,user):
     def drop():
         os.setgroups([]);os.setgid(user.pw_gid);os.setuid(user.pw_uid)
     subprocess.run([config["python"],"-c",
-        "import libtorrent,my98_libtorrent,aiohttp,nacl;assert libtorrent.__version__.startswith('2.1.2');assert hasattr(my98_libtorrent,'put_signed')"],
+        "import libtorrent,my98_libtorrent,aiohttp,nacl;assert libtorrent.__version__.startswith('2.1.2');assert hasattr(my98_libtorrent,'put_signed');"+
+        ("assert 'webtorrent_ice_udp_port' in libtorrent.default_settings()" if config["node"].get("webrtcPort") else "pass")],
         env={**os.environ,"LD_LIBRARY_PATH":str(runtime/"release/prefix/lib")+":"+
             str(runtime/"release/prefix/lib/python3.13/site-packages"),"PYTHONDONTWRITEBYTECODE":"1"},
         preexec_fn=drop,check=True)
@@ -102,8 +103,8 @@ def install(config):
 
 
 def service_names(system):
-    return ["my98-torrent","my98-torrent-https","my98-torrent-certificates.service","my98-torrent-certificates.timer"] if system=="Linux" else [
-        "my98_torrent","my98_torrent_https","my98_torrent_certificates"]
+    return ["my98-torrent-v2","my98-torrent-v2-https","my98-torrent-v2-certificates.service","my98-torrent-v2-certificates.timer"] if system=="Linux" else [
+        "my98_torrent_v2","my98_torrent_v2_https","my98_torrent_v2_certificates"]
 
 
 def stop_owned(config):
@@ -121,12 +122,11 @@ def health(config):
     context=ssl.create_default_context()
     with socket.create_connection(("127.0.0.1",config["httpsPort"]),timeout=3) as raw:
         with context.wrap_socket(raw,server_hostname=config["hostname"]) as connection:
-            key=config["node"]["follow"][0]
-            connection.sendall(("GET /v1/names/"+key+" HTTP/1.1\r\nHost: "+config["hostname"]+
+            connection.sendall(("GET /health HTTP/1.1\r\nHost: "+config["hostname"]+
                 "\r\nConnection: close\r\n\r\n").encode())
             response=connection.recv(4096)
-            if not response.startswith((b"HTTP/1.1 200",b"HTTP/1.1 404")):
-                raise PublicationError("The new HTTPS API did not return a name response")
+            if not response.startswith(b"HTTP/1.1 200"):
+                raise PublicationError("The new HTTPS API did not become healthy")
 
 
 def activate(config):

@@ -11,16 +11,18 @@ export function openTorrentDatabase(factory=globalThis.indexedDB) {
     return new Promise((resolve,reject)=>{
         if(!factory){reject(failure("STORAGE_ERROR","IndexedDB is unavailable"));return;}
         let request,settled=false;
-        try {request=factory.open(TORRENT_DATABASE,1);}
+        try {request=factory.open(TORRENT_DATABASE,2);}
         catch(error){reject(storageError(error));return;}
         request.onupgradeneeded=()=>{
             const db=request.result;
-            const pieces=db.createObjectStore("pieces",{keyPath:["hash","index"]});
-            pieces.createIndex("hash","hash",{unique:false});
-            db.createObjectStore("metadata",{keyPath:"hash"});
-            // Only the Worker accepts signed records. Piece/cache cleanup must
-            // preserve these public high-water marks against replay.
-            db.createObjectStore("names",{keyPath:"publicKey"});
+            if(!db.objectStoreNames.contains("pieces")) {
+                const pieces=db.createObjectStore("pieces",{keyPath:["hash","index"]});
+                pieces.createIndex("hash","hash",{unique:false});
+            }
+            if(!db.objectStoreNames.contains("metadata"))db.createObjectStore("metadata",{keyPath:"hash"});
+            // Public high-water marks survive ciphertext cache cleanup.
+            if(!db.objectStoreNames.contains("names"))db.createObjectStore("names",{keyPath:"publicKey"});
+            if(!db.objectStoreNames.contains("locations"))db.createObjectStore("locations",{keyPath:"publicKey"});
         };
         request.onerror=()=>{settled=true;reject(storageError(request.error));};
         request.onblocked=()=>{settled=true;reject(failure("STORAGE_BLOCKED","Close other my98 tabs to update torrent storage"));};

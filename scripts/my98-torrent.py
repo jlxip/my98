@@ -31,6 +31,7 @@ def parser():
     result.add_argument("--timeout",type=int,default=3600,help="Seconds to wait for a complete seedbox copy")
     commands=result.add_subparsers(dest="command",required=True)
     commands.add_parser("identity")
+    commands.add_parser("locations")
     status=commands.add_parser("status");status.add_argument("public_key")
     publish=commands.add_parser("publish");publish.add_argument("disk",type=Path);publish.add_argument("--state",type=Path);publish.add_argument("--profile",type=Path)
     state=commands.add_parser("state");state.add_argument("state",type=Path);state.add_argument("--clear-profile",action="store_true")
@@ -54,8 +55,10 @@ async def serve(config,*,isolated=False):
     if "aquatic" in config:
         from my98_torrent.tracker import Aquatic
         tracker=Aquatic(data/"tracker",config["aquatic"])
-    engine=Engine(listen=config.get("listen","0.0.0.0:51413,[::]:51413"),isolated=isolated)
-    node=Node(data,config.get("follow",[]),engine=engine,trackers=config.get("trackers",[]),webseeds=config.get("webseeds",[]),apis=[n["api"] for n in config.get("nodes",[])],tracker=tracker)
+    engine=Engine(listen=config.get("listen","0.0.0.0:51414,[::]:51414"),isolated=isolated,
+        webrtc_port=config.get("webrtcPort",0))
+    trackers=config.get("trackers",[] if isolated else ["wss://nuc.jlxip.net:8445/tracker","wss://oregon.jlxip.net:8445/tracker"])
+    node=Node(data,config.get("follow",[]),engine=engine,trackers=trackers,webseeds=config.get("webseeds",[]),tracker=tracker)
     runner=None;stop_task=None
     try:
         await node.start();runner=web.AppRunner(node.app());await runner.setup()
@@ -92,7 +95,7 @@ async def run(args):
         finally:seed=None
         return
     if not config.get("nodes"):raise PublicationError("Configure seedbox API and peer endpoints first")
-    root=args.root or Path(config.get("publisherData",str(Path.home()/".local/share/my98/torrent-publisher")))
+    root=args.root or Path(config.get("publisherData",str(Path.home()/".local/share/my98/torrent-publisher-v2")))
     root.mkdir(parents=True,exist_ok=True,mode=0o700)
     with (root/"publisher.lock").open("a") as lock:
         try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -114,6 +117,9 @@ async def run(args):
             seed=credentials(args.machine)
             try:
                 key=bytes(SigningKey(seed).verify_key)
+                if args.command=="locations":
+                    record=await publisher.publish_locations(seed)
+                    print(json.dumps({"locations":record.as_json()}));return
                 if args.command=="resume":
                     journal=publisher.journal(key)
                     if journal is None:raise PublicationError("No candidate to resume for this identity")

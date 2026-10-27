@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {createHash,createPublicKey,verify} from "node:crypto";
-import {verifyRecord,parseRecord,compareRecords,parseDescriptor,verifyMetadata} from "../src/disk/web/torrent-protocol.js";
+import {verifyRecord,parseRecord,verifyLocations,parseLocations,compareRecords,parseDescriptor,verifyMetadata} from "../src/disk/web/torrent-protocol.js";
 
 const publicKey="07d2860c1066244fa0d7973545b4dd822466d8b2c9fd83fb84331716949b3a54";
 const record={publicKey,sequence:123,infoHash:"12".repeat(20),salt:Buffer.from("my98/publication/v1").toString("hex"),
@@ -54,4 +54,18 @@ test("v1 metadata validates exact hash/shape and removes unsigned network hints"
         const changedHash=createHash("sha1").update(encode(changed)).digest("hex");
         await assert.rejects(verifyMetadata(bytes,changedHash,"disk"));
     }
+});
+
+
+test("signed locations agree with Python and cannot change identity or destinations",()=>{
+    const locations={publicKey:"03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",sequence:123,
+        origins:["https://other.example:8445","https://seedbox.example:8445"],salt:Buffer.from("my98/locations/v1").toString("hex"),
+        signature:"6cdab6e2d9484ec4a1b67302315b06f46d00cd0c5005e6fd904a41ec544c694c3bc9d92a308ac0dab750d25108f7204e7dce45ad1f67ed4f881f89eca80f9e08"};
+    assert.deepEqual(verifyLocations(locations,locations.publicKey,verifier).origins,locations.origins);
+    parseLocations(JSON.stringify(locations),locations.publicKey,verifier);
+    for(const change of [{origins:["https://attacker.example"]},{sequence:124},{origins:[...locations.origins].reverse()},
+        {salt:record.salt},{signature:"00".repeat(64)},{origins:["http://example.com"]}])
+        assert.throws(()=>verifyLocations({...locations,...change},locations.publicKey,verifier));
+    assert.throws(()=>verifyLocations(locations,publicKey,verifier));
+    assert.throws(()=>parseLocations(JSON.stringify(locations).replace('"sequence":123','"sequence":123.0'),locations.publicKey,verifier));
 });
