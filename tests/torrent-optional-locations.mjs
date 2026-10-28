@@ -31,7 +31,7 @@ const locations=signed("my98/locations/v1",{origins,version:1},{origins});
 const forkOrigins=["https://other.example:8445"];
 const fork=signed("my98/locations/v1",{origins:forkOrigins,version:1},{origins:forkOrigins});
 const files=new Map();
-for(const name of ["torrent-remote.js","torrent-records.js","torrent-protocol.js","torrent-store.js","torrent-sources.js","load-profiles.js","range-prefetch.js"])
+for(const name of ["torrent-remote.js","torrent-records.js","torrent-protocol.js","torrent-store.js","torrent-sources.js","load-profiles.js","range-prefetch.js","startup-prefetch.js"])
     files.set("/"+name,await readFile("src/disk/web/"+name));
 for(const name of ["slop86_disk.js","slop86_disk_bg.wasm"])
     files.set("/pkg/"+name,await readFile("build/disk/pkg/"+name));

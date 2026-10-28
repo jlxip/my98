@@ -7,7 +7,7 @@ const piece=262144,data=Buffer.alloc(10*piece+123);for(let i=0;i<data.length;i++
 function encode(v){if(Number.isInteger(v))return Buffer.from('i'+v+'e');if(typeof v==='string')v=Buffer.from(v);if(v instanceof Uint8Array)return Buffer.concat([Buffer.from(v.length+':'),v]);return Buffer.concat([Buffer.from('d'),...Object.keys(v).sort().flatMap(k=>[encode(k),encode(v[k])]),Buffer.from('e')]);}
 const pieces=[];for(let i=0;i<data.length;i+=piece)pieces.push(createHash('sha1').update(data.subarray(i,i+piece)).digest());
 const info={name:'state.my98state',length:data.length,'piece length':piece,pieces:Buffer.concat(pieces)},hash=createHash('sha1').update(encode(info)).digest('hex'),metadata=encode({info});
-const modules=new Map();for(const name of ['torrent-window','torrent-store','torrent-protocol','torrent-sources','torrent-remote','torrent-records','load-profiles','range-prefetch'])modules.set('/'+name+'.js',await readFile('src/disk/web/'+name+'.js'));
+const modules=new Map();for(const name of ['torrent-window','torrent-store','torrent-protocol','torrent-sources','torrent-remote','torrent-records','load-profiles','range-prefetch','startup-prefetch'])modules.set('/'+name+'.js',await readFile('src/disk/web/'+name+'.js'));
 modules.set('/webtorrent.js',await readFile('build/torrent/webtorrent.min.js'));
 let mode='online',phase='',active=0,maxActive=0;const requests=[],results=[];
 const server=createServer((req,res)=>{

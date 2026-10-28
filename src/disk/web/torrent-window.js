@@ -4,6 +4,20 @@ import {torrentSources,DEFAULT_TORRENT_SOURCES} from "./torrent-sources.js";
 export {torrentSources} from "./torrent-sources.js";
 
 const fail=(code,message)=>Object.assign(new Error(message),{code});
+const cancelled = signal => signal?.reason || fail("CANCELLED","Torrent operation cancelled");
+// Abort one caller without cancelling an immutable component recovery shared by
+// another reader. The underlying promise is always observed after cancellation.
+function waitFor(promise,signal) {
+    if(signal?.aborted){void promise.catch(()=>{});return Promise.reject(cancelled(signal));}
+    if(!signal)return promise;
+    return new Promise((resolve,reject)=>{
+        const abort=()=>{cleanup();reject(cancelled(signal));};
+        const cleanup=()=>signal.removeEventListener("abort",abort);
+        signal.addEventListener("abort",abort,{once:true});
+        promise.then(value=>{cleanup();resolve(value);},error=>{cleanup();reject(error);});
+        if(signal.aborted)abort();
+    });
+}
 const bitCounts=Uint8Array.from({length:256},(_,value)=>{
     let count=0;for(;value;value&=value-1)count++;return count;
 });
@@ -21,7 +35,7 @@ export class WindowTorrents {
     constructor({sources=DEFAULT_TORRENT_SOURCES,clientFactory=webTorrentFactory,store=TorrentPieceStore,onProgress=()=>{},timeout=60000}={}) {
         this.sources=torrentSources(sources);this.clientFactory=clientFactory;this.store=store;
         this.onProgress=onProgress;this.timeout=timeout;this.entries=new Map();this.opening=new Map();
-        this.closed=false;this.epoch=0;this.discoveries=new Set();
+        this.closed=false;this.epoch=0;this.discoveries=new Set();this.recovering=new Map();this.openingJobs=new Map();this.componentMetadata=new Map();
     }
     deferSources() {
         this.sourcesReady=new Promise(resolve=>{this.finishSources=resolve;});
@@ -54,6 +68,7 @@ export class WindowTorrents {
         entry.error=error;
         for(const controller of entry.readers)controller.abort(error);
         entry.prefetch?.abort(error);
+        for(const controller of entry.startupPrefetches||[])controller.abort(error);
         if(error.code!=="CANCELLED")this.onProgress({...this.describe(entry),error:{code:error.code||"TRANSPORT_ERROR",message:error.message}});
     }
     progress(entry,force=false) {
@@ -61,21 +76,40 @@ export class WindowTorrents {
         if(!force && now-(entry.progressAt??-Infinity)<250)return;
         entry.progressAt=now;this.onProgress(this.describe(entry));
     }
-    async open({infoHash:hash,metadata,kind}) {
+    async open({infoHash:hash,metadata,kind},signal) {
         infoHash(hash);
+        if(signal?.aborted)throw cancelled(signal);
         if(this.closed || this.clearing)throw fail("CANCELLED","Torrent transport is closed or clearing its cache");
-        if(this.entries.has(hash))return this.describe(this.entry(hash));
-        if(this.opening.has(hash))return this.opening.get(hash);
-        const promise=(async()=>{
-            const data=metadata??await this.discoverMetadata(hash,kind);
-            return this.add(hash,data,kind);
-        })();
-        this.opening.set(hash,promise);
-        try{return await promise;}
-        finally{if(this.opening.get(hash)===promise)this.opening.delete(hash);}
+        let job=this.openingJobs.get(hash);
+        if(job?.controller.signal.aborted) {
+            await waitFor(job.promise.catch(()=>{}),signal);
+            return this.open({infoHash:hash,metadata,kind},signal);
+        }
+        if(!job) {
+            if(this.entries.has(hash))return this.describe(this.entry(hash));
+            job={controller:new AbortController(),waiters:0,settled:false};
+            job.promise=Promise.resolve().then(async()=>{
+                const data=metadata??await this.discoverMetadata(hash,kind,job.controller.signal);
+                if(job.controller.signal.aborted)throw cancelled(job.controller.signal);
+                return this.add(hash,data,kind,job.controller.signal);
+            }).finally(()=>{
+                job.settled=true;
+                if(this.openingJobs.get(hash)===job){this.openingJobs.delete(hash);this.opening.delete(hash);}
+            });
+            this.openingJobs.set(hash,job);this.opening.set(hash,job.promise);
+        }
+        job.waiters++;
+        try{return await waitFor(job.promise,signal);}
+        finally {
+            job.waiters--;
+            if(!job.waiters && !job.settled)job.controller.abort(fail("CANCELLED","Torrent opening has no readers"));
+        }
     }
-    async discoverMetadata(hash,kind) {
-        const client=await this.initialize(),controller=new AbortController(),epoch=this.epoch;
+    async discoverMetadata(hash,kind,signal) {
+        const client=await waitFor(this.initialize(),signal),controller=new AbortController(),epoch=this.epoch;
+        const abortDiscovery=()=>controller.abort(cancelled(signal));
+        signal?.addEventListener("abort",abortDiscovery,{once:true});
+        if(signal?.aborted)abortDiscovery();
         this.discoveries.add(controller);let probe;
         // HTTP has its own deadline; optional HTTPS sources must not shorten
         // the independent WebRTC lookup. Session cancellation stops both.
@@ -175,29 +209,42 @@ export class WindowTorrents {
             // reader: WebTorrent must never retain two torrents for one hash.
             controller.abort(fail("CANCELLED","Metadata lookup finished"));
             controller.signal.removeEventListener("abort",abortHTTP);
+            signal?.removeEventListener("abort",abortDiscovery);
             try {if(probe && !probe.destroyed)await new Promise(resolve=>probe.destroy({destroyStore:false},resolve));}
             finally {this.discoveries.delete(controller);}
         }
     }
-    async webseeds(parsed,sources=this.sources) {
+    async webseeds(parsed,sources=this.sources,signal) {
+        if(signal?.aborted)throw cancelled(signal);
         const urls=sources.webseeds.map(root=>root+"/"+parsed.infoHash+"/"+parsed.filename);
         // Unreachable webseeds can stall piece scheduling despite healthy peers.
         // Only admit HTTP sources reachable for this component.
         // HEAD is a hint; WebTorrent still verifies all downloaded piece hashes.
         const available=await Promise.all(urls.map(async url=>{
+            const controller=new AbortController(),abort=()=>controller.abort(cancelled(signal));
+            signal?.addEventListener("abort",abort,{once:true});
+            if(signal?.aborted)abort();
+            const timer=setTimeout(()=>controller.abort(fail("TRANSPORT_TIMEOUT","Webseed probe timed out")),3000);
             try {
-                const response=await fetch(url,{method:"HEAD",credentials:"omit",redirect:"error",cache:"no-store",signal:AbortSignal.timeout(3000)});
+                const response=await fetch(url,{method:"HEAD",credentials:"omit",redirect:"error",cache:"no-store",signal:controller.signal});
                 if([400,405,501].includes(response.status))return true;
                 const length=response.headers.get("Content-Length");
                 return response.ok && (length===null || Number(length)===parsed.size);
             } catch {return false;}
+            finally {clearTimeout(timer);signal?.removeEventListener("abort",abort);}
         }));
+        if(signal?.aborted)throw cancelled(signal);
         return urls.filter((url,index)=>available[index]);
     }
-    async add(hash,metadata,kind) {
+    async add(hash,metadata,kind,signal) {
         const epoch=this.epoch,parsed=await verifyMetadata(metadata,hash,kind),sources=this.sources;
-        const urls=await this.webseeds(parsed,sources);
-        const client=await this.initialize();
+        if(signal?.aborted)throw cancelled(signal);
+        // Keep verified immutable metadata independently of a live torrent: a
+        // failed reopen must not leave later demand without a recovery source.
+        this.componentMetadata.set(hash,{metadata:parsed.metadata,kind});
+        const urls=await this.webseeds(parsed,sources,signal);
+        const client=await waitFor(this.initialize(),signal);
+        if(signal?.aborted)throw cancelled(signal);
         if(this.closed || epoch!==this.epoch)throw fail("CANCELLED","Torrent opening was cancelled");
         return new Promise((resolve,reject)=>{
             const entry={...parsed,metadata:parsed.metadata,readers:new Set(),background:false,paused:false,rescanned:false};
@@ -211,33 +258,37 @@ export class WindowTorrents {
                 maxWebConns:3,destroyStoreOnDestroy:false});
             entry.torrent=torrent;this.entries.set(hash,entry);
             let settled=false;
-            const timer=setTimeout(()=>{const error=fail("TRANSPORT_TIMEOUT","Torrent storage initialization timed out");this.failed(entry,error);reject(error);void this.remove(hash);},this.timeout);
-            torrent.on("error",error=>{this.failed(entry,error);if(!settled){clearTimeout(timer);settled=true;reject(error);}});
+            const detach=()=>signal?.removeEventListener("abort",abortOpening);
+            const abortOpening=()=>{
+                if(settled)return;settled=true;clearTimeout(timer);detach();
+                reject(cancelled(signal));
+                if(this.entries.get(hash)===entry)void this.remove(hash);
+            };
+            const timer=setTimeout(()=>{settled=true;detach();const error=fail("TRANSPORT_TIMEOUT","Torrent storage initialization timed out");this.failed(entry,error);reject(error);if(this.entries.get(hash)===entry)void this.remove(hash);},this.timeout);
+            signal?.addEventListener("abort",abortOpening,{once:true});
+            torrent.on("error",error=>{this.failed(entry,error);if(!settled){clearTimeout(timer);settled=true;detach();reject(error);}});
             torrent.on("download",bytes=>{entry.receivedData=(entry.receivedData||0)+bytes;this.progress(entry);});
             torrent.on("verified",()=>this.progress(entry));
             torrent.on("done",()=>this.progress(entry,true));
             torrent.once("close",()=>{
                 const error=entry.error||fail("CANCELLED","Torrent closed");
                 this.failed(entry,error);
-                if(!settled){clearTimeout(timer);settled=true;reject(error);}
+                if(!settled){clearTimeout(timer);settled=true;detach();reject(error);}
             });
             torrent.once("ready",()=>{
-                clearTimeout(timer);if(settled)return;settled=true;
+                clearTimeout(timer);if(settled)return;settled=true;detach();
                 if(epoch!==this.epoch || this.closed){reject(fail("CANCELLED","Torrent opening was cancelled"));void this.remove(hash);return;}
                 if(this.sources!==sources)void this.refreshWebseeds(entry).catch(()=>{});
                 if(kind==="state") {
                     entry.rescanned=true;this.backgroundSelection(entry);
                 } else {
-                    // Keep large disks lazy. Only WebTorrent's background hash
-                    // scan can mark cached disk pieces usable.
-                    torrent.rescanFiles(error=>{
-                        if(torrent.destroyed)return;
-                        if(error){this.failed(entry,error);return;}
-                        entry.rescanned=true;this.backgroundSelection(entry);
-                    });
+                    // Keep large disks lazy. Hash-check the cache in the background;
+                    // opt-in startup can also verify its own target pieces.
+                    this.rescanCachedPieces(entry);
                 }
                 resolve(this.describe(entry));
             });
+            if(signal?.aborted)abortOpening();
         });
     }
     entry(hash) {
@@ -261,26 +312,100 @@ export class WindowTorrents {
             pieces:entry.pieces,downloaded:torrent?.downloaded||0,coveredBytes,complete:coveredBytes===entry.size,
             received:entry.receivedData||0};
     }
-    async read({infoHash:hash,offset,length},signal) {
+    async recover({infoHash:hash,metadata,kind},signal) {
+        if(signal?.aborted)throw cancelled(signal);
+        if(this.closed || this.clearing)throw fail("CANCELLED","Torrent transport is closed or clearing its cache");
+        const existing=this.recovering.get(hash);
+        if(existing)return waitFor(existing,signal);
+        const entry=this.entries.get(hash);
+        if(entry && !entry.error && !entry.torrent.destroyed)return this.describe(entry);
+        if(entry?.metadata)this.componentMetadata.set(hash,{metadata:entry.metadata,kind:entry.kind});
+        const known=this.componentMetadata.get(hash);
+        metadata ||= known?.metadata;kind ||= known?.kind;
+        if(!metadata || !kind)throw fail("TRANSPORT_ERROR","No immutable metadata is available for recovery");
+        const promise=(async()=>{
+            if(entry)await this.remove(hash);
+            return this.open({infoHash:hash,metadata,kind});
+        })();
+        this.recovering.set(hash,promise);
+        void promise.finally(()=>{if(this.recovering.get(hash)===promise)this.recovering.delete(hash);}).catch(()=>{});
+        return waitFor(promise,signal);
+    }
+    rescanCachedPieces(entry) {
+        const torrent=entry.torrent,original=torrent._verifyPiece;
+        const scan={targets:new Set(),versions:new Map(),active:true};entry.cacheScan=scan;
+        const verified=index=>scan.versions.set(index,(scan.versions.get(index)||0)+1);
+        // A background store read can finish after a foreground download. The
+        // pinned rescan would otherwise mark its stale negative as unverified.
+        // Protect opt-in targets only when a newer verification of that exact
+        // piece occurred; a real negative without newer evidence stays invalid.
+        const guarded=function(index,callback) {
+            const version=scan.versions.get(index)||0;
+            original.call(this,index,(error,valid)=>{
+                if(!error && !valid && scan.active && scan.targets.has(index) &&
+                    torrent.bitfield.get(index) && (scan.versions.get(index)||0)!==version)valid=true;
+                callback(error,valid);
+            });
+        };
+        const finish=error=>{
+            scan.active=false;torrent.off("verified",verified);
+            if(torrent._verifyPiece===guarded)torrent._verifyPiece=original;
+            if(entry.cacheScan===scan)entry.cacheScan=undefined;
+            if(torrent.destroyed)return;
+            if(error){this.failed(entry,error);return;}
+            entry.rescanned=true;this.backgroundSelection(entry);
+        };
+        torrent.on("verified",verified);torrent._verifyPiece=guarded;
+        try{torrent.rescanFiles(finish);}catch(error){finish(error);}
+    }
+    async verifyCachedPieces(entry,indices,signal,windowPieces=8) {
+        for(const index of indices)entry.cacheScan?.targets.add(index);
+        const torrent=entry.torrent;let cursor=0;
+        await Promise.all(Array.from({length:Math.min(windowPieces,indices.length)},async()=>{
+            for(;;) {
+                const position=cursor++;if(position>=indices.length)return;
+                const index=indices[position];
+                if(signal?.aborted)throw cancelled(signal);
+                if(torrent.bitfield.get(index))continue;
+                entry.cacheChecks ||= new Map();
+                let check=entry.cacheChecks.get(index);
+                if(!check) {
+                    check=new Promise((resolve,reject)=>torrent._verifyPiece(index,(error,valid)=>error?reject(error):resolve(valid)));
+                    entry.cacheChecks.set(index,check);
+                    void check.finally(()=>{if(entry.cacheChecks.get(index)===check)entry.cacheChecks.delete(index);}).catch(()=>{});
+                }
+                const valid=await waitFor(check,signal);
+                if(signal?.aborted)throw cancelled(signal);
+                if(this.entries.get(entry.infoHash)!==entry || torrent.destroyed)throw fail("CANCELLED","Torrent was replaced");
+                if(valid && !torrent.bitfield.get(index))torrent._markVerified(index);
+            }
+        }));
+    }
+    async read({infoHash:hash,offset,length,recover=false},signal) {
+        if(recover)await this.recover({infoHash:hash},signal);
         const entry=this.entry(hash);
         if(!Number.isSafeInteger(offset)||!Number.isSafeInteger(length)||offset<0||length<0||
             length>1024*1024||offset+length>entry.size)throw fail("INVALID_RANGE","Invalid ciphertext range");
         if(signal?.aborted)throw signal.reason;
         if(!length)return new Uint8Array();
-        entry.paused=false;entry.torrent.resume();
-        const controller=new AbortController();entry.readers.add(controller);
+        const controller=new AbortController();entry.readers.add(controller);let reader;
         const abort=()=>controller.abort(signal.reason||fail("CANCELLED","Ciphertext read cancelled"));
         signal?.addEventListener("abort",abort,{once:true});
         const timer=setTimeout(()=>controller.abort(fail("TRANSPORT_TIMEOUT","Ciphertext range timed out")),this.timeout);
-        // Upstream treats end=0 as unspecified. Request at least two bytes for
-        // that one-byte case, but only return the exact requested ciphertext.
-        const end=Math.max(offset+length-1,Math.min(1,entry.size-1));
-        const reader=entry.torrent.files[0].stream({start:offset,end}).getReader();
-        const cancel=()=>{void reader.cancel(controller.signal.reason).catch(()=>{});};
+        const cancel=()=>{void reader?.cancel(controller.signal.reason).catch(()=>{});};
         controller.signal.addEventListener("abort",cancel,{once:true});
-        const output=new Uint8Array(length);
         try {
-            let copied=0;
+            if(recover) {
+                const first=Math.floor(offset/262144),last=Math.floor((offset+length-1)/262144);
+                await this.verifyCachedPieces(entry,Array.from({length:last-first+1},(_,index)=>first+index),controller.signal);
+            }
+            if(controller.signal.aborted)throw controller.signal.reason;
+            entry.paused=false;entry.torrent.resume();
+            // Upstream treats end=0 as unspecified. Request at least two bytes
+            // for that case, but return only the requested ciphertext.
+            const end=Math.max(offset+length-1,Math.min(1,entry.size-1));
+            reader=entry.torrent.files[0].stream({start:offset,end}).getReader();
+            const output=new Uint8Array(length);let copied=0;
             while(copied<length) {
                 if(controller.signal.aborted)throw controller.signal.reason;
                 const {done,value}=await reader.read();
@@ -293,11 +418,12 @@ export class WindowTorrents {
         } finally {
             clearTimeout(timer);signal?.removeEventListener("abort",abort);
             controller.signal.removeEventListener("abort",cancel);
-            await reader.cancel().catch(()=>{});reader.releaseLock();entry.readers.delete(controller);
+            if(reader){await reader.cancel().catch(()=>{});reader.releaseLock();}
+            entry.readers.delete(controller);
         }
     }
     backgroundSelection(entry) {
-        if(entry.torrent.destroyed || entry.paused || entry.prefetch)return;
+        if(entry.torrent.destroyed || entry.paused || entry.prefetch || entry.startupPrefetches?.size)return;
         if(entry.background && entry.rescanned && !entry.prefetch)
             entry.torrent.select(0,entry.pieces-1,0);
         else entry.torrent.deselect(0,entry.pieces-1);
@@ -348,12 +474,96 @@ export class WindowTorrents {
             if(entry.prefetch===controller){entry.prefetch=undefined;this.backgroundSelection(entry);this.progress(entry,true);}
         }
     }
+    // Startup owns distinct stream selections. Public select/deselect merges
+    // non-stream ranges and cannot safely release just this job's ownership.
+    async prefetchStartup({infoHash:hash,id,ranges,windowPieces=8},signal) {
+        const entry=this.entry(hash),torrent=entry.torrent;
+        if(signal?.aborted)throw cancelled(signal);
+        if(!Array.isArray(ranges) || !Number.isSafeInteger(windowPieces) || windowPieces<1 || windowPieces>32)
+            throw fail("INVALID_RANGE","Invalid startup prefetch window");
+        const targets=new Set();
+        for(const range of ranges) {
+            if(!Array.isArray(range) || range.length!==2)throw fail("INVALID_RANGE","Invalid startup prefetch range");
+            const [offset,length]=range;
+            if(!Number.isSafeInteger(offset)||!Number.isSafeInteger(length)||offset<0||length<1||offset+length>entry.size)
+                throw fail("INVALID_RANGE","Invalid startup prefetch range");
+            for(let index=Math.floor(offset/262144);index<=Math.floor((offset+length-1)/262144);index++)targets.add(index);
+        }
+        const indices=[...targets],bytes=index=>Math.min(262144,entry.size-index*262144);
+        const total=indices.reduce((n,index)=>n+bytes(index),0);
+        const snapshot=()=>({completed:indices.reduce((n,index)=>n+(torrent.bitfield.get(index)?bytes(index):0),0),total});
+        let lastCompleted=-1;
+        const report=()=>{
+            const value=snapshot();
+            if(value.completed!==lastCompleted){lastCompleted=value.completed;this.onProgress({...this.describe(entry),startupPrefetch:{id,...value}});}
+            return value;
+        };
+        const controller=new AbortController(),abort=()=>controller.abort(cancelled(signal));
+        entry.startupPrefetches ||= new Set();entry.startupPrefetches.add(controller);
+        signal?.addEventListener("abort",abort,{once:true});
+        const timer=setTimeout(()=>controller.abort(fail("TRANSPORT_TIMEOUT","Startup prefetch timed out")),this.timeout);
+        const owned=new Map();
+        const release=index=>{
+            const owner=owned.get(index);if(!owner)return;
+            owned.delete(index);
+            if(torrent.destroyed)return;
+            for(const selection of torrent._selections)if(selection.notify===owner){selection.remove();break;}
+            torrent._updateSelections();
+        };
+        try {
+            if(signal?.aborted)abort();
+            report();
+            // Check only target pieces before selecting them. A warm disk's
+            // background scan may not yet have reached these scattered ranges.
+            await this.verifyCachedPieces(entry,indices,controller.signal,windowPieces);
+            if(controller.signal.aborted)throw cancelled(controller.signal);
+            report();
+            entry.paused=false;torrent.resume();
+            return await new Promise((resolve,reject)=>{
+                let finished=false,next=0,pumping=false,again=false;
+                const cleanup=()=>{torrent.off("verified",verified);controller.signal.removeEventListener("abort",aborted);};
+                const finish=error=>{
+                    if(finished)return;finished=true;cleanup();
+                    error?reject(error):resolve(report());
+                };
+                const pump=()=>{
+                    if(finished)return;
+                    if(pumping){again=true;return;}
+                    pumping=true;
+                    try {
+                        do {
+                            again=false;
+                            if(controller.signal.aborted){finish(cancelled(controller.signal));break;}
+                            for(const index of [...owned.keys()])if(torrent.bitfield.get(index))release(index);
+                            while(owned.size<windowPieces && next<indices.length) {
+                                const index=indices[next++];if(torrent.bitfield.get(index))continue;
+                                const owner=()=>{};owned.set(index,owner);
+                                torrent._select(index,index,0,owner,true);
+                            }
+                            const value=report();if(value.completed===total)finish();
+                        } while(again && !finished);
+                    } catch(error){finish(error);}
+                    finally{pumping=false;}
+                };
+                const verified=index=>{if(targets.has(index))pump();};
+                const aborted=()=>finish(cancelled(controller.signal));
+                torrent.on("verified",verified);controller.signal.addEventListener("abort",aborted,{once:true});
+                pump();
+            });
+        } finally {
+            clearTimeout(timer);signal?.removeEventListener("abort",abort);
+            for(const index of [...owned.keys()])release(index);
+            entry.startupPrefetches.delete(controller);
+        }
+    }
     cancel() {
         this.epoch++;
+        for(const job of this.openingJobs.values())job.controller.abort(fail("CANCELLED","Torrent opening cancelled"));
         for(const controller of this.discoveries)controller.abort(fail("CANCELLED","Metadata lookup cancelled"));
         for(const entry of this.entries.values()) {
             for(const controller of entry.readers)controller.abort(fail("CANCELLED","Torrent read cancelled"));
             entry.prefetch?.abort(fail("CANCELLED","Torrent prefetch cancelled"));
+            for(const controller of entry.startupPrefetches||[])controller.abort(fail("CANCELLED","Startup prefetch cancelled"));
             entry.paused=true;
             if(!entry.torrent.destroyed){entry.torrent.deselect(0,entry.pieces-1);entry.torrent.pause();}
         }
@@ -369,7 +579,7 @@ export class WindowTorrents {
         try {
             await Promise.all([...this.entries.keys()].map(hash=>this.remove(hash)));
             await Promise.allSettled([...this.opening.values()]);
-            await clearTorrentCache();
+            await clearTorrentCache();this.componentMetadata.clear();
         } finally {this.clearing=false;}
     }
     async close() {
@@ -377,6 +587,7 @@ export class WindowTorrents {
         this.finishSources?.();
         await Promise.all([...this.entries.keys()].map(hash=>this.remove(hash)));
         await Promise.allSettled([...this.opening.values()]);
+        this.componentMetadata.clear();
         if(this.client && !this.client.destroyed)await new Promise(resolve=>this.client.destroy(resolve));
     }
 }

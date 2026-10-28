@@ -45,7 +45,8 @@ export async function restoreMachineState({disk,input,current,compatibility,crea
         await adapter.drain();
         const description=await disk.commitState(prepared.token);
         committed=true;view.committed=true;adapter.snapshotReady=false;
-        return {machine:candidate,adapter,config,running:m.running,description};
+        return {machine:candidate,adapter,config,running:m.running,description,
+            ...(prepared.prefetchId!==undefined?{prefetchId:prepared.prefetchId}:{})};
     } finally {
         signal?.removeEventListener("abort",abort);
         if(!committed) {

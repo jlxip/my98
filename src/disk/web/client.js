@@ -89,7 +89,7 @@ export class Slop86Disk {
         try{return await this.call("openRemoteReadOnly",{...options,readKey:bytes},[bytes.buffer]);}
         finally{if(bytes.byteLength)bytes.fill(0);}
     }
-    preparePublishedState() {return this.call("prepareState",{published:true});}
+    preparePublishedState({prefetch}={}) {return this.call("prepareState",{published:true,...(prefetch!==undefined?{prefetch}:{})});}
     async exportReadOnlyKey() {
         const bytes = await this.call("exportReadOnlyKey");
         try { return "my98-ro-v2." + btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, ''); }
@@ -104,7 +104,8 @@ export class Slop86Disk {
     read(offset,length) {return this.call("read", {offset,length});}
     write(offset,data) {const bytes=new Uint8Array(data).slice();return this.call("write", {offset,bytes}, [bytes.buffer]);}
     saveState(state, metadata) {return this.call("saveState",{state,metadata},[state]);}
-    prepareState(input) {return input?.publication===true?this.preparePublishedState():this.call("prepareState",{input});}
+    prepareState(input) {return input?.publication===true?this.preparePublishedState(input):this.call("prepareState",{input});}
+    waitLoadPrefetch(id) {return this.call("waitLoadPrefetch",{id});}
     commitState(token) {return this.call("commitState",{token});}
     discardState(token) {return this.call("discardState",{token});}
     stateDisk(token) {

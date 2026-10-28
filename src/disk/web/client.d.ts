@@ -9,6 +9,10 @@ export interface GeneratedBootRangeProfile extends BootRangeProfile {minUtilizat
 export type LoadOrigin = {kind:"boot"}|{kind:"state";sha256:string};
 export interface LoadRangeProfile extends Omit<GeneratedBootRangeProfile,"version"> {version:2;origin:LoadOrigin;}
 export interface LoadPrefetchOptions {origin:"boot"|"restored";scope:"none"|"profile"|"disk"|"auto";}
+/** Opt-in loading barrier; omitted options retain the normal background policy. */
+export interface StartupPrefetchOptions {scope:"profile";maxAttempts?:number;postRestoreBudgetMs?:number;windowPieces?:number;}
+export interface PreparedState {token:number;metadata:Record<string,unknown>;state:ArrayBuffer;size:number;prefetchId?:string;}
+export interface StartupPrefetchResult {outcome:"complete"|"fallback";reason?:string;attempts:number;}
 export interface DiskTraceEvent {type:string;unit?:number;time:number;offset?:number;length?:number;ms?:number;}
 /** Extract the public identity from a v2 credential, validating its encoding. */
 export function readOnlyPublicKey(readKey:string):Uint8Array;
@@ -23,7 +27,11 @@ export class Slop86Disk {
  open(file:File|Blob):Promise<DiskState>;
  openRemote(options?:RemoteOptions):Promise<DiskState>;
  openRemoteReadOnly(options:RemoteOptions & {readKey:string}):Promise<DiskState>;
- preparePublishedState():Promise<{token:number;metadata:Record<string,unknown>;state:ArrayBuffer;size:number}>;
+ preparePublishedState(options?:{prefetch?:StartupPrefetchOptions}):Promise<PreparedState>;
+ prepareState(input:string|File|Blob|{publication:true;prefetch?:StartupPrefetchOptions}):Promise<PreparedState>;
+ commitState(token:number):Promise<DiskState>;
+ discardState(token:number):Promise<void>;
+ waitLoadPrefetch(id:string):Promise<StartupPrefetchResult>;
  /** Export a stable capability for the unlocked identity, including past/future disks. Treat as a secret. */
  exportReadOnlyKey():Promise<string>;
  /** Open an encrypted local file using a my98-ro-v2 capability. Writes stay in RAM. */

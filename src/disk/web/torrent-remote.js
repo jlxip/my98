@@ -4,6 +4,7 @@ import {resolveRecord,boundedBytes} from "./torrent-records.js";
 import {verifyMetadata,parseDescriptor,infoHash,unhex} from "./torrent-protocol.js";
 import {torrentSources} from "./torrent-sources.js";
 import {validateLoadProfiles,sameOrigin} from "./load-profiles.js";
+import {StartupPrefetch,startupPrefetchOptions} from "./startup-prefetch.js";
 
 const fail=(code,message)=>Object.assign(new Error(message),{code});
 let serial=0;
@@ -72,8 +73,9 @@ export class RemotePublication {
         this.io=io;this.sources=sources;this.session="torrent:"+(++serial);
         this.metadata=new Map();this.opened=new Set();this.network=new Map();
         this.scope="disk";this.trace=[];this.rangeRequests=0;this.closed=false;
+        this.startupJobs=new Map();this.startupSerial=0;
     }
-    async metadataFor(hash,kind,signal) {
+    async metadataFor(hash,kind,signal,startup=false) {
         if(this.metadata.has(hash))return this.metadata.get(hash);
         const cached=await metadataCache(hash);
         if(cached) {
@@ -81,15 +83,15 @@ export class RemotePublication {
                 const parsed=await verifyMetadata(cached,hash,kind);this.metadata.set(hash,parsed);return parsed;
             } catch {} // Immutable metadata can be safely refetched after cache corruption.
         }
-        const data=await this.io.call("metadata",{session:this.session,infoHash:hash,kind},signal);
+        const data=await this.io.call("metadata",{session:this.session,infoHash:hash,kind,...(startup?{startup:true}:{})},signal);
         const parsed=await verifyMetadata(data,hash,kind);
         await metadataCache(hash,parsed.metadata);this.metadata.set(hash,parsed);return parsed;
     }
 
-    async torrent(hash,kind,signal) {
-        const parsed=await this.metadataFor(hash,kind,signal);
+    async torrent(hash,kind,signal,startup=false) {
+        const parsed=await this.metadataFor(hash,kind,signal,startup);
         if(!this.opened.has(hash)) {
-            await this.io.call("open",{session:this.session,infoHash:hash,kind,metadata:parsed.metadata},signal);
+            await this.io.call("open",{session:this.session,infoHash:hash,kind,metadata:parsed.metadata,...(startup?{startup:true}:{})},signal);
             this.opened.add(hash);
         }
         return parsed;
@@ -97,7 +99,8 @@ export class RemotePublication {
     async bytes(hash,offset,length,signal) {
         if(this.closed)throw fail("CANCELLED","Publication is closed");
         this.rangeRequests++;
-        return this.io.call("read",{session:this.session,infoHash:hash,offset,length},signal);
+        return this.io.call("read",{session:this.session,infoHash:hash,offset,length,
+            ...(this.startupRecovery && hash===this.publication.disk?{recover:true}:{})},signal);
     }
     read(offset,length,signal) {return this.bytes(this.publication.disk,offset,length,signal);}
     noteDemand() {}
@@ -105,17 +108,61 @@ export class RemotePublication {
         this.trace.push({type,...value});
         if(this.trace.length>2048)this.trace.splice(0,this.trace.length-2048);
     }
-    progress(value) {if(value?.infoHash)this.network.set(value.infoHash,value);}
+    progress(value) {
+        if(value?.infoHash)this.network.set(value.infoHash,value);
+        this.startupJob?.progress(value);
+    }
+    startStartupPrefetch(value,{size,signal,onProgress}={}) {
+        const options=startupPrefetchOptions(value);
+        this.discardStartupPrefetch(this.startupJob?.id);this.startupJobs.clear();
+        this.scope="none";this.logicalSize=size;this.startupRecovery=true;
+        const id=this.session+":startup:"+(++this.startupSerial);
+        const job=new StartupPrefetch({id,options,logicalSize:size,diskSize:this.size,
+            stateHash:this.publication.state,profileHash:this.publication.profile,signal,onProgress,
+            prepare:async(jobSignal)=>{
+                await this.io.call("background",{session:this.session,infoHash:this.publication.disk,enabled:false},jobSignal);
+                await this.io.call("stopPrefetch",{session:this.session,infoHash:this.publication.disk},jobSignal);
+            },
+            loadProfiles:(units,jobSignal)=>this.profiles(units,jobSignal,true),
+            prefetch:(args,jobSignal)=>this.io.call("prefetchStartup",{session:this.session,infoHash:this.publication.disk,...args},jobSignal),
+            recover:async(kind,jobSignal)=>{
+                const hash=this.publication[kind],metadata=this.metadata.get(hash);
+                // No verified metadata means the next normal lookup owns opening.
+                if(!metadata){this.opened.delete(hash);return;}
+                await this.io.call("recover",{session:this.session,infoHash:hash,kind,metadata:metadata.metadata},jobSignal);
+            },
+            onOutcome:result=>{
+                if(this.startupJob!==job || this.closed)return;
+                this.scope=result.outcome==="complete"?"profile":"none";
+            },
+        });
+        this.startupJob=job;this.startupJobs.set(id,job);
+        for(const snapshot of this.network.values())job.progress(snapshot);
+        return id;
+    }
+    validateStartupPrefetch(id,origin) {
+        const job=this.startupJobs.get(id);if(!job)throw fail("INVALID_STATE","Expired startup prefetch");
+        this.origin=origin;job.validate(origin);
+    }
+    commitStartupPrefetch(id) {
+        const job=this.startupJobs.get(id);if(!job)throw fail("INVALID_STATE","Expired startup prefetch");
+        job.commit();
+    }
+    waitStartupPrefetch(id) {
+        const job=this.startupJobs.get(id);if(!job)return Promise.reject(fail("INVALID_STATE","Expired startup prefetch"));
+        return job.result;
+    }
+    discardStartupPrefetch(id=this.startupJob?.id) {this.startupJobs.get(id)?.cancel();}
     stats() {
         const disk=this.network.get(this.publication?.disk);
         return {infoHash:this.publication?.disk,received:[...this.network.values()].reduce((n,value)=>n+(value.received||0),0),
             rangeRequests:this.rangeRequests,coveredBytes:disk?.coveredBytes||0,totalBytes:this.size,downloaded:disk?.downloaded||0,complete:!!disk?.complete,scope:this.scope};
     }
-    async profiles(units,signal) {
+    async profiles(units,signal,startup=false) {
         const hash=this.publication.profile;
         if(!hash)return [];
         if(this.profileCache?.units===units)return this.profileCache.value;
-        const meta=await this.torrent(hash,"profile",signal);
+        const meta=await this.torrent(hash,"profile",signal,startup);
         const bytes=await this.bytes(hash,0,meta.size,signal);
         let value;
         try{value=JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(bytes));}
@@ -127,6 +174,7 @@ export class RemotePublication {
     }
     async setLoadPrefetch(origin,scope,{size,signal}={}) {
         if(!["none","profile","disk","auto"].includes(scope))throw fail("INVALID_PROFILE","Invalid load prefetch scope");
+        this.discardStartupPrefetch(this.startupJob?.id);
         this.scope=scope;this.origin=origin;this.logicalSize=size;
         await this.io.call("background",{session:this.session,infoHash:this.publication.disk,enabled:false},signal);
         await this.io.call("stopPrefetch",{session:this.session,infoHash:this.publication.disk},signal);
@@ -157,8 +205,12 @@ export class RemotePublication {
         if(this.scope==="profile")return this.setLoadPrefetch(this.origin,this.scope,{size:this.logicalSize,signal});
         return this.io.call("background",{session:this.session,infoHash:this.publication.disk,enabled:this.scope!=="none"},signal);
     }
-    cancel() {this.io.notify("cancel",{session:this.session});}
+    cancel() {
+        for(const job of this.startupJobs.values())job.cancel();
+        this.io.notify("cancel",{session:this.session});
+    }
     async clearCache() {
+        this.discardStartupPrefetch(this.startupJob?.id);
         await this.io.call("clear",{session:this.session});this.opened.clear();this.network.clear();
         await this.torrent(this.publication.disk,"disk");
         this.scope="none";

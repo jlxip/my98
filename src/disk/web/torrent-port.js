@@ -62,6 +62,7 @@ export class WindowTorrentPort {
         port.start();
     }
     async execute(op,args,signal) {
+        if(signal?.aborted)throw signal.reason||fail("CANCELLED","Ciphertext operation cancelled");
         if(!args || typeof args.session!=="string" || !/^torrent:[0-9]+$/.test(args.session))
             throw fail("TRANSPORT_ERROR","Invalid ciphertext session");
         const session=args.session;
@@ -81,11 +82,14 @@ export class WindowTorrentPort {
         if(!transport)throw fail("TRANSPORT_ERROR","Ciphertext session is closed");
         switch(op) {
         case "sources":transport.setSources(args.sources);return null;
-        case "open":return transport.open(args);
+        case "open":return transport.open(args,args.startup?signal:undefined);
         case "metadata":
-            await transport.open(args);
+            await transport.open(args,args.startup?signal:undefined);
+            if(signal?.aborted)throw signal.reason||fail("CANCELLED","Metadata request cancelled");
             return transport.entry(args.infoHash).metadata.slice();
         case "read":return transport.read(args,signal);
+        case "recover":return transport.recover(args,signal);
+        case "prefetchStartup":return transport.prefetchStartup(args,signal);
         case "background":transport.setBackground(args.infoHash,args.enabled);return null;
         case "stopPrefetch":await transport.stopPrefetch(args.infoHash);return null;
         case "prefetch":

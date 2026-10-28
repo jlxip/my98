@@ -7,7 +7,11 @@ import {RemotePublication} from "./torrent-remote.js";
 import {hex} from "./torrent-protocol.js";
 const sources = new Map();
 let stateCandidate, stateSerial = 0;
-function dropState() {stateCandidate?.vault.free();stateCandidate=undefined;}
+function dropState() {
+    if(stateCandidate?.prefetchId!==undefined)
+        sources.get(stateCandidate.source)?.discardStartupPrefetch(stateCandidate.prefetchId);
+    stateCandidate?.vault.free();stateCandidate=undefined;
+}
 let identity;
 let networkBytes = 0, networkRequests = 0;
 let vault, sourceId = 0, current, prepared, nextDownload = 0;
@@ -44,6 +48,7 @@ function torrentProgress(session,value) {
             if(value.error)self.postMessage({type:"progress",phase:"download",error:value.error,
                 completed:value.downloaded||0,total:input.size,readBytes,readCalls,networkBytes,networkRequests});
             if(value.infoHash===input.publication.disk)progress("download",value.coveredBytes||0,input.size);
+            if(value.infoHash===input.publication.state)progress("download-state",value.coveredBytes||0,value.size);
         }
     }
 }
@@ -179,23 +184,36 @@ async function execute(op,a) {
     }
     case "prepareState": {
         dropState();
-        let input=a.input;
-        if(a.published) {
-            const remote=sources.get(current);
-            if(!remote?.stateInput)throw fail("NO_PUBLISHED_STATE","Open a publication with a state first");
-            input=await remote.stateInput(protocol.signal);
-        }
-        const decoded=await decodeState(vault,input,{check,progress,signal:protocol.signal});
+        let input=a.input,decoded,prefetchId;
+        const sourceId=current,remote=sources.get(sourceId);
+        if(a.prefetch===undefined)remote?.discardStartupPrefetch?.();
         try {
-            const reference=decoded.metadata.baseInfoHash,remote=sources.get(current)?.remote;
-            if(reference!==null && reference!==undefined && remote && reference!==remote.infoHash)
+            if(a.published) {
+                if(!remote?.stateInput)throw fail("NO_PUBLISHED_STATE","Open a publication with a state first");
+                if(a.prefetch!==undefined)prefetchId=remote.startStartupPrefetch(a.prefetch,{
+                    size:describe().size,signal:protocol.signal,
+                    onProgress:value=>{
+                        if(current===sourceId)progress("download-startup",value.completed,value.total);
+                    },
+                });
+                input=await remote.stateInput(protocol.signal);
+            } else if(a.prefetch!==undefined)throw fail("INVALID_PROFILE","Startup prefetch requires a published state");
+            decoded=await decodeState(vault,input,{check,progress,signal:protocol.signal});
+            const reference=decoded.metadata.baseInfoHash;
+            if(reference!==null && reference!==undefined && remote?.remote && reference!==remote.remote.infoHash)
                 throw fail("INVALID_STATE","State belongs to a different published disk");
+            const origin={kind:'state',sha256:decoded.stateSha256};
+            if(prefetchId!==undefined)remote.validateStartupPrefetch(prefetchId,origin);
             check();const candidate=vault.fork_state(decoded.overlay);
             void input?.validated?.();
             const token=++stateSerial;
-            stateCandidate={vault:candidate,token,revision:describe().revision,source:current,origin:{kind:'state',sha256:decoded.stateSha256}};
-            return {token,metadata:decoded.metadata,state:decoded.state,size:describe().size};
-        } finally {decoded.overlay.fill(0);}
+            stateCandidate={vault:candidate,token,revision:describe().revision,source:current,origin,prefetchId};
+            return {token,metadata:decoded.metadata,state:decoded.state,size:describe().size,
+                ...(prefetchId!==undefined?{prefetchId}:{})};
+        } catch(error) {
+            if(prefetchId!==undefined)remote.discardStartupPrefetch(prefetchId);
+            throw error;
+        } finally {decoded?.overlay.fill(0);}
     }
     case "candidateRead": {
         if(!stateCandidate || a.token!==stateCandidate.token)throw fail("INVALID_STATE","Expired state candidate");
@@ -204,9 +222,18 @@ async function execute(op,a) {
     case "discardState": if(stateCandidate?.token===a.token)dropState();return null;
     case "commitState": {
         if(!stateCandidate || a.token!==stateCandidate.token || stateCandidate.revision!==describe().revision || stateCandidate.source!==current)throw fail("INVALID_STATE","Disk changed during restoration");
-        check();const old=vault;vault=stateCandidate.vault;restoredOrigin=stateCandidate.origin;freshRestore=true;stateCandidate=undefined;old.free();prepared=undefined;
-        await sources.get(current)?.setLoadPrefetch?.(restoredOrigin,'none',{size:describe().size,signal:protocol.signal});
+        check();const old=vault,prefetchId=stateCandidate.prefetchId;
+        vault=stateCandidate.vault;restoredOrigin=stateCandidate.origin;freshRestore=true;stateCandidate=undefined;old.free();prepared=undefined;
+        if(prefetchId!==undefined)sources.get(current).commitStartupPrefetch(prefetchId);
+        else await sources.get(current)?.setLoadPrefetch?.(restoredOrigin,'none',{size:describe().size,signal:protocol.signal});
         return describe();
+    }
+    case "waitLoadPrefetch": {
+        if(stateCandidate?.prefetchId===a.id)
+            throw fail("INVALID_STATE","Commit the state before waiting for startup prefetch");
+        const remote=sources.get(current);
+        if(!remote?.waitStartupPrefetch)throw fail("INVALID_PROFILE","No startup prefetch is available");
+        const result=await remote.waitStartupPrefetch(a.id);check();return result;
     }
     case "relayPublicKey": return vault.relay_public_key();
     case "signRelayChallenge": {

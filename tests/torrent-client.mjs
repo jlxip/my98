@@ -113,15 +113,28 @@ try {
                 const assert=(value,message)=>{if(!value)throw Error(message);};
                 const owner=await Slop86Disk.create();
                 let remote,reader,machine,adapter,stage="local fixture";
+                const stateProgress=[];
+                const onProgress=p=>{if(p.phase==="download-state")stateProgress.push(p);};
+                const checkStateProgress=()=>{
+                    assert(stateProgress.length>0,"Missing published-state progress");
+                    let previous=0;
+                    for(const p of stateProgress){
+                        assert(p.total===stateSize && p.completed>=previous && p.completed<=stateSize,"Invalid verified state progress");
+                        previous=p.completed;
+                    }
+                    assert(previous===stateSize,"Missing final state progress");stateProgress.length=0;
+                };
+                let stateSize;
                 try {
                     stage="local unlock";await owner.unlock("disk fixtures","public compatibility password","main");
                     stage="local open";await owner.open(document.querySelector("#fixture-file").files[0]);
                     stage="export capability";const readKey=await owner.exportReadOnlyKey();
                     stage="local write";await owner.write(10000,new Uint8Array([42]));
                     stage="local state";const state=await owner.saveState(new Uint8Array([10,20,30,40]).buffer,{version:1,compatibility:"remote-fixture",config:{},running:false});
+                    stateSize=state.blob.size;
                     const response=await fetch("/setup",{method:"POST",body:state.blob}),publication=await response.json();
                     const sources={apis:[url],trackers:[],webseeds:[url+"/content"]};
-                    remote=await Slop86Disk.create();
+                    remote=await Slop86Disk.create({onProgress});
                     await remote.unlock("disk fixtures","public compatibility password","main");
                     stage="open by key";const opened=await remote.openRemote({publicKey:publication.publicKey,sources,prefetchScope:"none"});
                     assert(opened.size===2*1024*1024 && opened.remote.infoHash===diskHash,"Remote disk identity/size changed");
@@ -144,6 +157,7 @@ try {
                     }
                     assert((await remote.readStats()).remote.complete,"Encrypted background download did not complete");
                     stage="published state";const candidate=await remote.prepareState({publication:true});
+                    checkStateProgress();
                     assert(new Uint8Array(candidate.state).join(",")==="10,20,30,40","Published state changed");
                     assert((await remote.stateDisk(candidate.token).read(10000,1))[0]===42,"Published overlay did not decrypt");
                     assert((await remote.read(10000,1))[0]===0,"Preparing state changed current disk");
@@ -151,10 +165,11 @@ try {
                     stage="state profile";await remote.setLoadPrefetch({origin:"restored",scope:"profile"});
                     assert((await remote.read(10000,1))[0]===42,"Restored overlay missing");
                     await remote.close();remote=null;
-                    reader=await Slop86Disk.create();
+                    reader=await Slop86Disk.create({onProgress});
                     stage="capability open";const description=await reader.openRemoteReadOnly({infoHash:publication.descriptor,readKey,sources,prefetchScope:"none"});
                     assert(description.readOnly,"Remote capability opened writable");
                     stage="capability state";const restored=await reader.preparePublishedState();await reader.commitState(restored.token);
+                    checkStateProgress();
                     assert((await reader.read(10000,1))[0]===42,"Capability state restoration failed");
                     await reader.close();reader=null;
                     stage="offline reopen";await fetch("/mode/offline");
@@ -195,7 +210,7 @@ try {
                     assert((await remote.read(10000,1))[0]===42,"Published emulator disk overlay did not restore");
                     assert(machine.v86.cpu.instruction_pointer[0]===0x7c02,"Published emulator CPU did not restore");
                     await machine.destroy();machine=null;adapter.dispose();adapter=null;
-                    return {readKey,emulatorBoot:true,emulatorRestore:true,encryptedRanges:true,background:true,profile:true,cancelResume:true,state:true,capability:true,offline:true,cleanup:true};
+                    return {readKey,emulatorBoot:true,emulatorRestore:true,encryptedRanges:true,background:true,profile:true,cancelResume:true,state:true,stateProgress:true,capability:true,offline:true,cleanup:true};
                 } catch(error){throw Error(stage+": "+error.message+" ["+error.code+"]");} finally {await machine?.destroy();adapter?.dispose();await owner.close();await remote?.close();await reader?.close();}
             },{url,diskHash:disk});
             const readKey=result.readKey;delete result.readKey;
