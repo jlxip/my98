@@ -22,7 +22,7 @@ const files=new Map();
 for(const name of ["torrent-window.js","torrent-store.js","torrent-protocol.js","torrent-sources.js"])
     files.set("/"+name,await readFile("src/disk/web/"+name));
 files.set("/webtorrent.js",await readFile("build/torrent/webtorrent.min.js"));
-let mode="online",corruptServed=0;const requests=[],results=[];
+let mode="online",corruptServed=0,stalledAborted=0;const requests=[],results=[];
 const server=createServer((req,res)=>{
     const path=new URL(req.url,"http://localhost").pathname;
     if(path.startsWith("/mode/")){mode=path.split("/").at(-1);res.writeHead(200).end();return;}
@@ -34,6 +34,7 @@ const server=createServer((req,res)=>{
         if(mode==="offline"){res.writeHead(503).end();return;}
         if(req.method==="HEAD" && path.startsWith("/content/")){res.writeHead(200,{"Content-Length":data.length}).end();return;}
         if(req.method==="HEAD"){res.writeHead(405).end();return;}
+        if(mode==='failover' && path.startsWith('/content/')){res.on('close',()=>{if(!res.writableEnded)stalledAborted++;});return;}
         const range=req.headers.range?.match(/^bytes=([0-9]+)-([0-9]+)$/);
         if(!range){res.writeHead(400).end();return;}
         const start=Number(range[1]),end=Math.min(Number(range[2]),data.length-1);
@@ -48,7 +49,7 @@ await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
 const url="http://127.0.0.1:"+server.address().port;
 try {
     for(const [name,type] of Object.entries({chromium,webkit})) {
-        mode="online";const before=corruptServed,requestStart=requests.length;
+        mode="online";const before=corruptServed,abortedBefore=stalledAborted,requestStart=requests.length;
         const browser=await type.launch();
         try {
             const page=await browser.newPage(),external=[];
@@ -84,6 +85,18 @@ try {
                     client.setBackground(hash,true);
                     for(let i=0;i<1000&&!client.describe(client.entry(hash)).complete;i++)await new Promise(resolve=>setTimeout(resolve,10));
                     assert(client.describe(client.entry(hash)).complete,"Background download did not complete");
+                } finally {await client.close();}
+                await clearTorrentCache();
+                await fetch('/mode/failover');client=await open();
+                try {
+                    const bytes=await client.read({infoHash:hash,offset:0,length:64});
+                    assert(bytes.every((b,i)=>b===i),'Backup did not complete the failed primary read');
+                    assert(client.entry(hash).activeSeed.includes('/alternate/'),'HEAD-unsupported backup was not promoted');
+                } finally {await client.close();}
+                await fetch('/mode/online');client=await open();
+                try {client.setBackground(hash,true);
+                    for(let i=0;i<1000&&!client.describe(client.entry(hash)).complete;i++)await new Promise(resolve=>setTimeout(resolve,10));
+                    assert(client.describe(client.entry(hash)).complete,'Cache refill after failover did not complete');
                 } finally {await client.close();}
                 await fetch("/mode/offline");client=await open();
                 try {
@@ -124,7 +137,7 @@ try {
                 } finally {IDBObjectStore.prototype.put=put;await client.close();}
                 await clearTorrentCache();
                 return {webRTCUnavailable:WebTorrent.WEBRTC_SUPPORT===false,lazyRanges:true,
-                    unavailableSourceSkipped:true,headUnsupportedSource:true,background:true,offlineCache:true,corruptionRejected:true,cancel:true,quota:true};
+                    unavailableSourceSkipped:true,headUnsupportedSource:true,backupPromoted:true,background:true,offlineCache:true,corruptionRejected:true,cancel:true,quota:true};
             },{url,hash,metadata:Array.from(metadata),size:data.length});
             const sourceRequests=requests.slice(requestStart);
             if(!sourceRequests.some(r=>r.method==="HEAD"&&r.path.startsWith("/unavailable/")))throw Error("Unavailable source was not probed");
@@ -132,6 +145,7 @@ try {
             for(const root of ["/content/","/alternate/"])if(!sourceRequests.some(r=>r.method==="GET"&&r.path.startsWith(root)))throw Error("Healthy or HEAD-unsupported source was lost");
             if(external.length)throw Error("Untrusted metadata introduced network sources: "+external.join(", "));
             if(corruptServed<=before)throw Error("Corrupt network piece fixture was not exercised");
+            if(stalledAborted<=abortedBefore)throw Error('Promoted backup did not abort the stalled HTTP request');
             results.push({browser:name,...result});console.log(JSON.stringify(results.at(-1)));
         } finally {await browser.close();}
     }

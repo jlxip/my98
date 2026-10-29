@@ -47,7 +47,13 @@ export class Slop86Disk {
             const item = this.pending.get(data.id);
             if(item) { this.pending.delete(data.id); data.ok ? item.resolve(data.result) : item.reject(Object.assign(new Error(data.error.message || data.error), data.error)); }
         };
-        this.worker.onerror = event => { event.preventDefault(); this.fail(new Error("Disk Worker could not run")); };
+        this.worker.onerror = event => {
+            event.preventDefault();
+            this.fail(Object.assign(new Error(event.message || "Disk Worker could not run"),{
+                code:"DISK_WORKER_ERROR",cause:event.error,
+                resource:event.filename ? event.filename+(event.lineno?":"+event.lineno+":"+(event.colno||0):"") : undefined,
+            }));
+        };
         this.worker.onmessageerror = () => this.fail(new Error("Invalid Worker response"));
     }
     fail(error) {

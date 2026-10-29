@@ -8,6 +8,15 @@ import {StartupPrefetch,startupPrefetchOptions} from "./startup-prefetch.js";
 
 const fail=(code,message)=>Object.assign(new Error(message),{code});
 let serial=0;
+function discoverRecord(publicKey,sources,verifySignature,options) {
+    let accept,reject;
+    const first=new Promise((resolve,fail)=>{accept=resolve;reject=fail;});
+    const settled=resolveRecord(publicKey,sources,verifySignature,{...options,onRecord:accept})
+        .then(record=>{accept(record);return record;},error=>{reject(error);throw error;});
+    // The owner joins the background task after creating the transport.
+    void first.catch(()=>{});void settled.catch(()=>{});
+    return {first,settled};
+}
 async function metadataCache(hash,value) {
     const db=await openTorrentDatabase();
     try {
@@ -27,17 +36,21 @@ export class RemotePublication {
         if(publicKey && descriptorInfoHash)throw fail("INVALID_PUBLICATION","Choose a public key or descriptor infohash");
         if(publicKey!==undefined && publicKey!==owner)throw fail("INVALID_PUBLICATION","Publication belongs to a different identity");
         let config=torrentSources(sources);
-        let record=null,locationsTask,locationsController;
+        let record=null,locationsTask,locationsController,recordTask,locationsSettled;
         const abortLocations=()=>locationsController?.abort(signal?.reason||fail("CANCELLED","Locations lookup cancelled"));
         if(descriptorInfoHash!==undefined)infoHash(descriptorInfoHash);
         else {
             locationsController=new AbortController();
             signal?.addEventListener("abort",abortLocations,{once:true});
             if(signal?.aborted)abortLocations();
-            locationsTask=resolveRecord(publicKey||owner,config,verifySignature,
-                {signal:locationsController.signal,locations:true}).catch(()=>null);
+            const locations=discoverRecord(publicKey||owner,config,verifySignature,
+                {signal:locationsController.signal,locations:true});
+            locationsTask=locations.first.catch(()=>null);
+            locationsSettled=locations.settled.catch(()=>null);
             try {
-                record=await resolveRecord(publicKey||owner,config,verifySignature,{signal});
+                const publication=discoverRecord(publicKey||owner,config,verifySignature,{signal:locationsController.signal});
+                recordTask=publication.settled;
+                record=await publication.first;
                 if(!record)throw fail("NO_PUBLICATION","No publication was found for this identity");
             } catch(error) {
                 abortLocations();signal?.removeEventListener("abort",abortLocations);
@@ -50,15 +63,28 @@ export class RemotePublication {
         remote.scope=prefetchScope;
         remote.locationsTask=locationsTask;
         remote.abortLocations=()=>{abortLocations();signal?.removeEventListener("abort",abortLocations);};
+        // Later replicas can advance the durable maximum but never replace the
+        // immutable publication being read. A signed conflict invalidates reads.
+        if(recordTask)void recordTask.catch(error=>{
+            if(!remote.closed && !locationsController.signal.aborted)remote.discoveryError=error;
+        });
         try {
             await io.call("create",{session:remote.session,sources:config,sourcesPending:!!locationsTask},signal);
-            if(locationsTask)remote.locationsTask=locationsTask.then(async locations=>{
+            const applyLocations=async locations=>{
                 if(remote.closed)return;
                 const origins=locationsController.signal.aborted?[]:locations?.origins??[];
                 const sources=torrentSources({apis:origins,trackers:config.trackers,webseeds:origins.map(origin=>origin+"/content")});
                 await io.call("sources",{session:remote.session,sources});
                 remote.sources=sources;
-            }).catch(()=>{}).finally(()=>signal?.removeEventListener("abort",abortLocations));
+            };
+            if(locationsTask) {
+                const firstLocations=locationsTask.then(applyLocations).catch(()=>{});
+                // Keep probing replicas after the first usable hint. A late
+                // conflict revokes HTTPS hints while preserving WebRTC.
+                remote.locationsTask=locationsSettled.then(async final=>{
+                    await firstLocations;await applyLocations(final);
+                }).catch(()=>{});
+            }
             const root=await remote.torrent(descriptorInfoHash,"descriptor",signal);
             const bytes=await remote.bytes(descriptorInfoHash,0,root.size,signal);
             remote.publication=parseDescriptor(bytes);
@@ -97,6 +123,7 @@ export class RemotePublication {
         return parsed;
     }
     async bytes(hash,offset,length,signal) {
+        if(this.discoveryError)throw this.discoveryError;
         if(this.closed)throw fail("CANCELLED","Publication is closed");
         this.rangeRequests++;
         return this.io.call("read",{session:this.session,infoHash:hash,offset,length,

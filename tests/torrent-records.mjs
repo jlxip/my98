@@ -19,10 +19,12 @@ const server=createServer((req,res)=>{
     if(bytes){res.writeHead(200,{"Content-Type":req.url.endsWith(".wasm")?"application/wasm":"text/javascript"}).end(bytes);return;}
     if(req.url.startsWith("/api/")) {
         let record;
-        if(req.url.startsWith("/api/current/"))record=first;
-        if(req.url.startsWith("/api/fork/"))record=fork;
+        if(req.url.startsWith("/api/current/")||req.url.startsWith("/api/slow-current/"))record=first;
+        if(req.url.startsWith("/api/fork/")||req.url.startsWith("/api/slow-fork/"))record=fork;
+        if(req.url.startsWith("/api/slow-maximum/"))record=maximum;
         if(req.url.startsWith("/api/invalid/"))record={...maximum,signature:"00".repeat(64)};
-        res.writeHead(record?200:404,{"Content-Type":"application/json"}).end(JSON.stringify(record||{}));return;
+        const send=()=>res.writeHead(record?200:404,{"Content-Type":"application/json"}).end(JSON.stringify(record||{}));
+        if(req.url.startsWith('/api/slow-'))setTimeout(send,300);else send();return;
     }
     res.writeHead(200,{"Content-Type":"text/html"}).end("<!doctype html>");
 });
@@ -62,6 +64,31 @@ try {
                     conflict:true,offlineVerifiedCache:true,cleanupPreservesMaximum:true};
             },{first,maximum,url});
             results.push({browser:name,...result});console.log(JSON.stringify(results.at(-1)));
+            const context=await browser.newContext(),streamPage=await context.newPage();await streamPage.goto(url);
+            const streaming=await streamPage.evaluate(async({first,maximum,url})=>{
+                const {default:init,verify}=await import('/pkg/slop86_disk.js');await init();
+                const {resolveRecord,cachedRecord}=await import('/torrent-records.js');
+                const assert=(ok,message)=>{if(!ok)throw Error(message);};
+                let accept,finished=false;
+                const early=new Promise(resolve=>{accept=resolve;});
+                const lookup=resolveRecord(first.publicKey,{apis:[url+'/api/invalid',url+'/api/slow-maximum',url+'/api/current']},verify,
+                    {onRecord:accept}).finally(()=>{finished=true;});
+                assert((await early).sequence===first.sequence,'Invalid or unavailable source won early discovery');
+                assert(!finished,'First usable record waited for the slow replica');
+                assert((await lookup).sequence===maximum.sequence,'Late newer record was lost');
+                assert((await cachedRecord(first.publicKey,verify)).sequence===maximum.sequence,'Late maximum was not persisted');
+                let conflict=false;
+                try{await resolveRecord(first.publicKey,{apis:[url+'/api/current',url+'/api/slow-fork']},verify,{onRecord:()=>{}});}
+                catch(error){conflict=error.code==='PUBLICATION_CONFLICT';}
+                assert(conflict,'Late signed conflict was hidden');
+                const controller=new AbortController();let callbacks=0;
+                const cancelled=resolveRecord(first.publicKey,{apis:[url+'/api/current',url+'/api/slow-maximum']},verify,
+                    {signal:controller.signal,onRecord:()=>{callbacks++;controller.abort(Error('cancelled'));}});
+                let aborted=false;try{await cancelled;}catch{aborted=true;}
+                assert(aborted&&callbacks===1,'Cancellation admitted a later record');
+                return {firstUsableBeforeSlow:true,lateMaximumPersists:true,lateConflict:true,cancelledCallbacks:true};
+            },{first,maximum,url});
+            results.at(-1).streaming=streaming;await context.close();
         } finally {await browser.close();}
     }
 } finally {

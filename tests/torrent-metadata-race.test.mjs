@@ -32,7 +32,7 @@ test('verified HTTP metadata does not wait for an unreachable RTC peer',async()=
     await use({},async()=>{requests++;return new Response(raw);},async(client,probes)=>{
         const start=performance.now();assert.deepEqual(await client.discoverMetadata(hash,'disk'),new Uint8Array(metadata));
         assert(performance.now()-start<1500,'HTTP still waits for the RTC timeout');
-        assert.equal(requests,1);assert.equal(probes.length,1);assert(probes[0].destroyed);assert.equal(client.discoveries.size,0);
+        assert.equal(requests,1);assert.equal(probes.length,0);assert.equal(client.discoveries.size,0);
     });
 });
 
@@ -42,7 +42,7 @@ test('verified RTC metadata aborts a pending HTTP request before returning',asyn
         signal.addEventListener('abort',()=>{aborted=true;reject(signal.reason);},{once:true});
     }),async(client,probes)=>{
         assert.deepEqual(await client.discoverMetadata(hash,'disk'),new Uint8Array(metadata));
-        assert(aborted);assert(probes[0].destroyed);assert.equal(client.discoveries.size,0);
+        assert(aborted);assert(probes.every(probe=>probe.destroyed));assert.equal(client.discoveries.size,0);
     });
 });
 
@@ -52,13 +52,13 @@ test('an invalid path cannot win over verified metadata; two invalid paths rejec
     });
     await use({peer:'invalid'},async()=>new Response('de'),async(client,probes)=>{
         await assert.rejects(client.discoverMetadata(hash,'disk'),{code:'INVALID_PUBLICATION'});
-        assert(probes[0].destroyed);assert.equal(client.discoveries.size,0);
+        assert(probes.every(probe=>probe.destroyed));assert.equal(client.discoveries.size,0);
     });
 });
 
 test('WebRTC-only metadata discovery retains its independent working path',async()=>{
     await use({peer:'valid',apis:[]},async()=>{throw Error('Unexpected HTTP request');},async(client,probes)=>{
-        assert.deepEqual(await client.discoverMetadata(hash,'disk'),new Uint8Array(metadata));assert(probes[0].destroyed);
+        assert.deepEqual(await client.discoverMetadata(hash,'disk'),new Uint8Array(metadata));assert(probes.every(probe=>probe.destroyed));
     });
 });
 
@@ -68,7 +68,7 @@ test('cancelling parallel discovery aborts HTTP and destroys the metadata-only p
         ready();signal.addEventListener('abort',()=>{aborted=true;reject(signal.reason);},{once:true});
     }),async(client,probes)=>{
         const opening=client.discoverMetadata(hash,'disk');await started;client.cancel();
-        await assert.rejects(opening,{code:'CANCELLED'});assert(aborted);assert(probes[0].destroyed);assert.equal(client.discoveries.size,0);
+        await assert.rejects(opening,{code:'CANCELLED'});assert(aborted);assert(probes.every(probe=>probe.destroyed));assert.equal(client.discoveries.size,0);
     });
 });
 
@@ -111,7 +111,7 @@ test('cancelling discovery aborts every parallel HTTP source and the metadata-on
     }),async(client,probes)=>{
         const opening=client.discoverMetadata(hash,'disk').then(()=>null,error=>error);
         await started;assert.equal(called,3);client.cancel();
-        assert.equal((await opening).code,'CANCELLED');assert.equal(aborted,3);assert(probes[0].destroyed);assert.equal(client.discoveries.size,0);
+        assert.equal((await opening).code,'CANCELLED');assert.equal(aborted,3);assert(probes.every(probe=>probe.destroyed));assert.equal(client.discoveries.size,0);
     });
 });
 
@@ -147,7 +147,7 @@ test('late HTTPS sources can complete metadata discovery without WebRTC',async()
 test('WebRTC completes while optional HTTPS sources remain pending',async()=>{
     await use({apis:[],peer:'valid'},async()=>{throw Error('Unexpected HTTPS lookup');},async(client,probes)=>{
         client.deferSources();assert.deepEqual(await client.discoverMetadata(hash,'disk'),new Uint8Array(metadata));
-        assert(probes[0].destroyed);
+        assert(probes.every(probe=>probe.destroyed));
     });
 });
 
@@ -168,5 +168,51 @@ test('late webseeds join existing torrents only after the reachability check',as
         client.setSources({apis:[],trackers:[],webseeds:['http://127.0.0.1:12345/reachable','http://127.0.0.1:12345/unavailable']});
         await idle();assert.deepEqual(added,['http://127.0.0.1:12345/reachable/'+hash+'/disk.my98']);
         client.entries.clear();
+    });
+});
+
+test('a quick valid HEAD starts payload while slow probes remain bounded backups',async()=>{
+    let release;
+    const slow=new Promise(resolve=>{release=resolve;});
+    await use({apis:[],trackers:[]},async url=>{
+        if(url.includes('/slow/'))await slow;
+        return new Response(null,{status:url.includes('/bad/')?503:200});
+    },async client=>{
+        const sources={webseeds:['http://127.0.0.1:12345/slow','http://127.0.0.1:12345/bad','http://127.0.0.1:12345/fast']};
+        const seen=[];
+        const urls=await client.webseeds({infoHash:hash,filename:'disk.my98',size:1},sources,undefined,url=>seen.push(url));
+        assert.deepEqual(urls,['http://127.0.0.1:12345/fast/'+hash+'/disk.my98']);
+        assert.equal(client.seedProbes.size,1);assert.equal(seen.length,1);
+        release();await idle();assert.equal(seen.length,2);assert.equal(client.seedProbes.size,0);
+    });
+});
+
+test('invalid length cannot win and cancellation suppresses late source admission',async()=>{
+    let release;
+    const pending=new Promise(resolve=>{release=resolve;});
+    await use({apis:[],trackers:[]},async url=>{
+        if(url.includes('/slow/'))await pending;
+        return new Response(null,{headers:{'Content-Length':url.includes('/wrong/')?'2':'1'}});
+    },async client=>{
+        const controller=new AbortController(),seen=[];
+        const result=await client.webseeds({infoHash:hash,filename:'disk.my98',size:1},
+            {webseeds:['http://127.0.0.1:12345/wrong','http://127.0.0.1:12345/slow','http://127.0.0.1:12345/fast']},controller.signal,url=>seen.push(url));
+        assert.match(result[0],/\/fast\//);controller.abort();release();await idle();
+        assert.equal(seen.length,1);assert.equal(client.seedProbes.size,0);
+    });
+});
+
+test('verified progress retains the fast source and a stall promotes a retained backup',async()=>{
+    const added=[],removed=[],updates=[];
+    await use({apis:[],trackers:[]},async()=>new Response(null),async client=>{
+        const entry={readers:new Set([{}]),seedCandidates:[],lastVerified:0,
+            torrent:{ready:true,addWebSeed:url=>added.push(url),removePeer:url=>removed.push(url),discovery:{tracker:{update:value=>updates.push(value)}}}};
+        client.offerWebseed(entry,'fast');client.offerWebseed(entry,'backup');
+        assert.deepEqual(added,['fast'],'backup must not take pieces while primary advances');
+        entry.lastVerified=100;client.checkWebseed(entry,1099);assert.deepEqual(added,['fast']);
+        client.checkWebseed(entry,1100);assert.deepEqual(added,['fast','backup']);assert.deepEqual(removed,['fast']);assert.deepEqual(updates,[{numwant:5}]);
+        entry.readers.clear();client.checkWebseed(entry,4000);assert.equal(added.length,2,'idle does not rotate sources');
+        entry.readers.add({});client.checkWebseed(entry,4999);assert.equal(added.length,2);
+        client.checkWebseed(entry,5000);assert.deepEqual(added,['fast','backup','fast'],'failed backup retains the original source');
     });
 });

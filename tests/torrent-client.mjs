@@ -227,7 +227,11 @@ try {
             await page.locator("#disk-password").fill("public compatibility password");
             await page.locator("#disk-login button").click();
             // Login alone resolves and opens the publication; boot stays manual.
-            await page.waitForFunction(()=>!document.querySelector("#disk-resume-state").disabled);
+            await page.waitForFunction(()=>!document.querySelector("#disk-resume-state").disabled).catch(async error=>{
+                console.error('Publication UI diagnostic',await page.evaluate(()=>({status:document.querySelector('#disk-status')?.textContent,
+                    description:window.uiDisk?.describe(),errors:window.uiDisk?.error})));
+                throw error;
+            });
             assert.equal(await page.locator("#disk-remote").count(),0);
             assert.equal(await page.locator("#session").isVisible(),false);
             assert.equal((await page.evaluate(()=>uiDisk.describe())).remote.publicationInfoHash,descriptor);

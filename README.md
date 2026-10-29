@@ -14,6 +14,22 @@ A server is only needed to keep the virtual disk image available while your brow
 
 The DHT also lets native BitTorrent peers discover one another without a fixed list of peer IP addresses. Public resolvers look up signed publication and seedbox-location records for any identity, without hosting its data. The browser verifies the publication and discovers WebRTC peers through common trackers. Optional signed seedbox locations add HTTPS sources; missing or unusable locations do not prevent WebRTC access. You can use my98.lol with your credentials alone; you do not need to configure your servers on the website.
 
+Browser startup proceeds with the first authenticated publication at or above
+the durable version already observed. Other replicas continue in the background:
+newer versions are preserved for the next opening, without replacing the active
+immutable disk; a later signed publication conflict fails subsequent reads.
+Signed location hints can enable HTTPS before every replica answers. Conflicting
+location hints are revoked without disabling WebRTC and are not persisted.
+The first reachable HTTPS source starts payload work immediately. Other sources
+remain backups; one second without verified piece progress during active work
+promotes the next available backup and releases the stalled source's requests.
+No particular server is preferred by name. Healthy HTTPS metadata gets a 250 ms
+head start before speculative WebRTC offers; unavailable HTTPS starts the peer
+backup immediately. Payload trackers remain connected without requesting offers
+while HTTPS progresses, and request peers if payload stalls. HTTP connections use
+WebTorrent's connection extension point so removal aborts the actual fetch too.
+Metadata and piece hashes are still verified, and cancellation stops source probes.
+
 The username, password and machine fields are cryptographically combined to produce a master key. Encryption keys and the publishing keypair are derived from it. There is no account registration: the same three fields reproduce the same identity. Keep them safe, because there is no password reset. Seedboxes store encrypted disks and states; they do not need your password or private keys.
 
 Published disk data is downloaded as needed and cached in the browser. Changes remain local until you save and publish them. Closing the tab discards unsaved changes.

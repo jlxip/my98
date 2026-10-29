@@ -3,7 +3,7 @@ import {fileURLToPath} from "node:url";
 import {writeFile} from "node:fs/promises";
 const root=fileURLToPath(new URL("../../../",import.meta.url));
 const result=await build({
-    stdin:{contents:"export {default} from 'webtorrent';",resolveDir:root,sourcefile:"webtorrent-entry.js"},
+    stdin:{contents:"import WebTorrent from 'webtorrent'; import {createWebSeed} from './src/disk/web/cancellable-webseed.js'; WebTorrent.createWebSeed=createWebSeed; export default WebTorrent;",resolveDir:root,sourcefile:"webtorrent-entry.js"},
     bundle:true,format:"esm",platform:"browser",target:"es2022",minify:true,
     alias:{path:"path-browserify",events:"events/"},
     inject:[root+"src/disk/scripts/browser-platform.js"],

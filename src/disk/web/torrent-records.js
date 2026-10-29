@@ -57,7 +57,7 @@ export async function boundedBytes(response,limit) {
     } finally {await reader.cancel().catch(()=>{});reader.releaseLock();}
 }
 
-export async function resolveRecord(publicKey,sources,verifySignature,{signal,timeout=22000,locations=false}={}) {
+export async function resolveRecord(publicKey,sources,verifySignature,{signal,timeout=22000,locations=false,onRecord}={}) {
     unhex(publicKey,32);const config=torrentSources(sources);
     let best=await cachedRecord(publicKey,verifySignature,locations);
     const controller=new AbortController();
@@ -65,6 +65,11 @@ export async function resolveRecord(publicKey,sources,verifySignature,{signal,ti
     if(signal?.aborted)throw signal.reason;
     signal?.addEventListener("abort",abort,{once:true});
     const timer=setTimeout(()=>controller.abort(fail("PUBLICATION_UNAVAILABLE","Publication lookup timed out")),timeout);
+    // Stream authenticated observations without making the first usable result
+    // wait for every replica. Keep the final strict conflict/max check below.
+    let observations=Promise.resolve(),observed=best;
+    const streamed=new Map();if(best)streamed.set(best.sequence,best.infoHash??JSON.stringify(best.origins));
+    let conflict;
     try {
         const responses=await Promise.allSettled(config.apis.map(async api=>{
             const response=await fetch(api+"/v2/dht/"+publicKey+"/"+hex(new TextEncoder().encode(locations?LOCATIONS_SALT:PUBLICATION_SALT)),{signal:controller.signal,
@@ -72,9 +77,33 @@ export async function resolveRecord(publicKey,sources,verifySignature,{signal,ti
             if(response.status===404)return null;
             if(!response.ok)throw fail("PUBLICATION_UNAVAILABLE","Publication source returned "+response.status);
             const bytes=await boundedBytes(response,4096);
-            return (locations?parseLocations:parseRecord)(new TextDecoder("utf-8",{fatal:true}).decode(bytes),publicKey,verifySignature);
+            const record=(locations?parseLocations:parseRecord)(new TextDecoder("utf-8",{fatal:true}).decode(bytes),publicKey,verifySignature);
+            if(onRecord) {
+                const observation=observations.then(async()=>{
+                    if(controller.signal.aborted)return;
+                    const identity=record.infoHash??JSON.stringify(record.origins),previous=streamed.get(record.sequence);
+                    if(previous!==undefined && previous!==identity) {
+                        conflict=fail("PUBLICATION_CONFLICT","Sources returned conflicting publications with the same sequence");return;
+                    }
+                    streamed.set(record.sequence,identity);
+                    if(conflict)return;
+                    if(!observed || record.sequence>observed.sequence)observed=record;
+                    // IndexedDB remains the authority for concurrent tabs and
+                    // rollback protection, before exposing an early candidate.
+                    const current=await cachedRecord(publicKey,verifySignature,locations);
+                    if(current && (!observed || current.sequence>observed.sequence))observed=current;
+                    // Locations are optional hints: admit an authenticated hint
+                    // early, but persist only the conflict-free final result.
+                    if(!locations)await observeRecord(observed,publicKey,verifySignature,locations);
+                    await onRecord(observed);
+                });
+                observations=observation.catch(()=>{});
+                await observation;
+            }
+            return record;
         }));
         if(signal?.aborted)throw signal.reason;
+        if(conflict)throw conflict;
         const seen=new Map();if(best)seen.set(best.sequence,best.infoHash??JSON.stringify(best.origins));
         for(const result of responses) {
             if(result.status!=="fulfilled" || !result.value)continue;

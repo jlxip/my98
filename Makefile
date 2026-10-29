@@ -71,7 +71,7 @@ site-test: site
 	node scripts/run-browser-test.mjs tests/pages/media.mjs
 	node scripts/run-browser-test.mjs tests/pages/mobile.mjs
 	node scripts/run-browser-test.mjs tests/pages/controls.mjs
-	node --test tests/torrent-browser-protocol.test.mjs tests/torrent-metadata-race.test.mjs tests/torrent-state-queue.test.mjs tests/startup-prefetch.test.mjs tests/torrent-startup-window.test.mjs
+	node --test tests/torrent-browser-protocol.test.mjs tests/cancellable-webseed.test.mjs tests/torrent-metadata-race.test.mjs tests/torrent-state-queue.test.mjs tests/startup-prefetch.test.mjs tests/torrent-startup-window.test.mjs
 	node scripts/run-browser-test.mjs tests/torrent-store.mjs
 	node scripts/run-browser-test.mjs tests/torrent-records.mjs
 	node scripts/run-browser-test.mjs tests/torrent-optional-locations.mjs

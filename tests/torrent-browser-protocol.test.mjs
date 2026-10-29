@@ -2,6 +2,26 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {createHash,createPublicKey,verify} from "node:crypto";
 import {verifyRecord,parseRecord,verifyLocations,parseLocations,compareRecords,parseDescriptor,verifyMetadata} from "../src/disk/web/torrent-protocol.js";
+import {Slop86Disk} from '../src/disk/web/client.js';
+
+test('native Worker errors retain Safari message, location and cause',async()=>{
+    const original=globalThis.Worker;let worker,prevented=false;
+    class Worker {
+        constructor(){worker=this;}
+        postMessage(message){message.port?.close();}
+        terminate(){this.terminated=true;}
+    }
+    globalThis.Worker=Worker;
+    try {
+        const opening=Slop86Disk.create(),cause=new TypeError('Uint8Array operation is unavailable');
+        worker.onerror({preventDefault(){prevented=true;},message:cause.message,error:cause,filename:'worker.js',lineno:42,colno:7});
+        await assert.rejects(opening,error=>{
+            assert.equal(error.message,cause.message);assert.equal(error.code,'DISK_WORKER_ERROR');
+            assert.equal(error.cause,cause);assert.equal(error.resource,'worker.js:42:7');return true;
+        });
+        assert(prevented&&worker.terminated);
+    }finally{globalThis.Worker=original;}
+});
 
 const publicKey="07d2860c1066244fa0d7973545b4dd822466d8b2c9fd83fb84331716949b3a54";
 const record={publicKey,sequence:123,infoHash:"12".repeat(20),salt:Buffer.from("my98/publication/v1").toString("hex"),
