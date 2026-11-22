@@ -1,3 +1,6 @@
 [submodule "slop86"]
 	path = vendor/slop86
 	url = git@github.com:jlxip/slop86.git
+[submodule "feedtorrent"]
+	path = vendor/feedtorrent
+	url = https://github.com/jlxip/FeedTorrent.git

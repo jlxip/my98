@@ -17,7 +17,7 @@ function fixture({pieces=20,last=P,cached=[],corrupt=[],delay}={}) {
             this._selections=new Selections();
             const buffer=new Uint8Array(Math.ceil(pieces/8));
             this.bitfield={buffer,get:i=>!!(buffer[i>>3]&(128>>(i%8))),set:(i,value)=>{if(value)buffer[i>>3]|=128>>(i%8);else buffer[i>>3]&=~(128>>(i%8));}};
-            this.files=[{stream:({start,end})=>new ReadableStream({start(c){c.enqueue(new Uint8Array(end-start+1).fill(9));c.close();}})}];
+            this.files=[{offset:0,length:size,stream:({start,end})=>new ReadableStream({start(c){c.enqueue(new Uint8Array(end-start+1).fill(9));c.close();}})}];
         }
         _verifyPiece(index,callback){
             verifiedCache.push(index);
@@ -36,7 +36,7 @@ function fixture({pieces=20,last=P,cached=[],corrupt=[],delay}={}) {
         destroy(options,callback){destroyed.push(options);this.destroyed=true;this._selections.clear();queueMicrotask(callback);}
     }
     const transport=new WindowTorrents({onProgress:value=>events.push(value),timeout:2000});
-    const torrent=new Torrent(),entry={infoHash:H,kind:'disk',filename:'disk.my98',metadata:new Uint8Array([1,2]),pieces,size,torrent,readers:new Set(),background:false,paused:false,rescanned:false};
+    const torrent=new Torrent(),entry={infoHash:H,kind:'disk',filename:'disk.my98',metadata:new Uint8Array([1,2]),pieceLength:P,payloadOffset:0,totalLength:size,pieces,size,torrent,readers:new Set(),background:false,paused:false,rescanned:false};
     transport.entries.set(H,entry);
     const begin=(options={},signal)=>transport.prefetchStartup({infoHash:H,id:'job',ranges:[[0,size]],windowPieces:8,...options},signal);
     return {transport,torrent,entry,events,requested,verifiedCache,destroyed,begin,Torrent};
@@ -187,25 +187,16 @@ test('startup metadata RPC opts into cancellation without altering default open 
     assert.deepEqual(seen,[controller.signal,undefined]);
 });
 
-test('startup discovery and HEAD probes propagate their own abort to actual fetch signals',async()=>{
-    const original=globalThis.fetch;let active=0,aborted=0;
-    globalThis.fetch=(_url,{signal})=>new Promise((resolve,reject)=>{
-        active++;
-        const abort=()=>{active--;aborted++;reject(signal.reason);};
-        signal.addEventListener('abort',abort,{once:true});if(signal.aborted)abort();
-    });
+test('startup cancellation destroys the metadata-only peer without HTTP fallback',async()=>{
+    const controller=new AbortController();let destroyed=false,fetches=0;
+    const original=globalThis.fetch;globalThis.fetch=async()=>{fetches++;throw Error('Unexpected HTTP');};
+    const probe=new EventEmitter();probe.destroy=(options,done)=>{destroyed=true;queueMicrotask(done);};
+    const transport=new WindowTorrents({sources:{gateways:[],trackers:['wss://localhost:1234/announce']},clientFactory:async()=>class extends EventEmitter {add(){return probe}},timeout:1000});
     try {
-        const transport=new WindowTorrents({sources:{apis:['http://127.0.0.1:12345'],trackers:[],webseeds:['http://127.0.0.1:12345/content']}});
-        transport.initialize=async()=>{transport.webRTC=false;return {};};
-        const discovery=new AbortController();
-        const pending=transport.open({infoHash:H,kind:'profile'},discovery.signal),rejected=assert.rejects(pending,{code:'CANCELLED'});
-        await until(()=>active===1);discovery.abort(error('CANCELLED'));await rejected;
-        await until(()=>transport.opening.size===0);assert.equal(active,0);assert.equal(transport.discoveries.size,0);
-        const heads=new AbortController();
-        const probing=transport.webseeds({infoHash:H,filename:'profile.json',size:1},transport.sources,heads.signal);
-        const rejectedHead=assert.rejects(probing,{code:'CANCELLED'});await until(()=>active===1);
-        heads.abort(error('CANCELLED'));await rejectedHead;assert.equal(active,0);assert.equal(aborted,2);
-    } finally {globalThis.fetch=original;}
+        const pending=transport.discoverMetadata(H,'disk',controller.signal);
+        const rejected=assert.rejects(pending,{code:'CANCELLED'});await idle();controller.abort(error('CANCELLED'));await rejected;
+        assert(destroyed);assert.equal(fetches,0);assert.equal(transport.discoveries.size,0);
+    }finally{globalThis.fetch=original;}
 });
 
 test('demand can retry from retained immutable metadata after a reopen fails before creating an entry',async()=>{
@@ -226,7 +217,7 @@ test('demand can retry from retained immutable metadata after a reopen fails bef
 
 test('opt-in demand verifies cached target pieces before creating a stream, default reads do not change',async()=>{
     const f=fixture({cached:[0,1],corrupt:[1]});let streams=0;
-    f.torrent.files=[{stream:({start,end})=>{
+    f.torrent.files=[{offset:0,length:f.entry.size,stream:({start,end})=>{
         streams++;
         if(streams===1){assert.equal(f.torrent.bitfield.get(0),true);assert.equal(f.torrent.bitfield.get(1),false);}
         return new ReadableStream({start(c){c.enqueue(new Uint8Array(end-start+1));c.close();}});
@@ -282,4 +273,12 @@ test('background rescan keeps its existing invalidation behavior without startup
     f.torrent._markVerified(0);reads[0].callback(null,false);
     assert.equal(f.torrent.bitfield.get(0),false);
     assert.equal(f.torrent._verifyPiece,original);
+});
+
+
+test('progress counts useful bytes instead of padding in a multifile component',()=>{
+    const f=fixture({pieces:3,last:10});f.entry.payloadOffset=P/2;f.entry.size=P+20;f.entry.totalLength=2*P+10;
+    f.torrent._markVerified(0);assert.equal(f.transport.describe(f.entry).coveredBytes,P/2);
+    f.torrent._markVerified(1);const full=f.transport.describe(f.entry);assert.equal(full.coveredBytes,P+20);assert.equal(full.complete,true);
+    f.torrent._markVerified(2);assert.equal(f.transport.describe(f.entry).coveredBytes,P+20);
 });

@@ -35,6 +35,7 @@ class SnapshotTest(unittest.TestCase):
                 git(path, 'commit', '--quiet', '-m', 'Fixture')
             git(root, '-c', 'protocol.file.allow=always', 'submodule', 'add', '--quiet', str(module), 'vendor/slop86')
             pinned = git(root, 'rev-parse', ':vendor/slop86')
+            git(root, '-c', 'protocol.file.allow=always', 'submodule', 'add', '--quiet', str(module), 'vendor/feedtorrent')
             git(root, 'commit', '--quiet', '-m', 'Dependency')
             (root / 'tracked').write_text('staged')
             (root / 'new').write_text('staged addition')
@@ -48,18 +49,21 @@ class SnapshotTest(unittest.TestCase):
             tree = git(root, 'write-tree', env=selected_env)
             (root / 'tracked').write_text('unstaged')
             (root / 'untracked').write_text('must not leak')
-            for name in ('build', 'node_modules', 'vendor/slop86/build'):
+            for name in ('build', 'node_modules', 'vendor/slop86/build', 'vendor/feedtorrent/build'):
                 path = root / name; path.mkdir(parents=True, exist_ok=True)
                 (path / 'sentinel').write_text('preserve me')
             (root / 'vendor/slop86/tracked').write_text('dirty dependency')
+            (root / 'vendor/feedtorrent/tracked').write_text('dirty dependency')
             destination = base / 'snapshot'
             ci.snapshot(root, destination, tree)
             self.assertEqual((destination / 'tracked').read_text(), 'staged')
             self.assertFalse((destination / 'new').exists())
-            for name in ('untracked', 'build', 'node_modules', 'vendor/slop86/build'):
+            for name in ('untracked', 'build', 'node_modules', 'vendor/slop86/build', 'vendor/feedtorrent/build'):
                 self.assertFalse((destination / name).exists(), name)
             self.assertEqual(git(destination / 'vendor/slop86', 'rev-parse', 'HEAD'), pinned)
             self.assertEqual((destination / 'vendor/slop86/tracked').read_text(), 'committed')
+            self.assertEqual(git(destination / 'vendor/feedtorrent', 'rev-parse', 'HEAD'), pinned)
+            self.assertEqual((destination / 'vendor/feedtorrent/tracked').read_text(), 'committed')
             self.assertEqual((root / 'tracked').read_text(), 'unstaged')
             self.assertEqual((root / '.git/index').read_bytes(), index_before)
             self.assertEqual((root / 'build/sentinel').read_text(), 'preserve me')

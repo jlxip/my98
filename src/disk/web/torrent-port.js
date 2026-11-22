@@ -75,7 +75,7 @@ export class WindowTorrentPort {
             const transport=this.createTransport(args.sources,value=>{
                 if(!this.closed)this.port.postMessage({type:"progress",session,value});
             });
-            if(args.sourcesPending)transport.deferSources();
+
             this.sessions.set(session,transport);return null;
         }
         const transport=this.sessions.get(session);

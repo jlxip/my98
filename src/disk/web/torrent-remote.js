@@ -1,17 +1,20 @@
 /** Worker-side publication verification and encrypted sources for the Rust Vault. */
 import {openTorrentDatabase} from "./torrent-store.js";
-import {resolveRecord,boundedBytes} from "./torrent-records.js";
-import {verifyMetadata,parseDescriptor,infoHash,unhex} from "./torrent-protocol.js";
+import {resolveRecord,boundedBytes,watchRecord} from "./torrent-records.js";
+import {verifyMetadata,verifyCatalogItem,verifyCatalogSource,infoHash,unhex} from "./torrent-protocol.js";
 import {torrentSources} from "./torrent-sources.js";
 import {validateLoadProfiles,sameOrigin} from "./load-profiles.js";
 import {StartupPrefetch,startupPrefetchOptions} from "./startup-prefetch.js";
 
 const fail=(code,message)=>Object.assign(new Error(message),{code});
 let serial=0;
+export function transportFailure(error) {
+    return /^(TRANSPORT_|PUBLICATION_UNAVAILABLE|ERR_(ICE|CONNECTION|DATA_CHANNEL|PEER|WEBRTC))/.test(error?.code||"");
+}
 function discoverRecord(publicKey,sources,verifySignature,options) {
     let accept,reject;
     const first=new Promise((resolve,fail)=>{accept=resolve;reject=fail;});
-    const settled=resolveRecord(publicKey,sources,verifySignature,{...options,onRecord:accept})
+    const settled=resolveRecord(publicKey,sources,verifySignature,{...options,onRecord:record=>{if(!options.waitForFinal)accept(record);}})
         .then(record=>{accept(record);return record;},error=>{reject(error);throw error;});
     // The owner joins the background task after creating the transport.
     void first.catch(()=>{});void settled.catch(()=>{});
@@ -31,77 +34,92 @@ async function metadataCache(hash,value) {
 }
 
 export class RemotePublication {
-    static async open(io,{publicKey,descriptorInfoHash,owner,sources,prefetchScope="disk",verifySignature,signal}) {
+    static async open(io,{publicKey,descriptorInfoHash,owner,sources,prefetchScope="disk",verifySignature,signal,onDiscovery=()=>{},waitForFinal=false}) {
         unhex(owner,32);
         if(publicKey && descriptorInfoHash)throw fail("INVALID_PUBLICATION","Choose a public key or descriptor infohash");
         if(publicKey!==undefined && publicKey!==owner)throw fail("INVALID_PUBLICATION","Publication belongs to a different identity");
         let config=torrentSources(sources);
-        let record=null,locationsTask,locationsController,recordTask,locationsSettled;
-        const abortLocations=()=>locationsController?.abort(signal?.reason||fail("CANCELLED","Locations lookup cancelled"));
+        let record=null,recordTask,lookupController,active;
+        let discovery={state:descriptorInfoHash?"fixed":"checking",sequence:null};
+        const report=status=>{
+            discovery=status;
+            if(active?.closed)return;
+            active?.discovered(status);
+            onDiscovery({...status,selectedSequence:active?.remote?.sequence??record?.sequence??null});
+        };
         if(descriptorInfoHash!==undefined)infoHash(descriptorInfoHash);
         else {
-            locationsController=new AbortController();
-            signal?.addEventListener("abort",abortLocations,{once:true});
-            if(signal?.aborted)abortLocations();
-            const locations=discoverRecord(publicKey||owner,config,verifySignature,
-                {signal:locationsController.signal,locations:true});
-            locationsTask=locations.first.catch(()=>null);
-            locationsSettled=locations.settled.catch(()=>null);
+            lookupController=new AbortController();
+            const abort=()=>lookupController.abort(signal?.reason||fail("CANCELLED","Publication lookup cancelled"));
+            signal?.addEventListener("abort",abort,{once:true});
+            if(signal?.aborted)abort();
             try {
-                const publication=discoverRecord(publicKey||owner,config,verifySignature,{signal:locationsController.signal});
-                recordTask=publication.settled;
-                record=await publication.first;
+                const lookup=discoverRecord(publicKey||owner,config,verifySignature,{signal:lookupController.signal,onStatus:report,waitForFinal});
+                recordTask=lookup.settled;record=await lookup.first;
                 if(!record)throw fail("NO_PUBLICATION","No publication was found for this identity");
-            } catch(error) {
-                abortLocations();signal?.removeEventListener("abort",abortLocations);
-                await locationsTask;throw error;
-            }
-            config=torrentSources({apis:[],trackers:config.trackers,webseeds:[]});
-            descriptorInfoHash=record.infoHash;
+                descriptorInfoHash=record.infoHash;
+            }catch(error){lookupController.abort(error);throw error;}
+            finally{signal?.removeEventListener("abort",abort);}
         }
-        const remote=new RemotePublication(io,config);
-        remote.scope=prefetchScope;
-        remote.locationsTask=locationsTask;
-        remote.abortLocations=()=>{abortLocations();signal?.removeEventListener("abort",abortLocations);};
-        // Later replicas can advance the durable maximum but never replace the
-        // immutable publication being read. A signed conflict invalidates reads.
-        if(recordTask)void recordTask.catch(error=>{
-            if(!remote.closed && !locationsController.signal.aborted)remote.discoveryError=error;
-        });
+        const remote=new RemotePublication(io,config);active=remote;remote.discovered(discovery);
+        remote.lookupSettled=recordTask||Promise.resolve();
+        if(record)remote.unwatch=watchRecord(owner,verifySignature,state=>{
+            if(remote.closed||remote.discoveryError)return;
+            if(state.blocked&&BigInt(state.record.sequence)>=BigInt(record.sequence)){report({state:"conflict",sequence:state.record.sequence,fatal:true,error:{code:"PUBLICATION_CONFLICT",message:"Another tab observed conflicting signed publications"}});return;}
+            if(state.record&&BigInt(state.record.sequence)>BigInt(discovery.sequence||"0"))report({...discovery,sequence:state.record.sequence});
+        },error=>{if(!remote.closed)report({state:"unavailable",sequence:discovery.sequence,error:{code:error.code||"STORAGE_ERROR",message:error.message}});});
+        remote.scope=prefetchScope;remote.abortLookup=()=>lookupController?.abort(fail("CANCELLED","Publication closed"));
+        // Updates advance the durable maximum without replacing an open snapshot.
+        if(recordTask)void recordTask.catch(error=>{if(!remote.closed && !lookupController.signal.aborted && error.verifiedConflict)remote.invalidate(error);});
         try {
-            await io.call("create",{session:remote.session,sources:config,sourcesPending:!!locationsTask},signal);
-            const applyLocations=async locations=>{
-                if(remote.closed)return;
-                const origins=locationsController.signal.aborted?[]:locations?.origins??[];
-                const sources=torrentSources({apis:origins,trackers:config.trackers,webseeds:origins.map(origin=>origin+"/content")});
-                await io.call("sources",{session:remote.session,sources});
-                remote.sources=sources;
-            };
-            if(locationsTask) {
-                const firstLocations=locationsTask.then(applyLocations).catch(()=>{});
-                // Keep probing replicas after the first usable hint. A late
-                // conflict revokes HTTPS hints while preserving WebRTC.
-                remote.locationsTask=locationsSettled.then(async final=>{
-                    await firstLocations;await applyLocations(final);
-                }).catch(()=>{});
+            await io.call("create",{session:remote.session,sources:config},signal);
+            const root=await remote.torrent(descriptorInfoHash,"catalog",signal);
+            verifyCatalogSource(root.source,owner);
+            remote.publication={disk:null,state:null,profile:null};
+            for(const item of root.items) {
+                const parts=[];
+                for(let offset=0;offset<item.length;offset+=1024*1024)
+                    parts.push(await remote.bytes(descriptorInfoHash,item.offset+offset,Math.min(1024*1024,item.length-offset),signal));
+                const bytes=new Uint8Array(item.length);let offset=0;
+                for(const part of parts){bytes.set(part,offset);offset+=part.length;}
+                const parsed=await verifyCatalogItem(bytes,item);
+                remote.publication[parsed.kind]=parsed.infoHash;
+                remote.metadata.set(parsed.infoHash,parsed);await metadataCache(parsed.infoHash,parsed.metadata);
             }
-            const root=await remote.torrent(descriptorInfoHash,"descriptor",signal);
-            const bytes=await remote.bytes(descriptorInfoHash,0,root.size,signal);
-            remote.publication=parseDescriptor(bytes);
             const disk=await remote.torrent(remote.publication.disk,"disk",signal);
             remote.size=disk.size;
             remote.remote={infoHash:disk.infoHash,publicationInfoHash:descriptorInfoHash,publicKey:owner,
                 sequence:record?.sequence??null,stateInfoHash:remote.publication.state,profileInfoHash:remote.publication.profile};
-            return remote;
-        } catch(error) {await remote.close();throw error;}
+            remote.check();report(discovery);return remote;
+        }catch(error){
+            if(record&&transportFailure(error)&&!signal?.aborted) {
+                await remote.lookupSettled.catch(()=>{});
+                if(remote.discoveryError)error=remote.discoveryError;
+                error.newerPublication=!remote.discoveryError&&remote.discovery?.sequence&&BigInt(remote.discovery.sequence)>BigInt(record.sequence);
+            }
+            await remote.close();throw error;
+        }
     }
     constructor(io,sources) {
         this.io=io;this.sources=sources;this.session="torrent:"+(++serial);
         this.metadata=new Map();this.opened=new Set();this.network=new Map();
         this.scope="disk";this.trace=[];this.rangeRequests=0;this.closed=false;
-        this.startupJobs=new Map();this.startupSerial=0;
+        this.startupJobs=new Map();this.startupSerial=0;this.readAbort=new AbortController();
+    }
+    check() {
+        if(this.discoveryError)throw this.discoveryError;
+        if(this.closed)throw fail("CANCELLED","Publication is closed");
+    }
+    invalidate(error) {
+        if(this.discoveryError||this.closed)return;
+        this.discoveryError=error;this.readAbort.abort(error);this.cancel();
+    }
+    discovered(status) {
+        this.discovery=status;
+        if(status.fatal)this.invalidate(Object.assign(new Error(status.error.message),status.error,{verifiedConflict:true}));
     }
     async metadataFor(hash,kind,signal,startup=false) {
+        this.check();
         if(this.metadata.has(hash))return this.metadata.get(hash);
         const cached=await metadataCache(hash);
         if(cached) {
@@ -123,11 +141,15 @@ export class RemotePublication {
         return parsed;
     }
     async bytes(hash,offset,length,signal) {
-        if(this.discoveryError)throw this.discoveryError;
-        if(this.closed)throw fail("CANCELLED","Publication is closed");
-        this.rangeRequests++;
-        return this.io.call("read",{session:this.session,infoHash:hash,offset,length,
-            ...(this.startupRecovery && hash===this.publication.disk?{recover:true}:{})},signal);
+        this.check();this.rangeRequests++;
+        const controller=new AbortController(),signals=[signal,this.readAbort.signal].filter(Boolean);
+        const abort=event=>controller.abort(event.target.reason);
+        for(const input of signals){input.addEventListener("abort",abort,{once:true});if(input.aborted)controller.abort(input.reason);}
+        try {
+            const bytes=await this.io.call("read",{session:this.session,infoHash:hash,offset,length,
+                ...(this.startupRecovery && hash===this.publication.disk?{recover:true}:{})},controller.signal);
+            this.check();return bytes;
+        }finally{for(const input of signals)input.removeEventListener("abort",abort);}
     }
     read(offset,length,signal) {return this.bytes(this.publication.disk,offset,length,signal);}
     noteDemand() {}
@@ -290,9 +312,9 @@ export class RemotePublication {
 
     async close() {
         if(this.closed)return;
-        this.closed=true;this.abortLocations?.();this.cancel();
+        this.closed=true;this.unwatch?.();this.abortLookup?.();this.readAbort.abort(fail("CANCELLED","Publication closed"));this.cancel();
         try{await this.io.call("close",{session:this.session});}catch{}
-        await this.locationsTask;
+
         this.opened.clear();this.metadata.clear();
     }
 }

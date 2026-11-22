@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>my98</title>
+<link rel="stylesheet" href="/vendor/basecoat-1.0.2/basecoat.min.css"><link rel="stylesheet" href="/_agent/view.css"><script type="module" src="/_agent/view.js"></script></head>
+<body><main>
+<header><h1>my98</h1><span id="network-state" role="status">Offline</span></header>
+<form id="login" autocomplete="off">
+<label>Username<input class="input" name="username" autocomplete="off" autocapitalize="none" spellcheck="false" required></label>
+<label>Password<input class="input" name="password" type="password" autocomplete="off" required></label>
+<label>Machine<input class="input" name="machine" value="main" autocomplete="off" autocapitalize="none" spellcheck="false" required></label>
+<button class="btn" data-variant="primary" type="submit">Log in</button>
+<button class="btn" data-variant="secondary" type="button" id="logout" hidden>Log out</button>
+<button class="btn" data-variant="outline" type="button" id="retry" hidden>Retry</button>
+</form>
+<div class="toolbar"><button class="btn" data-variant="secondary" id="run" disabled>Resume</button><button class="btn" data-variant="outline" id="save" disabled>Save and pause</button><button class="btn" data-variant="outline" id="mouse" disabled>Capture mouse</button><button class="btn" data-variant="outline" id="paste" type="button" disabled>Paste clipboard</button><span id="machine-state" role="status"></span></div>
+<p id="message" role="status" aria-live="polite"></p>
+<img id="screen" alt="Windows 98" tabindex="0" role="application" aria-label="Windows 98 keyboard and screen" draggable="false">
+</main></body></html>

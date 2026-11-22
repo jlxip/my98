@@ -56,6 +56,7 @@ site: all
 site-test: site
 	node --test src/disk/scripts/range-profile.test.mjs src/disk/scripts/boot-analysis.test.mjs src/disk/scripts/load-profiles.test.mjs
 	PYTHONDONTWRITEBYTECODE=1 python3 scripts/clean-site-test.test.py
+	PYTHONDONTWRITEBYTECODE=1 python3 scripts/prepare-feedtorrent.test.py
 	PYTHONDONTWRITEBYTECODE=1 python3 tests/prepare-emulator.test.py
 	PYTHONDONTWRITEBYTECODE=1 python3 tests/server_test.py
 	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo run --manifest-path src/disk/Cargo.toml --locked --release --example compat
@@ -71,14 +72,11 @@ site-test: site
 	node scripts/run-browser-test.mjs tests/pages/media.mjs
 	node scripts/run-browser-test.mjs tests/pages/mobile.mjs
 	node scripts/run-browser-test.mjs tests/pages/controls.mjs
-	node --test tests/torrent-browser-protocol.test.mjs tests/cancellable-webseed.test.mjs tests/torrent-metadata-race.test.mjs tests/torrent-state-queue.test.mjs tests/startup-prefetch.test.mjs tests/torrent-startup-window.test.mjs
+	node --test tests/feedtorrent-protocol.test.mjs tests/torrent-state-queue.test.mjs tests/startup-prefetch.test.mjs tests/torrent-startup-window.test.mjs
 	node scripts/run-browser-test.mjs tests/torrent-store.mjs
-	node scripts/run-browser-test.mjs tests/torrent-records.mjs
-	node scripts/run-browser-test.mjs tests/torrent-optional-locations.mjs
-	node scripts/run-browser-test.mjs tests/torrent-window.mjs
-	node scripts/run-browser-test.mjs tests/torrent-startup-window.mjs
-	node scripts/run-browser-test.mjs tests/torrent-state.mjs
-	node scripts/run-browser-test.mjs tests/torrent-client.mjs
+	node scripts/run-browser-test.mjs tests/feedtorrent-records.mjs
+	node scripts/run-browser-test.mjs tests/feedtorrent-discovery.mjs
+	node scripts/run-browser-test.mjs tests/torrent-ice.mjs
 	node scripts/run-browser-test.mjs tests/pages/direct-pointer.mjs
 	node scripts/run-browser-test.mjs tests/pages/display.mjs
 
@@ -87,6 +85,8 @@ site-test: site
 agent-test: site
 	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo build --manifest-path src/disk/Cargo.toml --locked --release --example compat
 	node --test tests/agent.test.mjs
+	node scripts/run-browser-test.mjs tests/agent-network.mjs
+	node scripts/run-browser-test.mjs tests/agent-viewer.mjs
 
 state-test: site
 	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo build --manifest-path src/disk/Cargo.toml --locked --release --example compat
@@ -104,34 +104,18 @@ relay-test:
 	node --test tests/relay-discovery.test.mjs
 	PYTHONDONTWRITEBYTECODE=1 python3 tests/relay-deploy.test.py
 
-# Private native torrent runtime. No global Python or service dependencies.
-TORRENT_ROOT ?= build/torrent-native/mac
-TORRENT_PYTHON ?= $(TORRENT_ROOT)/venv/bin/python
-TORRENT_WEBRTC ?= off
-.PHONY: torrent-native torrent-python torrent-test
+# FeedTorrent source, native backend and the provisional publishing CLI.
+.PHONY: torrent-native torrent-test torrent-integration-test
 torrent-native:
-	python3 scripts/build-torrent.py --root $(TORRENT_ROOT) --webrtc $(TORRENT_WEBRTC) --jobs 1
+	python3 scripts/prepare-feedtorrent.py
+	CARGO_TARGET_DIR="$$PWD/build/torrent-target" sh -c 'cd build/feedtorrent && cargo build --manifest-path ../../src/torrent/Cargo.toml --locked --release'
 
-torrent-python:
-	python3 scripts/install-torrent-python.py --python $(TORRENT_PYTHON)
+torrent-test: torrent-native
+	python3 tests/torrent-prompt.test.py build/torrent-target/release/my98-torrent
+	CARGO_TARGET_DIR="$$PWD/build/torrent-target" sh -c 'cd build/feedtorrent && cargo test --manifest-path ../../src/torrent/Cargo.toml --locked'
+	node --test tests/feedtorrent-protocol.test.mjs tests/torrent-state-queue.test.mjs tests/torrent-startup-window.test.mjs
 
-torrent-test:
-	$(TORRENT_PYTHON) tests/torrent-protocol.test.py
-	$(TORRENT_PYTHON) tests/torrent-discovery.test.py
-	$(TORRENT_PYTHON) tests/torrent-latency.test.py
-	$(TORRENT_PYTHON) tests/torrent-native.test.py
-	$(TORRENT_PYTHON) tests/torrent-transfer.test.py
-	$(TORRENT_PYTHON) tests/torrent-service.test.py
-	$(TORRENT_PYTHON) tests/torrent-publisher.test.py
-	$(TORRENT_PYTHON) tests/torrent-cli.test.py
-	$(TORRENT_PYTHON) tests/torrent-tracker.test.py
-
-.PHONY: torrent-webtorrent-test
-torrent-webtorrent-test: disk
-	node scripts/run-browser-test.mjs tests/torrent-webtorrent.mjs
-
-.PHONY: torrent-discovery-browser-test
-torrent-discovery-browser-test: site
-	TORRENT_PYTHON="$(TORRENT_PYTHON)" node scripts/run-browser-test.mjs tests/torrent-discovery-browser.mjs
-	node scripts/run-browser-test.mjs tests/torrent-discovery-metadata.mjs
-	node scripts/run-browser-test.mjs tests/torrent-metadata-parallel.mjs
+torrent-integration-test: torrent-native site
+	$(MAKE) -C build/feedtorrent build test-deps
+	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo build --manifest-path src/disk/Cargo.toml --locked --release --example compat
+	BROWSER_TEST_TIMEOUT_MS=1800000 node scripts/run-browser-test.mjs tests/feedtorrent-integration.mjs

@@ -1,8 +1,10 @@
 import {DiskBuffer} from '/build/disk/web/client.js';
 import {createMachine,compatibility} from '/src/browser/machine-factory.js';
 import {validateConfig} from '/src/browser/machine-state.js';
+import {AgentNetwork} from './network.js';
 import {chordCodes,textCodes} from './input.js';
 let vm,adapter,config,pendingState;
+const network=new AgentNetwork();
 const headers=()=>({'X-My98-Agent':globalThis.agentToken});
 async function request(route,{method='GET',body,offset}={}){
     const response=await fetch('/_agent/'+route,{method,headers:{...headers(),...(offset!==undefined?{'X-Offset':String(offset)}:{})},body});
@@ -49,7 +51,10 @@ globalThis.my98Agent={
             return this.status();
         }catch(e){await vm.destroy().catch(()=>{});vm=undefined;adapter.dispose();throw e;}
     },
-    status(){return {loaded:!!vm,running:!!vm?.is_running(),muted:!!vm&&!vm.speaker_adapter,headless:true,width:document.querySelector('#screen canvas')?.width||0,height:document.querySelector('#screen canvas')?.height||0,absolutePointer:!!vm?.mouse_adapter?.absolute_mouse,diskFailed:!!adapter?.failed,cdrom:!!vm?.v86.cpu.devices.cdrom.has_disk()};},
+    networkLogin(credentials){return network.login(vm,credentials);},
+    networkLogout(){return network.logout();},
+    networkRetry(){return network.retry();},
+    status(){return {keyboardNumLock:!!vm&&!!(vm.v86.cpu.mem8[0x417]&0x20),network:network.status(),memoryMiB:config?.memory_size/1048576,loaded:!!vm,running:!!vm?.is_running(),muted:!!vm&&!vm.speaker_adapter,headless:true,width:document.querySelector('#screen canvas')?.width||0,height:document.querySelector('#screen canvas')?.height||0,absolutePointer:!!vm?.mouse_adapter?.absolute_mouse,diskFailed:!!adapter?.failed,cdrom:!!vm?.v86.cpu.devices.cdrom.has_disk()};},
     async insertCD(){
         requireVM();if(vm.v86.cpu.devices.cdrom.has_disk())throw new Error('CD already inserted; use eject');
         const bytes=await(await request('media')).arrayBuffer(),running=vm.is_running();
@@ -65,7 +70,19 @@ globalThis.my98Agent={
     async resume(){requireVM();if(adapter.failed)throw adapter.error;vm.run();return this.status();},
     async pause(){requireVM();await releaseInput();await vm.stop();await adapter.drain();return this.status();},
     async screenshot(){requireVM();await delay(50);const image=vm.screen_make_screenshot();if(!image)throw new Error('Screen unavailable');await image.decode();return {data:image.src,width:image.naturalWidth,height:image.naturalHeight};},
-    async type(text){requireRunning();const codes=textCodes(text);try{await vm.keyboard_send_scancodes(codes,12);}finally{await releaseInput();}return {characters:text.length};},
+    pointer(input){
+        requireRunning();
+        if(!input||typeof input!=='object')throw new Error('Invalid pointer input');
+        if(input.buttons!==undefined&&(!Array.isArray(input.buttons)||input.buttons.length!==3||input.buttons.some(v=>typeof v!=='boolean')))throw new Error('Invalid pointer buttons');
+        const movement=input.dx!==undefined||input.dy!==undefined;
+        if(movement&&(!Number.isFinite(input.dx)||!Number.isFinite(input.dy)||Math.abs(input.dx)>4096||Math.abs(input.dy)>4096))throw new Error('Invalid pointer movement');
+        if(input.wheel!==undefined&&(!Number.isInteger(input.wheel)||Math.abs(input.wheel)>100))throw new Error('Invalid wheel input');
+        if(input.buttons!==undefined)vm.bus.send('mouse-click',input.buttons);
+        if(input.wheel)vm.bus.send('mouse-wheel',[input.wheel,0]);
+        if(movement){vm.bus.send('mouse-pointer-lock',true);vm.bus.send('mouse-delta',[input.dx,-input.dy]);}
+        return {input:true};
+    },
+    async type(text){requireRunning();const codes=textCodes(text);if(text.length&&!(vm.v86.cpu.mem8[0x417]&0x20))await vm.keyboard_send_scancodes(chordCodes('NumLock'),45);try{await vm.keyboard_send_scancodes(codes,12);}finally{await releaseInput();}return {characters:text.length};},
     async key(chord){requireRunning();const codes=chordCodes(chord);try{await vm.keyboard_send_scancodes(codes,45);}finally{await releaseInput();}return {key:chord};},
     async mouse(input){
         requireRunning();
@@ -109,5 +126,5 @@ globalThis.my98Agent={
     },
     async exportCapture(){try{await transfer('checkpoint/state',pendingState);}finally{pendingState=undefined;}},
     async release(){await releaseInput();},
-    async close(){await releaseInput();if(vm)await vm.destroy();vm=undefined;adapter?.dispose();}
+    async close(){await network.logout();await releaseInput();if(vm)await vm.destroy();vm=undefined;adapter?.dispose();}
 };

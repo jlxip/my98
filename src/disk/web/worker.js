@@ -3,7 +3,7 @@ import {BootAnalysis} from "./boot-analysis.js";
 import {encodeState, decodeState} from "./state-format.js";
 import {WorkerProtocol} from "./worker-protocol.js";
 import {TorrentPort} from "./torrent-port.js";
-import {RemotePublication} from "./torrent-remote.js";
+import {RemotePublication,transportFailure} from "./torrent-remote.js";
 import {hex} from "./torrent-protocol.js";
 const sources = new Map();
 let stateCandidate, stateSerial = 0;
@@ -53,13 +53,38 @@ function torrentProgress(session,value) {
     }
 }
 function remoteArguments(args,owner) {
-    if(Object.keys(args).some(key=>!["publicKey","infoHash","sources","readKey","prefetchScope"].includes(key)))
+    if(Object.keys(args).some(key=>!["publicKey","infoHash","sources","readKey","prefetchScope","waitForFinal"].includes(key)))
         throw fail("INVALID_PUBLICATION","Unknown publication argument");
     if(args.prefetchScope!==undefined && !["none","disk"].includes(args.prefetchScope))
         throw fail("INVALID_PROFILE","Initial prefetch scope must be none or disk");
+    if(args.waitForFinal!==undefined&&typeof args.waitForFinal!=="boolean")throw fail("INVALID_PUBLICATION","Invalid publication consistency option");
     if(!torrentIO)throw fail("IO_ERROR","Ciphertext bridge is unavailable");
     return {publicKey:args.publicKey,descriptorInfoHash:args.infoHash,owner,sources:args.sources,prefetchScope:args.prefetchScope,
-        verifySignature:verify,signal:protocol.signal};
+        verifySignature:verify,signal:protocol.signal,waitForFinal:args.waitForFinal,onDiscovery:status=>self.postMessage({type:"publication",...status})};
+}
+// One bounded retry is allowed only before exposing a disk, and only when
+// discovery has authenticated a higher sequence than the failed snapshot.
+async function prepareRemote(args,owner,readKey) {
+    for(let attempt=0;attempt<2;attempt++) {
+        let remote,id,candidate;
+        try {
+            remote=await RemotePublication.open(torrentIO,remoteArguments(args,owner));
+            id="source:"+(++sourceId);sources.set(id,remote);
+            if(readKey)candidate=await Vault.open_read_only(id,remote.size,readKey);
+            else await vault.open(id,remote.size);
+            check();remote.check();return {remote,id,candidate};
+        }catch(error) {
+            let newer=error.newerPublication;
+            if(remote&&transportFailure(error)&&!protocol.signal.aborted) {
+                await remote.lookupSettled.catch(()=>{});
+                if(remote.discoveryError)error=remote.discoveryError;
+                const selected=remote.remote?.sequence,latest=remote.discovery?.sequence;
+                newer=!remote.discoveryError&&selected&&latest&&BigInt(latest)>BigInt(selected);
+            }
+            candidate?.free();if(id)await remove(id);else await remote?.close();
+            if(attempt||!newer||protocol.signal.aborted)throw error;
+        }
+    }
 }
 function progress(phase, completed, total) {
     if(performance.now() - (progressAt.get(phase)??-Infinity) > 100 || completed === total) {
@@ -105,10 +130,8 @@ async function execute(op,a) {
     if(op==="openRemoteReadOnly") {
         if(vault)throw fail("OPERATION_FAILED","Close the current disk or identity first");
         if(!(a.readKey instanceof Uint8Array)||a.readKey.length!==64)throw fail("INVALID_READ_KEY","Invalid read key");
-        const remote=await RemotePublication.open(torrentIO,remoteArguments(a,hex(a.readKey.subarray(0,32))));
-        const id="source:"+(++sourceId);sources.set(id,remote);let candidate;
+        const {remote,id,candidate}=await prepareRemote(a,hex(a.readKey.subarray(0,32)),a.readKey);
         try {
-            candidate=await Vault.open_read_only(id,remote.size,a.readKey);check();
             vault=candidate;current=id;prepared=undefined;
             await remote.startPrefetch(protocol.signal);return describe();
         } catch(error){candidate?.free();vault=undefined;current=undefined;await remove(id);throw error;}
@@ -169,10 +192,8 @@ async function execute(op,a) {
     }
     case "openRemote": {
         if(a.readKey!==undefined)throw fail("INVALID_READ_KEY","Use the read-only publication operation");
-        const remote=await RemotePublication.open(torrentIO,remoteArguments(a,hex(new Uint8Array(identity.publicKey))));
-        const id="source:"+(++sourceId);sources.set(id,remote);
+        const {remote,id}=await prepareRemote(a,hex(new Uint8Array(identity.publicKey)));
         try {
-            await vault.open(id,remote.size);check();
             const previous=current;current=id;prepared=undefined;restoredOrigin=undefined;freshRestore=false;
             if(previous)await remove(previous);
             await remote.startPrefetch(protocol.signal);return describe();

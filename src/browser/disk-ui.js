@@ -41,10 +41,21 @@ export function setupDisk(host) {
         const target=document.getElementById("session-status");
         target.textContent=text;target.classList.toggle("error",error);
     };
+    function publicationStatus(value) {
+        const element=$("publication-status");
+        const selected=value.selectedSequence||value.sequence;
+        if(!selected&&value.state==="complete"){element.hidden=true;return;}
+        const version=selected?`Version ${selected}. `:"";
+        let text=value.state==="checking"?"Checking for updates…":value.state==="complete"?"Update check completed.":value.state==="fixed"?"Fixed publication.":value.error?.message||"Update check unavailable.";
+        if(!value.fatal&&value.selectedSequence&&value.sequence&&value.selectedSequence!==value.sequence)text=`Version ${value.sequence} is available. Reopen the publication to update.`;
+        element.hidden=false;element.textContent=version+text;element.classList.toggle("error",!!value.fatal);
+        if(value.fatal&&session.active)void host.fail(Object.assign(new Error(value.error.message),value.error)).catch(()=>{});
+    }
     function syncControls(busy) {
         progress.update();
         const view=diskControls({busy,working,client:session.client,state:session.description,active:session.active,adapter:session.adapter,analyzing:session.analyzing,prepared:session.prepared,capturing,stateAbort:session.stateAbort});
         $("workspace").hidden=!view.authenticated;
+        if(!view.authenticated)$("publication-status").hidden=true;
         $("login").hidden=view.authenticated||readOnlyAccess;
         $("reader").hidden=view.authenticated||!readOnlyAccess;
         $("auth-switch").hidden=view.authenticated;
@@ -102,9 +113,10 @@ export function setupDisk(host) {
         if(working || host.busy() || session.client)return;
 
         let username=$("user").value,password=$("password").value,machine=$("machine").value;$("password").value="";
+        $("publication-status").hidden=true;
         run("Unlocking identity…",async()=>{
             let identity;
-            try {identity=await session.unlock(username,password,machine,{onAnalysis:event=>{
+            try {identity=await session.unlock(username,password,machine,{onPublication:publicationStatus,onAnalysis:event=>{
                 session.analysisError = event.error;
                 message(session.analysisError, true);
                 void session.cancelLoadAnalysis().then(() => syncControls(host.busy())).catch(error => message(error.message, true));
@@ -132,7 +144,7 @@ export function setupDisk(host) {
             capturing=true;syncControls(true);
             try {
                 const description=await session.openRemoteReadOnly({readKey,...await publicationOptions()},{
-                    onProgress:p=>{if(p.error)stateMessage(p.error.message,true);}
+                    onPublication:publicationStatus,onProgress:p=>{if(p.error)stateMessage(p.error.message,true);}
                 });
                 $("identity").textContent=description.remote.publicKey;
                 message("Read-only publication opened. Pending changes stay in memory.");

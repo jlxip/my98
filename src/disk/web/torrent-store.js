@@ -1,6 +1,6 @@
 /** Ciphertext pieces only. WebTorrent owns piece verification and selection. */
 export const PIECE_LENGTH=256*1024;
-export const TORRENT_DATABASE="my98-torrents-v1";
+export const TORRENT_DATABASE="my98-feedtorrent-v1";
 const hashPattern=/^[0-9a-f]{40}$/;
 const failure=(code,message,cause)=>Object.assign(new Error(message,{cause}),{code});
 const storageError=error=>error?.name==="QuotaExceededError" ?
@@ -22,7 +22,7 @@ export function openTorrentDatabase(factory=globalThis.indexedDB) {
             if(!db.objectStoreNames.contains("metadata"))db.createObjectStore("metadata",{keyPath:"hash"});
             // Public high-water marks survive ciphertext cache cleanup.
             if(!db.objectStoreNames.contains("names"))db.createObjectStore("names",{keyPath:"publicKey"});
-            if(!db.objectStoreNames.contains("locations"))db.createObjectStore("locations",{keyPath:"publicKey"});
+
         };
         request.onerror=()=>{settled=true;reject(storageError(request.error));};
         request.onblocked=()=>{settled=true;reject(failure("STORAGE_BLOCKED","Close other my98 tabs to update torrent storage"));};
@@ -73,9 +73,9 @@ export async function clearTorrentCache(hash) {
 export class TorrentPieceStore {
     constructor(chunkLength,options={}) {
         const hash=options.torrent?.infoHash || options.infoHash;
-        if(!hashPattern.test(hash) || chunkLength!==PIECE_LENGTH ||
+        if(!hashPattern.test(hash) || (!Number.isSafeInteger(chunkLength) || chunkLength<16384 || chunkLength>128*1024*1024 || (chunkLength&(chunkLength-1))) ||
             !Number.isSafeInteger(options.length) || options.length<1) {
-            throw failure("INVALID_TORRENT","Expected a v1 torrent with 256 KiB pieces");
+            throw failure("INVALID_TORRENT","Expected a v1 torrent with a supported piece length");
         }
         this.hash=hash;this.chunkLength=chunkLength;this.length=options.length;
         this.count=Math.ceil(this.length/chunkLength);

@@ -10,12 +10,16 @@ import {randomBytes} from 'node:crypto';
 import {spawn} from 'node:child_process';
 import {chromium} from 'playwright';
 import {latest,staging,commit,workingCopy,copyLocalFile} from './agent/store.mjs';
+import {createViewer} from './agent/viewer.mjs';
 import {createCD} from './agent/media.mjs';
 
 process.umask(0o077);
 const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const args=process.argv.slice(2),option=args.indexOf('--state-dir');
 const root=path.resolve(option<0?path.join(os.homedir(),'.local/state/my98-agent'):args.splice(option,2)[1]);
+const portOption=args.indexOf('--port');
+const port=portOption<0?0:Number(args.splice(portOption,2)[1]);
+if(!Number.isInteger(port)||port<0||port>65535)throw new Error('Invalid local port');
 const socket=path.join(root,'control.sock'),command=args.shift();
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const errorText=e=>e.message||String(e);
@@ -31,7 +35,7 @@ async function launch(){
     if(await available())return;
     await fs.mkdir(root,{recursive:true,mode:0o700});await fs.chmod(root,0o700);
     const log=await fs.open(path.join(root,'controller.log'),'a',0o600);
-    const child=spawn(process.execPath,[fileURLToPath(import.meta.url),'daemon','--state-dir',root],{detached:true,stdio:['ignore',log.fd,log.fd]});child.unref();await log.close();
+    const child=spawn(process.execPath,[fileURLToPath(import.meta.url),'daemon','--state-dir',root,'--port',String(port)],{detached:true,stdio:['ignore',log.fd,log.fd]});child.unref();await log.close();
     for(let i=0;i<300;i++){await sleep(100);if(await available())return;}
     throw new Error('Controller did not start; inspect '+path.join(root,'controller.log'));
 }
@@ -50,9 +54,11 @@ async function daemon(){
     let browser,page,disk,diskSize,statePath,current,transfer,media,queue=Promise.resolve(),closing=false;
     const token=randomBytes(32).toString('hex');
     const assets=JSON.parse(await fs.readFile(path.join(repo,'scripts/site-assets.json'),'utf8'));
-    assets['_agent/runtime.js']='scripts/agent/runtime.js';assets['_agent/input.js']='scripts/agent/input.js';
-    const mime=file=>file.endsWith('.js')||file.endsWith('.mjs')?'text/javascript':file.endsWith('.wasm')?'application/wasm':'application/octet-stream';
+    assets['_agent/runtime.js']='scripts/agent/runtime.js';assets['_agent/input.js']='scripts/agent/input.js';assets['_agent/network.js']='scripts/agent/network.js';
+    const mime=file=>file.endsWith('.js')||file.endsWith('.mjs')?'text/javascript':file.endsWith('.wasm')?'application/wasm':file.endsWith('.css')?'text/css':file.endsWith('.html')?'text/html':file.endsWith('.json')?'application/json':'application/octet-stream';
     async function body(req){const chunks=[];let length=0;for await(const b of req){length+=b.length;if(length>1048576)throw new Error('Request too large');chunks.push(b);}return Buffer.concat(chunks);}
+    const enqueue=request=>{const result=queue.then(()=>execute(request));queue=result.catch(()=>{});return result;};
+    const viewer=createViewer({run:enqueue,frame:()=>enqueue({command:'frame'})});
     const server=http.createServer(async(req,res)=>{
         res.setHeader('Cross-Origin-Opener-Policy','same-origin');res.setHeader('Cross-Origin-Embedder-Policy','require-corp');
         res.setHeader('Cache-Control','no-store');
@@ -62,6 +68,7 @@ async function daemon(){
             if(url.pathname==='/_agent/'&&req.method==='GET'){
                 res.setHeader('Content-Type','text/html');res.end('<!doctype html><base href="/"><div id="screen"><div></div><canvas></canvas></div><script type="module" src="/_agent/runtime.js"></script>');return;
             }
+            if(await viewer.handle(req,res,url))return;
             const asset=assets[url.pathname.slice(1)];
             if(asset&&req.method==='GET'){res.setHeader('Content-Type',mime(asset));createReadStream(path.join(repo,asset)).pipe(res);return;}
             if(req.headers['x-my98-agent']!==token)throw new Error('Unauthorized runtime request');
@@ -141,6 +148,14 @@ async function daemon(){
             try{return {...await call('boot',metadata),coldLocal:true,checkpoint:current.id};}
             catch(e){await disk.close();disk=undefined;throw e;}
         }
+        case 'view':return {url:viewer.url('http://127.0.0.1:'+server.address().port)};
+        case 'frame':return call('screenshot');
+        case 'pointer':return call('pointer',request.pointer);
+        case 'release':return call('release');
+        case 'save-pause':{const saved=await checkpoint();await call('pause');return saved;}
+        case 'network-login':try{return await call('networkLogin',request.credentials);}finally{request.credentials.password='';}
+        case 'network-logout':return call('networkLogout');
+        case 'network-retry':return call('networkRetry');
         case 'resume':return call('resume');
         case 'pause':return call('pause');
         case 'type':return call('type',request.text);
@@ -184,8 +199,8 @@ async function daemon(){
             }
         });
     });
-    async function cleanup(){await browser?.close();await disk?.close();server.close();control.close();await fs.rm(socket,{force:true});await fs.rm(lock,{recursive:true,force:true});}
-    try{await listen(server,0,'127.0.0.1');await listen(control,socket);await fs.chmod(socket,0o600);}
+    async function cleanup(){viewer.dispose();await browser?.close();await disk?.close();server.close();control.close();await fs.rm(socket,{force:true});await fs.rm(lock,{recursive:true,force:true});}
+    try{await listen(server,port,'127.0.0.1');await listen(control,socket);await fs.chmod(socket,0o600);}
     catch(e){await cleanup();throw e;}
     // Graceful termination has the same save-before-close contract as the CLI.
     for(const signal of ['SIGTERM','SIGINT'])process.on(signal,()=>{queue=queue.then(()=>execute({command:'stop'})).catch(e=>console.error('Stop failed:',errorText(e)));});
@@ -193,11 +208,17 @@ async function daemon(){
 
 try{
     if(command==='daemon')await daemon();
-    else if(!command||command==='--help')console.log('Usage: node scripts/agent.mjs COMMAND [ARG] [--state-dir PATH]\ncold-local RAM_MIB [DISK_MIB] cold boots the latest local disk with 16–512 MiB RAM and optional disk growth up to 32 GiB; partition/format new space inside the guest. No import or publication. Commands: start status screenshot type TEXT key Ctrl+A mouse JSON wait MS send FILE... eject checkpoint pause resume stop. send inserts a local read-only CD (files/ZIPs, up to 256 MiB); copy to C: inside Windows and eject before checkpoint/stop.');
+    else if(!command||command==='--help')console.log('Usage: node scripts/agent.mjs COMMAND [ARG] [--state-dir PATH] [--port PORT]\ncold-local RAM_MIB [DISK_MIB] cold boots the latest local disk with 16–512 MiB RAM and optional disk growth up to 32 GiB; partition/format new space inside the guest. No import or publication. network-login reads JSON {username,password,machine,relayURL?} from stdin; identity stays in memory, separate from the local disk. Start on --port 8686 for deployed relays. network-logout disconnects; network-retry repeats discovery/authentication. view prints a private local screen/login URL; closing its tab leaves the VM intact. Commands: start status screenshot type TEXT key Ctrl+A mouse JSON wait MS send FILE... eject checkpoint pause resume stop. send inserts a local read-only CD (files/ZIPs, up to 256 MiB); copy to C: inside Windows and eject before checkpoint/stop.');
     else{
-        if(!['start','status','screenshot','type','key','mouse','wait','send','eject','checkpoint','pause','resume','stop','cold-local'].includes(command))throw new Error('Unknown command: '+command);
+        if(!['start','status','screenshot','type','key','mouse','wait','send','eject','checkpoint','pause','resume','stop','cold-local','network-login','network-logout','network-retry','view'].includes(command))throw new Error('Unknown command: '+command);
         let request={command};
 
+        if(command==='network-login'){
+            if(process.stdin.isTTY)throw new Error('Pipe credential JSON on stdin; never put passwords in arguments');
+            let input='';for await(const chunk of process.stdin){input+=chunk;if(Buffer.byteLength(input)>65536)throw new Error('Credential input exceeds limit');}
+            try{request.credentials=JSON.parse(input);}catch{throw new Error('Invalid credential JSON');}finally{input='';}
+            if(!request.credentials||typeof request.credentials!=='object'||Array.isArray(request.credentials))throw new Error('Expected credential object');
+        }
         if(command==='type')request.text=args.join(' ');
         if(command==='key')request.key=args.join(' ');
         if(command==='mouse')request.mouse=JSON.parse(args.join(' '));

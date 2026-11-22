@@ -1,0 +1,10 @@
+{
+  "gateways": [
+    "https://piensa.jlxip.net:8445"
+  ],
+  "trackers": [
+    "wss://tracker.btorrent.xyz",
+    "wss://tracker.openwebtorrent.com",
+    "wss://tracker.webtorrent.dev"
+  ]
+}

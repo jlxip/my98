@@ -1,7 +1,8 @@
+import {browserOptions} from './browser-options.mjs';
 import assert from "node:assert/strict";
 import {createServer} from "node:http";
 import {readFile,mkdir,writeFile} from "node:fs/promises";
-import {chromium,webkit} from "playwright";
+import {chromium,firefox,webkit} from "playwright";
 
 const source=await readFile("src/disk/web/torrent-store.js");
 const server=createServer((req,res)=>{
@@ -11,8 +12,8 @@ const server=createServer((req,res)=>{
 await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
 const results=[];
 try {
-    for(const [name,type] of Object.entries({chromium,webkit})) {
-        const browser=await type.launch();
+    for(const [name,type] of Object.entries({chromium,firefox,webkit})) {
+        const browser=await type.launch(browserOptions(name));
         try {
             const page=await browser.newPage();
             await page.goto("http://127.0.0.1:"+server.address().port+"/");
@@ -51,6 +52,11 @@ try {
                 try{await call(store,"get",0);throw Error("Failed write appeared in cache");}
                 catch(error){assert(error.code==="ENOENT","Failed write was retained");}
                 await call(store,"close");
+                for(const piece of [16384,65536,524288]) {
+                    const variable=new TorrentPieceStore(piece,{infoHash:piece.toString(16).padStart(40,"0"),length:piece+17});
+                    await call(variable,"put",0,new Uint8Array(piece).fill(42));await call(variable,"put",1,new Uint8Array(17).fill(43));
+                    assert((await call(variable,"get",1)).length===17,"Variable final piece length");await call(variable,"close");
+                }
                 const db=await openTorrentDatabase();
                 await new Promise((resolve,reject)=>{
                     const tx=db.transaction(["names"],"readwrite");

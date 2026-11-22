@@ -1,0 +1,29 @@
+{
+  "purpose": "Early SDP signaling with independent ordinary ICE backup and bounded peer delivery. Review upstream source when upgrading dependencies.",
+  "sources": [
+    {
+      "package": "@thaunknown/simple-peer",
+      "version": "10.1.2",
+      "module": "lite.js",
+      "upstream_sha256": "88001fe0bab1593ca4cd78170697ef33023aac092a580375e878c2062eaea944",
+      "local": "peer.js",
+      "repository": {
+        "type": "git",
+        "url": "git://github.com/thaunknown/simple-peer.git"
+      },
+      "license": "MIT"
+    },
+    {
+      "package": "bittorrent-tracker",
+      "version": "11.2.3",
+      "module": "lib/client/websocket-tracker.js",
+      "upstream_sha256": "a31f8b36d2b52de86f399b54381c58ac248341fc1fed6733302a5ddb03135718",
+      "local": "tracker.js",
+      "repository": {
+        "type": "git",
+        "url": "git://github.com/webtorrent/bittorrent-tracker.git"
+      },
+      "license": "MIT"
+    }
+  ]
+}

@@ -1,6 +1,6 @@
-export interface TorrentSources {apis:string[];trackers:string[];webseeds:string[];}
+export interface TorrentSources {gateways:string[];trackers:string[];}
 /** Initial background policy defaults to disk; none permits profile-only clients. */
-export interface RemoteOptions {publicKey?:string;infoHash?:string;sources?:TorrentSources;prefetchScope?:"none"|"disk";}
+export interface RemoteOptions {publicKey?:string;infoHash?:string;sources?:TorrentSources;prefetchScope?:"none"|"disk";waitForFinal?:boolean;}
 export interface DiskState {readOnly:boolean;size:number;disk_id:number[];dirty_bytes:number;dirty_sectors:number;cache_bytes:number;revision:number;}
 export interface PreparedDownload {id:number;blob:Blob;size:number;}
 export interface SavedDisk extends DiskState {outcome:"created"|"unchanged";download?:PreparedDownload;}
@@ -17,7 +17,7 @@ export interface DiskTraceEvent {type:string;unit?:number;time:number;offset?:nu
 /** Extract the public identity from a v2 credential, validating its encoding. */
 export function readOnlyPublicKey(readKey:string):Uint8Array;
 export class Slop86Disk {
- static create(options?:{workerUrl?:URL|string;onProgress?:(progress:{phase:string;completed:number;total:number;readBytes:number;readCalls:number})=>void;onAnalysis?:(event:{type:'analysis';error:string})=>void}):Promise<Slop86Disk>;
+ static create(options?:{workerUrl?:URL|string;onProgress?:(progress:{phase:string;completed:number;total:number;readBytes:number;readCalls:number})=>void;onAnalysis?:(event:{type:'analysis';error:string})=>void;onPublication?:(event:{state:"fixed"|"checking"|"complete"|"unavailable"|"conflict";sequence:string|null;selectedSequence:string|null;fatal?:boolean;error?:{code:string;message:string}})=>void}):Promise<Slop86Disk>;
  unlock(username:string,password:string,machine:string):Promise<{publicKey:number[]}>;
  relayPublicKey():Promise<Uint8Array>;
  onClosed(listener:()=>void):()=>void;

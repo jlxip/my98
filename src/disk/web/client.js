@@ -19,12 +19,12 @@ export function readOnlyPublicKey(readKey) {
 }
 
 export class Slop86Disk {
-    static async create({ workerUrl = new URL("./worker.js", import.meta.url), onProgress, onAnalysis } = {}) {
-        const client = new Slop86Disk(workerUrl, onProgress, onAnalysis);
+    static async create({ workerUrl = new URL("./worker.js", import.meta.url), onProgress, onAnalysis, onPublication } = {}) {
+        const client = new Slop86Disk(workerUrl, onProgress, onAnalysis, onPublication);
         try { await client.ready; return client; }
         catch(error) { client.terminate(); throw error; }
     }
-    constructor(url, onProgress, onAnalysis) {
+    constructor(url, onProgress, onAnalysis, onPublication) {
         this.worker = new Worker(url, { type: "module" });
         this.pending = new Map(); this.next = 0; this.closed = false; this.cancelEpoch = 0;
         this.closeListeners = new Set();
@@ -41,6 +41,7 @@ export class Slop86Disk {
         this.timer = setTimeout(() => this.fail(new Error("Disk Worker timed out")), 30000);
         this.worker.onmessage = ({data}) => {
             if(data.type === "ready") { clearTimeout(this.timer); this.readyResolve(); return; }
+            if(data.type === "publication") { onPublication?.(data); return; }
             if(data.type === "progress") { onProgress?.(data); return; }
             if(data.type === "analysis") { onAnalysis?.(data); return; }
             if(data.type === "fatal") { this.fail(new Error(data.error)); return; }

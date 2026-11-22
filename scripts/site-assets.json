@@ -47,5 +47,6 @@
   "licenses/path-browserify.txt": "node_modules/path-browserify/LICENSE",
   "licenses/process.txt": "node_modules/process/LICENSE",
   "licenses/buffer.txt": "node_modules/buffer/LICENSE",
-  "src/browser/publication-options.js": "src/browser/publication-options.js"
+  "src/browser/publication-options.js": "src/browser/publication-options.js",
+  "torrent-sources.json": "torrent-sources.json"
 }

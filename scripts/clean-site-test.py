@@ -16,11 +16,17 @@ def snapshot(root, destination, tree):
     subprocess.run(['git', 'clone', '--quiet', '--shared', '--no-checkout', str(root), str(destination)], check=True)
     git(destination, 'read-tree', tree)
     git(destination, 'checkout-index', '--all')
-    revision = git(destination, 'rev-parse', ':vendor/slop86')
-    dependency = destination / 'vendor/slop86'
-    subprocess.run(['git', 'clone', '--quiet', '--shared', '--no-checkout', str(root / 'vendor/slop86'), str(dependency)], check=True)
-    git(dependency, 'checkout', '--quiet', '--detach', revision)
-    return tree, revision
+    for entry in git(destination, 'ls-files', '--stage', '-z').split('\0'):
+        if not entry:
+            continue
+        metadata, path = entry.split('\t', 1)
+        mode, revision, stage = metadata.split()
+        if mode != '160000':
+            continue
+        dependency = destination / path
+        subprocess.run(['git', 'clone', '--quiet', '--shared', '--no-checkout', str(root / path), str(dependency)], check=True)
+        git(dependency, 'checkout', '--quiet', '--detach', revision)
+    return tree, git(destination, 'rev-parse', ':vendor/slop86')
 
 
 def main():
@@ -59,7 +65,7 @@ def main():
             run('rustup', 'toolchain', 'install', '1.89.0', '--profile', 'minimal', '--target', 'wasm32-unknown-unknown')
             run('cargo', 'install', 'wasm-bindgen-cli', '--version', '0.2.100', '--locked', '--root', 'build/crypto-tools')
             run('npm', 'ci')
-            run('npx', 'playwright', 'install', *(['--with-deps'] if os.environ.get('GITHUB_ACTIONS') == 'true' else []), 'chromium', 'webkit')
+            run('npx', 'playwright', 'install', *(['--with-deps'] if os.environ.get('GITHUB_ACTIONS') == 'true' else []), 'chromium', 'firefox', 'webkit')
             run('make', 'site-test', 'agent-test')
             shutil.copytree(source / 'build/site', result / 'site')
             print('Clean CI: PASS', flush=True)

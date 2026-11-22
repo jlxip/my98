@@ -29,7 +29,7 @@ for(const [name,type] of Object.entries({chromium,webkit})) {
         assert.equal(await page.locator('#disk-remote').count(),0);
         assert.match(await page.locator('#disk-status').textContent(),/No publication was found/);
         assert.equal(await page.locator('#session').isVisible(),false);
-        assert.equal(server.requests.filter(r=>r.path.startsWith('/v2/dht/')).length,2);
+        assert.equal(server.requests.filter(r=>r.path.startsWith('/dht/mutable/')).length,1);
         assert.equal(await page.locator('#disk-auth-switch').isVisible(),false);
         assert.equal(await page.locator('#disk-only-localhost').isVisible(),false);
         assert.equal(await page.locator('#disk-boot').isDisabled(),true);
@@ -60,11 +60,11 @@ for(const [name,type] of Object.entries({chromium,webkit})) {
         await page.waitForFunction(()=>!document.querySelector('#disk-login').hidden);
         fixtureOptions.publicationStatus=503;
         await unlockIdentity(page);assert.equal(await page.locator('#disk-identity').textContent(),key);
-        assert.match(await page.locator('#disk-status').textContent(),/No signed publication source is available/);
+        assert.match(await page.locator('#disk-status').textContent(),/Publication source returned 503/);
         await page.locator('#disk-menu-disk > summary').click();
         assert.equal(await page.locator('#disk-empty').isEnabled(),true);
         assert.equal(await page.locator('#disk-open').isVisible(),true);
-        assert.equal(server.requests.filter(r=>r.path.startsWith('/v2/dht/')).length,4);
+        assert.equal(server.requests.filter(r=>r.path.startsWith('/dht/mutable/')).length,4);
         assert(requests.every(url=>new URL(url).origin===new URL(server.url).origin));
         assert.deepEqual(errors,[]);console.log(name+': local identity, key stability, secret clearing and zero external requests PASS');
     } finally {await browser.close();await server.close();}
