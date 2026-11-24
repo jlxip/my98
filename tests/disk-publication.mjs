@@ -33,6 +33,8 @@ try{for(const [name,engine] of Object.entries({chromium,firefox,webkit}).filter(
     check(JSON.stringify(await c.describe())===JSON.stringify(before),'exports preserve original disk, overlay and revision');
     const capability=await c.exportReadOnlyKey(),ro=await Slop86Disk.create();
     await ro.openReadOnly({file:original,readKey:capability});await ro.write(12,new Uint8Array([77]));
+    await reject(ro.publishUpdate({action:'remove-state',sources:{gateways:[location.origin],trackers:['ws://127.0.0.1:1']}}),'READ_ONLY');
+    await reject(c.publishUpdate({action:'state',file:new Blob(['not a state']),sources:{gateways:[location.origin],trackers:['ws://127.0.0.1:1']}}),'INVALID_PUBLICATION');
     check(new Uint8Array(await (await ro.exportDisk('raw')).blob.arrayBuffer())[12]===77,'read-only raw includes session writes');
     const a=new Uint8Array(await (await ro.exportDisk()).blob.arrayBuffer()),b=new Uint8Array(await original.arrayBuffer());
     check(a.length===b.length&&a.every((v,i)=>v===b[i]),'read-only encrypted export is byte-identical original');await ro.close();

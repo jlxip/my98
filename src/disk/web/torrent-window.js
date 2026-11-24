@@ -39,8 +39,14 @@ export class WindowTorrents {
         this.closed=false;this.epoch=0;this.discoveries=new Set();this.recovering=new Map();this.openingJobs=new Map();this.componentMetadata=new Map();this.probes=new Map();
     }
     setSources(sources) {this.sources=torrentSources(sources);}
-    trackPublication(root) {
-        this.replicas=new PublicationReplicas(root,replicas=>this.onProgress({replicas}));
+    trackPublication(root,kinds) {
+        this.replicas=new PublicationReplicas(root,replicas=>this.onProgress({replicas}),kinds);
+    }
+    async referencePublication({infoHash:hash,metadata,kind},signal) {
+        if(signal?.aborted)throw cancelled(signal);
+        const meta=await verifyMetadata(metadata,hash,kind);
+        if(this.closed||signal?.aborted)throw cancelled(signal);
+        this.replicas.expect(kind,{hash,length:meta.totalLength,pieceLength:meta.pieceLength,count:meta.pieces});
     }
     async initialize() {
         if(this.closed)throw fail("CANCELLED","Torrent transport is closed");
@@ -92,6 +98,10 @@ export class WindowTorrents {
             torrent.once("ready",ready);if(torrent.ready)ready();
             if(signal?.aborted)abort();
         });
+    }
+    async releaseSeed(hash) {
+        const torrent=this.client?.torrents.find(t=>t.infoHash===hash);
+        if(torrent&&!torrent.destroyed)await new Promise(resolve=>torrent.destroy({destroyStore:true},resolve));
     }
     failed(entry,error) {
         entry.error=error;

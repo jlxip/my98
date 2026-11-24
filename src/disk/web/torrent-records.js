@@ -152,7 +152,7 @@ export async function resolveRecord(publicKey,sources,verifySignature,{signal,ti
     const timer=setTimeout(()=>controller.abort(fail("PUBLICATION_UNAVAILABLE","Publication lookup timed out")),timeout);
     let best=initial.record,blocked=initial.blocked,delivered=null,fatal,observations=Promise.resolve(),reportedConflict=false;
     const seen=new Map();if(best)seen.set(best.sequence,best);
-    const status=(state,error)=>onStatus({state,sequence:best?.sequence??null,...(error?{error:{code:error.code||"PUBLICATION_UNAVAILABLE",message:error.message},fatal:!!error.verifiedConflict}:{})});
+    const status=(state,error)=>onStatus({state,sequence:best?.sequence??null,infoHash:best?.infoHash??null,...(error?{error:{code:error.code||"PUBLICATION_UNAVAILABLE",message:error.message},fatal:!!error.verifiedConflict}:{})});
     async function deliver() {
         if(signal?.aborted)throw signal.reason;
         if(best&&!blocked&&delivered!==best.sequence+":"+best.value) {

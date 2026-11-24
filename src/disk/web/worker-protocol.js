@@ -4,6 +4,8 @@ function errorInfo(error) {
     return {code:error?.code || 'OPERATION_FAILED',message};
 }
 
+const publicationOperation=op=>op==='prepareRemoteUpdate'||op==='commitRemoteUpdate'||op.startsWith('remoteUpdate');
+
 /** Serializes Worker requests and owns their cancellation and reply protocol. */
 export class WorkerProtocol {
     constructor({ready, getInitError, execute, onCancel, onCancelled, onRequest}) {
@@ -15,14 +17,22 @@ export class WorkerProtocol {
         this.onRequest=onRequest;
         this.sequence=Promise.resolve();
         this.cancelEpoch=0;
+        this.publicationCancelEpoch=0;
         this.activeEpoch=0;
     }
     get signal() {return this.activeRequest?.signal;}
     cancelled() {
         return this.activeEpoch!==this.cancelEpoch ||
+            this.activePublicationEpoch!==undefined&&this.activePublicationEpoch!==this.publicationCancelEpoch ||
             !!(this.cancelView && Atomics.load(this.cancelView,0)!==this.activeEpoch);
     }
     handle(data) {
+        // Keep the running VM's request epoch intact while aborting its replacement.
+        if(data.op==='cancelRemoteUpdate') {
+            this.publicationCancelEpoch=data.epoch;
+            if(this.activePublicationEpoch!==undefined)this.activeRequest?.abort();
+            return;
+        }
         if(data.op==='cancel') {
             this.cancelEpoch=data.epoch;
             this.activeRequest?.abort();
@@ -39,6 +49,7 @@ export class WorkerProtocol {
                 await this.ready;
                 if(this.getInitError())throw this.getInitError();
                 this.activeEpoch=epoch;
+                this.activePublicationEpoch=publicationOperation(op)?data.publicationEpoch:undefined;
                 this.activeRequest=new AbortController();
                 this.onRequest();
                 if(this.cancelled())throw Object.assign(new Error('Operation cancelled'),{code:'CANCELLED'});
@@ -46,12 +57,12 @@ export class WorkerProtocol {
                 self.postMessage({id,ok:true,result},result instanceof Uint8Array?[result.buffer]:result?.state instanceof ArrayBuffer?[result.state]:[]);
             } catch(error) {
                 if(this.cancelled()) {
-                    this.onCancelled();
+                    if(this.activePublicationEpoch===undefined)this.onCancelled();
                     error=Object.assign(new Error('Operation cancelled'),{code:'CANCELLED'});
                 }
                 self.postMessage({id,ok:false,error:errorInfo(error)});
             } finally {
-                this.activeRequest=undefined;
+                this.activeRequest=undefined;this.activePublicationEpoch=undefined;
                 args?.password?.fill(0);
                 args?.bytes?.fill(0);
                 if(args?.readKey instanceof Uint8Array)args.readKey.fill(0);

@@ -45,6 +45,28 @@ pub(crate) fn publication_metadata(
     public: &[u8],
     tracker_json: &str,
 ) -> Result<String> {
+    let disk = component_metadata(size, hashes, "disk", tracker_json)?;
+    let mut result: serde_json::Value = serde_json::from_str(&catalog_metadata(
+        &serde_json::json!([{"kind":"disk","metadata":disk}]).to_string(),
+        public,
+        tracker_json,
+    )?)
+    .map_err(|e| operation(e.to_string()))?;
+    result["diskMetadata"] = serde_json::json!(disk);
+    serde_json::to_string(&result).map_err(|e| operation(e.to_string()))
+}
+pub(crate) fn component_metadata(
+    size: u64,
+    hashes: &[u8],
+    kind: &str,
+    tracker_json: &str,
+) -> Result<Vec<u8>> {
+    let name = match kind {
+        "disk" => "disk.my98",
+        "state" => "state.my98state",
+        "profile" => "profile.json",
+        _ => return Err(operation("Invalid component role".into())),
+    };
     if size == 0
         || size > 2u64.pow(40) + 2u64.pow(30) + 198
         || hashes.len() != size.div_ceil(262144) as usize * 20
@@ -58,7 +80,7 @@ pub(crate) fn publication_metadata(
     let mut info = BTreeMap::new();
     info.insert(
         Cow::Borrowed(b"name".as_slice()),
-        blob(b"disk.my98".to_vec()),
+        blob(name.as_bytes().to_vec()),
     );
     info.insert(
         Cow::Borrowed(b"length".as_slice()),
@@ -79,29 +101,52 @@ pub(crate) fn publication_metadata(
     encoder
         .emit(BValue::Dict(outer))
         .map_err(|e| operation(e.to_string()))?;
-    let disk = encoder.get_output().map_err(|e| operation(e.to_string()))?;
+    encoder.get_output().map_err(|e| operation(e.to_string()))
+}
+pub(crate) fn catalog_metadata(entries: &str, public: &[u8], tracker_json: &str) -> Result<String> {
+    #[derive(serde::Deserialize)]
+    struct Component {
+        kind: String,
+        metadata: Vec<u8>,
+    }
+    let entries: Vec<Component> =
+        serde_json::from_str(entries).map_err(|e| operation(e.to_string()))?;
+    let mut kinds = std::collections::BTreeSet::new();
+    if entries.is_empty() || entries.len() > 3 || !entries.iter().any(|e| e.kind == "disk") {
+        return Err(operation("Catalog requires a disk".into()));
+    }
     let mut builder = FeedBuilder::new("my98");
     builder.fields.source = Some(key(public)?);
     builder
         .outer
         .insert(Cow::Borrowed(b"announce-list"), trackers(tracker_json)?);
-    builder.entries.push(BuildEntry::file(
-        vec!["disk.torrent".into()],
-        disk.len() as u64,
-    ));
+    for entry in &entries {
+        if !["disk", "state", "profile"].contains(&entry.kind.as_str())
+            || !kinds.insert(&entry.kind)
+            || entry.metadata.is_empty()
+            || entry.metadata.len() > 8 * 1024 * 1024
+        {
+            return Err(operation("Invalid catalog component".into()));
+        }
+        builder.entries.push(BuildEntry::file(
+            vec![format!("{}.torrent", entry.kind)],
+            entry.metadata.len() as u64,
+        ));
+    }
     let built = builder
-        .build(|_| Ok(Cursor::new(&disk)))
+        .build(|i| Ok(Cursor::new(&entries[i].metadata)))
         .map_err(|e| operation(e.to_string()))?;
-    let mut payload = disk.clone();
-    let padding: u64 = built
-        .feed
-        .entries()
-        .iter()
-        .filter(|e| e.kind() == feedtorrent_bep::bep49::EntryKind::Padding)
-        .map(|e| e.length())
-        .sum();
-    payload.resize(payload.len() + padding as usize, 0);
-    serde_json::to_string(&serde_json::json!({"diskMetadata":disk,"catalogMetadata":built.metainfo,"catalogPayload":payload,"infoHash":hex(&built.feed.infohash())})).map_err(|e|operation(e.to_string()))
+    let mut payload = Vec::new();
+    let mut index = 0;
+    for entry in built.feed.entries() {
+        if entry.kind() == feedtorrent_bep::bep49::EntryKind::Padding {
+            payload.resize(payload.len() + entry.length() as usize, 0);
+        } else {
+            payload.extend_from_slice(&entries[index].metadata);
+            index += 1;
+        }
+    }
+    serde_json::to_string(&serde_json::json!({"catalogMetadata":built.metainfo,"catalogPayload":payload,"infoHash":hex(&built.feed.infohash())})).map_err(|e|operation(e.to_string()))
 }
 impl Engine {
     pub(crate) fn snapshot(&self, original: bool) -> Result<Self> {
@@ -188,6 +233,45 @@ mod tests {
             .step_by(2)
             .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
             .collect()
+    }
+    #[test]
+    fn catalog_supports_three_independent_components() {
+        let e = engine();
+        let public = e.identity().unwrap().public_key().unwrap();
+        let trackers = "[\"wss://tracker.test\"]";
+        let mut components = vec![];
+        for kind in ["disk", "state", "profile"] {
+            let payload = vec![42; 100];
+            let hashes = piece_hash(&payload).unwrap();
+            let metadata =
+                component_metadata(payload.len() as u64, &hashes, kind, trackers).unwrap();
+            components.push(serde_json::json!({"kind":kind,"metadata":metadata}));
+        }
+        let value: serde_json::Value = serde_json::from_str(
+            &catalog_metadata(
+                &serde_json::to_string(&components).unwrap(),
+                &public,
+                trackers,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let metadata: Vec<u8> = serde_json::from_value(value["catalogMetadata"].clone()).unwrap();
+        let feed = feedtorrent_bep::bep49::Feed::from_metainfo(&metadata).unwrap();
+        assert_eq!(
+            feed.entries()
+                .iter()
+                .filter(|e| e.kind() != feedtorrent_bep::bep49::EntryKind::Padding)
+                .count(),
+            3
+        );
+        components.push(components[0].clone());
+        assert!(catalog_metadata(
+            &serde_json::to_string(&components).unwrap(),
+            &public,
+            trackers
+        )
+        .is_err());
     }
     #[test]
     fn catalog_has_only_disk_and_authenticates_exact_metainfo() {

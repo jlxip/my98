@@ -72,13 +72,16 @@ site-test: site
 	node scripts/run-browser-test.mjs tests/pages/media.mjs
 	node scripts/run-browser-test.mjs tests/pages/mobile.mjs
 	node scripts/run-browser-test.mjs tests/pages/controls.mjs
-	node --test tests/feedtorrent-protocol.test.mjs tests/torrent-state-queue.test.mjs tests/startup-prefetch.test.mjs tests/torrent-startup-window.test.mjs tests/publication-replicas.test.mjs
+	node --test tests/publication-session.test.mjs tests/feedtorrent-protocol.test.mjs tests/torrent-state-queue.test.mjs tests/startup-prefetch.test.mjs tests/torrent-startup-window.test.mjs tests/publication-replicas.test.mjs tests/publication-seeds.test.mjs
 	node scripts/run-browser-test.mjs tests/torrent-store.mjs
 	node scripts/run-browser-test.mjs tests/feedtorrent-records.mjs
 	node scripts/run-browser-test.mjs tests/disk-publication.mjs
 	node scripts/run-browser-test.mjs tests/publication-recovery.mjs
 	node scripts/run-browser-test.mjs tests/pages/publish-controls.mjs
+	node scripts/run-browser-test.mjs tests/pages/state-publication.mjs
 	node scripts/run-browser-test.mjs tests/feedtorrent-discovery.mjs
+	node scripts/run-browser-test.mjs tests/remote-publication-update.mjs
+	node scripts/run-browser-test.mjs tests/pages/publication-update.mjs
 	node scripts/run-browser-test.mjs tests/torrent-ice.mjs
 	node scripts/run-browser-test.mjs tests/pages/direct-pointer.mjs
 	node scripts/run-browser-test.mjs tests/pages/display.mjs
@@ -116,7 +119,7 @@ torrent-native:
 torrent-test: torrent-native
 	python3 tests/torrent-prompt.test.py build/torrent-target/release/my98-torrent
 	CARGO_TARGET_DIR="$$PWD/build/torrent-target" sh -c 'cd build/feedtorrent && cargo test --manifest-path ../../src/torrent/Cargo.toml --locked'
-	node --test tests/feedtorrent-protocol.test.mjs tests/torrent-state-queue.test.mjs tests/torrent-startup-window.test.mjs
+	node --test tests/publication-session.test.mjs tests/feedtorrent-protocol.test.mjs tests/torrent-state-queue.test.mjs tests/torrent-startup-window.test.mjs
 
 torrent-integration-test: torrent-native site
 	$(MAKE) -C build/feedtorrent build test-deps
@@ -128,3 +131,8 @@ torrent-integration-test: torrent-native site
 publishing-integration-test: site torrent-native
 	@test -n "$(MY98_FEEDTORRENT_TEST_ROOT)" || { echo 'Set MY98_FEEDTORRENT_TEST_ROOT to the FeedTorrent candidate checkout.' >&2; exit 2; }
 	node tests/browser-publishing-integration.mjs
+
+.PHONY: state-publishing-integration-test
+state-publishing-integration-test: site
+	@test -n "$(MY98_FEEDTORRENT_TEST_ROOT)" || { echo 'Set MY98_FEEDTORRENT_TEST_ROOT to the tested FeedTorrent checkout.' >&2; exit 2; }
+	node tests/browser-components-integration.mjs

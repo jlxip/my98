@@ -2,6 +2,7 @@ import {setupDiskProgress} from './disk-progress.js';
 import {diskControls} from './disk-controls.js';
 import {DiskSession} from './disk-session.js';
 import {publicationOptions} from './publication-options.js';
+import {setupPublicationControls} from './publication-controls.js';
 
 /** Disk/VM controls. Secret contexts stay in the independent disk Worker. */
 export function setupDisk(host) {
@@ -9,15 +10,16 @@ export function setupDisk(host) {
     const session=new DiskSession(host);
     let working=false,capturing=false,readOnlyAccess=false,seed={active:false};
     const menus=[...$("workspace").querySelectorAll(".disk-menu")];
-    const diskMenu=$("menu-disk");
+    const diskMenu=$("menu-disk"),stateMenu=$("menu-state"),dropdowns=[diskMenu,stateMenu];
+    for(const menu of dropdowns)menu.querySelector(':scope > button').addEventListener('click',()=>menu.querySelector(':scope > button').focus({preventScroll:true}));
     // WebKit on macOS does not focus a native button on a mouse click.
     // Basecoat handles keys on its wrapper, so keep the open trigger focused.
     $("menu-trigger").addEventListener('click',()=>$("menu-trigger").focus({preventScroll:true}));
     diskMenu.addEventListener('click',event=>{
         if(event.target.closest('#disk-empty')&&!$("empty-form").hidden)$("empty-size").focus();
     });
-    document.addEventListener('basecoat:popover',event=>{if(event.detail.source===diskMenu)for(const menu of menus)if(menu.open)closeMenu(menu);});
-    for(const menu of menus)menu.addEventListener('toggle',()=>{if(menu.open)diskMenu.close?.(false);});
+    document.addEventListener('basecoat:popover',event=>{if(dropdowns.includes(event.detail.source)){for(const menu of menus)if(menu.open)closeMenu(menu);for(const menu of dropdowns)if(menu!==event.detail.source)menu.close?.(false);}});
+    for(const menu of menus)menu.addEventListener('toggle',()=>{if(menu.open)for(const dropdown of dropdowns)dropdown.close?.(false);});
     const help=$("replica-help"),info=$("replica-info");
     let helpPinned=false;
     const showHelp=show=>{help.hidden=!show;info.setAttribute('aria-expanded',String(show));};
@@ -59,18 +61,55 @@ export function setupDisk(host) {
         const target=document.getElementById("session-status");
         target.textContent=text;target.classList.toggle("error",error);
     };
+    let updatingPublication=false,bootLatest=false,publicationError;
     function publicationStatus(value) {
-        const element=$("publication-status");
-        const selected=value.selectedSequence||value.sequence;
-        if(!selected&&value.state==="complete"){element.hidden=true;return;}
-        const version=selected?`Version ${selected}. `:"";
-        let text=value.state==="checking"?"Checking for updates…":value.state==="complete"?"Update check completed.":value.state==="fixed"?"Fixed publication.":value.error?.message||"Update check unavailable.";
-        if(!value.fatal&&value.selectedSequence&&value.sequence&&value.selectedSequence!==value.sequence)text=`Version ${value.sequence} is available. Reopen the publication to update.`;
-        element.hidden=false;element.textContent=version+text;element.classList.toggle("error",!!value.fatal);
+        renderPublication();
         if(value.fatal&&session.active)void host.fail(Object.assign(new Error(value.error.message),value.error)).catch(()=>{});
+        syncControls(host.busy());
     }
+    function renderPublication() {
+        const element=$('publication-status'),value=session.publication,pending=session.pendingPublication,remote=session.description?.remote;
+        const selected=remote?.sequence||value?.selectedSequence;
+        let text=value?.state==='checking'?'Checking for updates…':value?.state==='fixed'?'Fixed publication.':value?.error?.message||'Update check completed.';
+        if(pending)text=`Version ${pending.sequence} is available.`+(publicationError?.sequence===pending.sequence?' '+publicationError.message:'');
+        if(updatingPublication)text='Opening latest publication…';
+        element.textContent=(selected?`Version ${selected}. `:'')+text;element.hidden=!value||!session.client;
+        element.classList.toggle('error',!!value?.fatal);
+        const show=!!pending&&!updatingPublication;
+        const label=bootLatest===pending?.sequence?'Boot latest version':session.usedForVm?'Restart with latest version':'Open latest version';
+        for(const button of [$('update-publication'),document.getElementById('vm-update-publication')]) {
+            button.hidden=!show;button.textContent=label;button.disabled=working||host.busy()||session.analyzing;
+        }
+        const banner=document.getElementById('vm-publication-update');banner.hidden=!session.active||!pending&&!updatingPublication;
+        document.getElementById('vm-publication-status').textContent=element.textContent;
+        document.getElementById('vm-cancel-publication').hidden=!updatingPublication;document.getElementById('vm-cancel-publication').disabled=false;
+    }
+    function schedulePublicationUpdate() {
+        if(!working&&!host.busy()&&!updatingPublication&&session.automaticUpdate&&!$('profiles-dialog').open) {
+            queueMicrotask(()=>{
+                if(!working&&!host.busy()&&session.automaticUpdate&&!$('profiles-dialog').open)void changePublication(false);
+            });
+        }
+    }
+    async function changePublication(manual) {
+        if(working||host.busy()||session.analyzing||!session.pendingPublication)return;
+        const restart=manual&&session.usedForVm;
+        if(manual&&(restart||session.description.dirty_bytes)&&!window.confirm('Open the latest publication? The current Windows session, RAM and pending disk changes will be discarded.'))return;
+        await run('Opening latest publication…',async()=>{
+            updatingPublication=true;publicationError=undefined;renderPublication();
+            try {
+                await session.updatePublication({restart,mode:bootLatest===session.pendingPublication?.sequence?'boot':session.remoteMode,discardChanges:manual,onStart:()=>syncControls(true)});
+                bootLatest=false;message('Latest publication opened.');
+            } catch(error) {publicationError={sequence:session.pendingPublication?.sequence,message:error.message};if(error.code==='NO_PUBLISHED_STATE')bootLatest=session.pendingPublication?.sequence;throw error;}
+            finally {updatingPublication=false;renderPublication();}
+        });
+    }
+    $('update-publication').onclick=()=>changePublication(true);
+    document.getElementById('vm-update-publication').onclick=$('update-publication').onclick;
+    document.getElementById('vm-cancel-publication').onclick=()=>session.cancel();
     function publishingStatus(value) {
         seed=value;
+        publicationControls.published(value);
         $("seeding").hidden=!value.active;
         const labels={preparing:"Preparing publication…",announcing:"Announcing publication…",seeding:"Publication announced.",unconfirmed:"Publication announcement not confirmed."};
         $("seed-status").textContent=(labels[value.state]||"")+(value.error?" "+value.error.message:"");
@@ -96,8 +135,8 @@ export function setupDisk(host) {
         $("auth-switch").textContent=readOnlyAccess?"Or log in":"Or use a read key";
         $("brand").hidden=view.authenticated;$("notice").hidden=!view.authenticated;
         document.getElementById("welcome").classList.toggle("authenticated",view.authenticated);
-        if(busy||working||!view.authenticated){diskMenu.close?.(false);for(const menu of menus)if(menu.open)closeMenu(menu);}
-        $("panel").querySelectorAll("button,input").forEach(element=>element.disabled=busy||working);
+        if(busy||working||!view.authenticated){for(const dropdown of dropdowns)dropdown.close?.(false);for(const menu of menus)if(menu.open)closeMenu(menu);}
+        $("panel").querySelectorAll("button,input,select").forEach(element=>element.disabled=busy||working);
         $("workspace").querySelectorAll("[data-disk-action]").forEach(element=>{
             element.hidden=!!view.hidden[element.dataset.diskAction];
         });
@@ -133,16 +172,22 @@ export function setupDisk(host) {
             if(group.previousElementSibling?.matches('hr'))group.previousElementSibling.hidden=group.hidden||!groupBefore;
             if(!group.hidden)groupBefore=true;
         }
-        if(diskMenu.hidden||$("menu-trigger").disabled)diskMenu.close?.(false);
-        diskMenu.refresh?.();
+        for(const menu of dropdowns) {
+            const actions=[...menu.querySelectorAll('[data-disk-action]')],trigger=menu.querySelector(':scope > button');
+            menu.hidden=!actions.some(e=>!e.hidden);trigger.disabled=busy||working||!actions.some(e=>!e.hidden&&!e.disabled);
+            if(menu.hidden||trigger.disabled)menu.close?.(false);
+            menu.refresh?.();
+        }
+        renderPublication();schedulePublicationUpdate();
     }
     async function run(text,work) {
         if(working||host.busy())return;
         working=true;host.setBusy(true);message(text);
         try {await work();}
         catch(error) {message(error.code==="CANCELLED"?"Operation cancelled. The previous disk and its pending changes are preserved.":error.message,true);}
-        finally {working=false;capturing=false;host.setBusy(false);}
+        finally {working=false;capturing=false;host.setBusy(false);renderPublication();schedulePublicationUpdate();}
     }
+    const publicationControls=setupPublicationControls({session,$,host,run,message,syncControls,sources:async()=>(await publicationOptions()).sources});
     function download(result) {
         session.prepared=true;
         host.download(result.blob,`${session.description.disk_id.slice(0,4).map(n=>n.toString(16).padStart(2,"0")).join("")}.my98`);
@@ -289,6 +334,8 @@ export function setupDisk(host) {
     async function publish(kind="current") {
         let file;
         if(kind!=="current"){[file]=await host.pickFiles();if(!file)return;}
+        const details=await session.client.publicationDetails({sources:(await publicationOptions()).sources,requireBase:false});
+        if((details.hasState||details.hasProfiles)&&!window.confirm('Publishing a disk removes the published state and load profiles. Continue?'))return;
         capturing=true;syncControls(true);
         const result=await session.publishDisk({kind,file,sources:await publicationOptions().then(value=>value.sources)});
         message("");
@@ -328,7 +375,7 @@ export function setupDisk(host) {
     $("cancel").onclick=()=>{session.cancel();message("Cancellation requested…");};
     $("close").onclick=()=>run("Closing identity…",async()=>{
         if(!window.confirm("Close the identity? Pending changes and the prepared download for this session will be lost."+(seed.active&&!(seed.replicas?.complete>0)?" No complete replica has been confirmed; this also stops seeding.":"")))return;
-        await session.close();$("identity").textContent="";$("analysis-options").hidden=true;
+        publicationControls.close();await session.close();bootLatest=false;$("identity").textContent="";$("analysis-options").hidden=true;
         $("password").value="";$("empty-size").value="1024";
         message("");
     });

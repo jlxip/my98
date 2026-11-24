@@ -1,3 +1,4 @@
+import {DiskBuffer} from "../../build/disk/web/client.js";
 import {compatibility, createMachine} from "./machine-factory.js";
 import {captureMachineState, restoreMachineState, DEFAULT_CONFIG} from "./machine-state.js";
 import { setupDisk } from "./disk-ui.js";
@@ -459,6 +460,47 @@ diskController = setupDisk({
             fitScreen();status("State restored.");
             return restored;
         } finally {container.remove();}
+    },
+    async preparePublicationUpdate(disk, mode, signal) {
+        const container=document.createElement('div');container.innerHTML='<div></div><canvas></canvas>';
+        const check=()=>{if(signal.aborted)throw Object.assign(new Error('Publication update cancelled'),{code:'CANCELLED'});};
+        let machine,adapter;
+        const onDiskError=async error=>{if(machine&&emulator===machine){diskBlocked=true;await machine.stop();status(error.message,true);updateControls();}};
+        try {
+            let result;
+            if(mode==='resume') {
+                result=await restoreMachineState({disk,input:{publication:true},compatibility:await compatibility(),signal,onDiskError,
+                    createMachine:(value,config)=>createMachine(value,config,container,relayOptions())});
+                machine=result.machine;adapter=result.adapter;
+                await disk.setLoadPrefetch({origin:'restored',scope:'auto'});
+            } else {
+                await disk.setLoadPrefetch({origin:'boot',scope:'auto'});await disk.read(0,512);check();
+                const description=await disk.describe();adapter=new DiskBuffer(disk,description.size,onDiskError);
+                machine=await createMachine(adapter,{...DEFAULT_CONFIG},container,relayOptions());
+                result={machine,adapter,config:{...DEFAULT_CONFIG},running:true,description};
+            }
+            check();await adapter.drain();return {...result,container,mode};
+        } catch(error) {await machine?.destroy().catch(()=>{});adapter?.dispose();container.remove();throw error;}
+    },
+    async pausePublicationUpdate() {
+        const previous={machine:emulator,running:!!emulator?.is_running()};
+        try {if(emulator)await emulator.stop();await machineAdapter?.drain();return previous;}
+        catch(error){if(previous.running&&!machineAdapter?.failed)previous.machine.run();throw error;}
+    },
+    async resumePublicationUpdate(previous) {if(previous.running&&previous.machine===emulator&&!machineAdapter?.failed)emulator.run();},
+    async discardPublicationUpdate(value) {await value.machine.destroy().catch(()=>{});value.adapter.dispose();value.container.remove();},
+    async installPublicationUpdate(value) {
+        directPreferred=false;direct.deactivate();touch.release();
+        const previous=emulator;machineAdapter?.dispose();await previous?.destroy().catch(()=>{});
+        const text=value.container.querySelector('div'),canvas=value.container.querySelector('canvas');text.id='screen';canvas.id='vga';
+        $('screen_container').replaceChildren(text,canvas);value.container.remove();
+        emulator=value.machine;machineAdapter=value.adapter;machineConfig=value.config;
+        manualPause=false;exportStopped=false;roundedMips=undefined;diskBlocked=false;$('session').hidden=false;
+        relayState(emulator.network_adapter?.status||'identity-closed');
+        for(const drive of Object.keys(media))media[drive]=null;syncMediaNames();
+        diskName=value.mode==='resume'?'Restored state':'Encrypted disk';$('disk-name').textContent=diskName;$('disk-name').title=diskName;
+        emulator.add_listener('screen-set-size',fitScreen);emulator.add_listener('emulator-started',updateControls);emulator.add_listener('emulator-stopped',updateControls);
+        if(value.running)emulator.run();fitScreen();status('Latest publication opened.');
     },
     async stop() { if(emulator) await emulator.stop(); },
     async boot(adapter, name, {autoFullscreen = true} = {}) {

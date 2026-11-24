@@ -7,9 +7,12 @@ export class PublicationReplicas {
         this.components=new Map();this.nodes=new Map();this.wires=new Map();this.serial=0;
         this.closed=false;this.overflow=false;
     }
-    add(kind,torrent) {
+    expect(kind,part) {
         if(!this.kinds.has(kind)||this.components.has(kind))throw Error('Unexpected publication component');
-        this.components.set(kind,{hash:infoHash(torrent.infoHash),length:torrent.length,pieceLength:torrent.pieceLength,count:torrent.pieces.length});
+        this.components.set(kind,{...part,hash:infoHash(part.hash)});this.changed();
+    }
+    add(kind,torrent) {
+        this.expect(kind,{hash:torrent.infoHash,length:torrent.length,pieceLength:torrent.pieceLength,count:torrent.pieces.length});
         const attach=wire=>this.attach(kind,wire);
         torrent.on('wire',attach);
         (this.cleanups||=[]).push(()=>torrent.off('wire',attach));

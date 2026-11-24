@@ -1,7 +1,7 @@
 /** Worker-side publication verification and encrypted sources for the Rust Vault. */
 import {openTorrentDatabase} from "./torrent-store.js";
 import {resolveRecord,boundedBytes,watchRecord} from "./torrent-records.js";
-import {verifyMetadata,verifyCatalogItem,verifyCatalogSource,infoHash,unhex} from "./torrent-protocol.js";
+import {verifyMetadata,verifyCatalogItem,verifyCatalogSource,infoHash,unhex,verifyRecord} from "./torrent-protocol.js";
 import {torrentSources} from "./torrent-sources.js";
 import {validateLoadProfiles,sameOrigin} from "./load-profiles.js";
 import {StartupPrefetch,startupPrefetchOptions} from "./startup-prefetch.js";
@@ -34,7 +34,7 @@ async function metadataCache(hash,value) {
 }
 
 export class RemotePublication {
-    static async open(io,{publicKey,descriptorInfoHash,owner,sources,prefetchScope="disk",verifySignature,signal,onDiscovery=()=>{},waitForFinal=false}) {
+    static async open(io,{publicKey,descriptorInfoHash,owner,sources,prefetchScope="disk",verifySignature,signal,onDiscovery=()=>{},waitForFinal=false,selectedRecord}) {
         unhex(owner,32);
         if(publicKey && descriptorInfoHash)throw fail("INVALID_PUBLICATION","Choose a public key or descriptor infohash");
         if(publicKey!==undefined && publicKey!==owner)throw fail("INVALID_PUBLICATION","Publication belongs to a different identity");
@@ -45,9 +45,16 @@ export class RemotePublication {
             discovery=status;
             if(active?.closed)return;
             active?.discovered(status);
-            onDiscovery({...status,selectedSequence:active?.remote?.sequence??record?.sequence??null});
+            (active?.onDiscovery||onDiscovery)({...status,sourceId:active?.session??null,
+                selectedSequence:active?.remote?.sequence??record?.sequence??null,
+                selectedInfoHash:active?.remote?.publicationInfoHash??record?.infoHash??null});
         };
-        if(descriptorInfoHash!==undefined)infoHash(descriptorInfoHash);
+        if(selectedRecord) {
+            if(descriptorInfoHash!==undefined)throw fail('INVALID_PUBLICATION','Choose a signed publication or fixed infohash');
+            record=verifyRecord(selectedRecord,owner,verifySignature);descriptorInfoHash=record.infoHash;
+            discovery={state:'complete',sequence:record.sequence,infoHash:record.infoHash};
+        }
+        else if(descriptorInfoHash!==undefined)infoHash(descriptorInfoHash);
         else {
             lookupController=new AbortController();
             const abort=()=>lookupController.abort(signal?.reason||fail("CANCELLED","Publication lookup cancelled"));
@@ -61,12 +68,12 @@ export class RemotePublication {
             }catch(error){lookupController.abort(error);throw error;}
             finally{signal?.removeEventListener("abort",abort);}
         }
-        const remote=new RemotePublication(io,config);active=remote;remote.discovered(discovery);
+        const remote=new RemotePublication(io,config);remote.record=record;remote.onDiscovery=onDiscovery;active=remote;remote.discovered(discovery);
         remote.lookupSettled=recordTask||Promise.resolve();
         if(record)remote.unwatch=watchRecord(owner,verifySignature,state=>{
             if(remote.closed||remote.discoveryError)return;
             if(state.blocked&&BigInt(state.record.sequence)>=BigInt(record.sequence)){report({state:"conflict",sequence:state.record.sequence,fatal:true,error:{code:"PUBLICATION_CONFLICT",message:"Another tab observed conflicting signed publications"}});return;}
-            if(state.record&&BigInt(state.record.sequence)>BigInt(discovery.sequence||"0"))report({...discovery,sequence:state.record.sequence});
+            if(state.record&&BigInt(state.record.sequence)>BigInt(discovery.sequence||"0"))report({...discovery,sequence:state.record.sequence,infoHash:state.record.infoHash});
         },error=>{if(!remote.closed)report({state:"unavailable",sequence:discovery.sequence,error:{code:error.code||"STORAGE_ERROR",message:error.message}});});
         remote.scope=prefetchScope;remote.abortLookup=()=>lookupController?.abort(fail("CANCELLED","Publication closed"));
         // Updates advance the durable maximum without replacing an open snapshot.
@@ -84,12 +91,13 @@ export class RemotePublication {
                 for(const part of parts){bytes.set(part,offset);offset+=part.length;}
                 const parsed=await verifyCatalogItem(bytes,item);
                 remote.publication[parsed.kind]=parsed.infoHash;
+                parsed.metainfo=bytes;
                 remote.metadata.set(parsed.infoHash,parsed);await metadataCache(parsed.infoHash,parsed.metadata);
             }
             const disk=await remote.torrent(remote.publication.disk,"disk",signal);
             remote.size=disk.size;
             remote.remote={infoHash:disk.infoHash,publicationInfoHash:descriptorInfoHash,publicKey:owner,
-                sequence:record?.sequence??null,stateInfoHash:remote.publication.state,profileInfoHash:remote.publication.profile};
+                sequence:record?.sequence??null,following:!!record,sourceId:remote.session,stateInfoHash:remote.publication.state,profileInfoHash:remote.publication.profile};
             remote.check();report(discovery);return remote;
         }catch(error){
             if(record&&transportFailure(error)&&!signal?.aborted) {

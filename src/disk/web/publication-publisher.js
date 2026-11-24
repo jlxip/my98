@@ -7,24 +7,27 @@ const salt=hex(new TextEncoder().encode(PUBLICATION_SALT));
 let serial=0;
 /** Synchronous signing inside the transaction allocates one durable sequence across tabs.
  * Only public signed records are persisted, never the payload or private material. */
-export async function reservePublication({publicKey,infoHash,known,verify,sign,now=Date.now()}) {
+export async function reservePublication({publicKey,infoHash,known,verify,sign,now=Date.now(),expected}) {
     const db=await openTorrentDatabase();
     try {return await new Promise((resolve,reject)=>{
         const tx=db.transaction(["names","publishing"],"readwrite"),records=tx.objectStore("publishing");
         let result,error,remaining=2;const previous=[];
         tx.onabort=()=>reject(error?.name==="QuotaExceededError"||tx.error?.name==="QuotaExceededError"?fail("STORAGE_FULL","Not enough browser storage to preserve the signed publication"):error||fail("STORAGE_ERROR","Could not preserve the signed publication"));
         tx.oncomplete=()=>resolve(result);
-        const accept=value=>{
-            if(value)previous.push(verifyRecord(value,publicKey,verify));
+        const accept=(value,index)=>{
+            previous[index]=value?verifyRecord(value,publicKey,verify):null;
             if(--remaining)return;
             let max=BigInt(Math.floor(now))-1n;
-            for(const value of [...previous,...(known?[known]:[])])if(BigInt(value.sequence)>max)max=BigInt(value.sequence);
+            if(expected)for(const value of [previous[0],known].filter(Boolean))
+                if(BigInt(value.sequence)>BigInt(expected.sequence)||value.sequence===expected.sequence&&value.value!==expected.value)
+                    throw fail('PUBLICATION_CONFLICT','The publication changed during preparation. Review it before retrying.');
+            for(const value of [...previous,...(known?[known]:[])].filter(Boolean))if(BigInt(value.sequence)>max)max=BigInt(value.sequence);
             if(max>=9223372036854775807n)throw fail("PUBLICATION_CONFLICT","Publication sequence exhausted");
             result=verifyRecord(sign(unhex(infoHash,20),(max+1n).toString()),publicKey,verify);
             records.put({...result,publicKey});
         };
-        for(const request of [tx.objectStore("names").get(publicKey),records.get(publicKey)])request.onsuccess=()=>{
-            try{accept(request.result);}catch(cause){error=cause;tx.abort();}
+        for(const [index,request] of [tx.objectStore("names").get(publicKey),records.get(publicKey)].entries())request.onsuccess=()=>{
+            try{accept(request.result,index);}catch(cause){error=cause;tx.abort();}
         };
     });}finally{db.close();}
 }
@@ -40,20 +43,22 @@ export class PublicationJob {
             ...(error?{error:{code:error.code||"PUBLICATION_UNAVAILABLE",message:error.message}}:{})};
         this.onStatus(value);return value;
     }
-    async start(snapshot,signal) {
+    async start(snapshot,signal,{previous,expected}={}) {
         this.infoHash=snapshot.infoHash;
         try {
             this.status("preparing");
-            await this.io.call("create",{session:this.session,sources:this.sources,root:snapshot.infoHash},signal);
-            for(const part of [{metadata:snapshot.diskMetadata,blob:snapshot.disk,kind:"disk"},{metadata:snapshot.catalogMetadata,blob:snapshot.catalog,kind:"catalog"}])
-                await this.io.call("seed",{session:this.session,...part},signal);
+            const parts=snapshot.parts||[{metadata:snapshot.diskMetadata,blob:snapshot.disk,kind:"disk"},{metadata:snapshot.catalogMetadata,blob:snapshot.catalog,kind:"catalog"}];
+            await this.io.call("create",{session:this.session,sources:this.sources,root:snapshot.infoHash,kinds:parts.map(p=>p.kind)},signal);
+            for(const part of parts)await this.io.call(part.blob?"seed":"reference",{session:this.session,...part},signal);
+            if(previous) {this.previous=previous;await previous.suspend();}
             const known=await resolveRecord(this.publicKey,this.sources,this.verify,{signal});
-            this.record=await reservePublication({publicKey:this.publicKey,infoHash:this.infoHash,known,verify:this.verify,sign:this.sign});
+            if(expected&&(!known||known.sequence!==expected.sequence||known.value!==expected.value))throw fail('PUBLICATION_CONFLICT','The publication changed during preparation. Review it before retrying.');
+            this.record=await reservePublication({publicKey:this.publicKey,infoHash:this.infoHash,known,verify:this.verify,sign:this.sign,expected});
             if(signal?.aborted)throw signal.reason||fail("CANCELLED","Publication cancelled");
             this.sent=true;
             return await this.announce(signal,false);
         } catch(error) {
-            if(!this.sent){await this.stop();throw error;}
+            if(!this.sent){this.previous=undefined;previous?.resume();await this.stop();throw error;}
             this.status("unconfirmed",error);return this.current();
         }
     }
@@ -92,6 +97,7 @@ export class PublicationJob {
             }
             if(!stored)throw last||fail("PUBLICATION_UNAVAILABLE","No publishing gateway responded");
             await observeRecord(this.record,this.publicKey,this.verify);
+            if(this.previous){await this.previous.stop();this.previous=undefined;}
             this.status("seeding");this.schedule(20*60*1000);
         }catch(error){
             this.status("unconfirmed",error);
@@ -99,6 +105,8 @@ export class PublicationJob {
         }
         return this.current();
     }
-    schedule(ms){clearTimeout(this.timer);if(this.active)this.timer=setTimeout(()=>{void this.announce().catch(error=>this.status("unconfirmed",error));},ms);}
-    async stop(){this.active=false;clearTimeout(this.timer);this.lifetime.abort(fail("CANCELLED","Seeding stopped"));await this.io.call("close",{session:this.session}).catch(()=>{});this.status("stopped");}
+    schedule(ms){clearTimeout(this.timer);if(this.active&&!this.suspended)this.timer=setTimeout(()=>{void this.announce().catch(error=>this.status("unconfirmed",error));},ms);}
+    async suspend(){this.suspended=true;clearTimeout(this.timer);await this.flight;}
+    resume(){this.suspended=false;this.schedule(20*60*1000);}
+    async stop(){if(this.previous){await this.previous.stop();this.previous=undefined;}this.active=false;clearTimeout(this.timer);this.lifetime.abort(fail("CANCELLED","Seeding stopped"));await this.io.call("close",{session:this.session}).catch(()=>{});this.status("stopped");}
 }

@@ -26,7 +26,7 @@ export class Slop86Disk {
     }
     constructor(url, onProgress, onAnalysis, onPublication, onPublishing) {
         this.worker = new Worker(url, { type: "module" });
-        this.pending = new Map(); this.next = 0; this.closed = false; this.cancelEpoch = 0;
+        this.pending = new Map(); this.next = 0; this.closed = false; this.cancelEpoch = 0; this.publicationCancelEpoch=0;
         this.closeListeners = new Set();
         const channel=new MessageChannel();
         this.torrentHost=new WindowTorrentPort(channel.port1,
@@ -71,13 +71,13 @@ export class Slop86Disk {
         return ()=>this.closeListeners.delete(listener);
     }
     async call(op, args = {}, transfer = []) {
-        const epoch = this.cancelEpoch;
+        const epoch = this.cancelEpoch,publicationEpoch=this.publicationCancelEpoch;
         await this.ready;
         if(this.closed) throw new Error("Disk is closed");
         const id = ++this.next;
         return new Promise((resolve, reject) => {
             this.pending.set(id, { resolve, reject });
-            try { this.worker.postMessage({ id, op, args, epoch }, transfer); }
+            try { this.worker.postMessage({ id, op, args, epoch, publicationEpoch }, transfer); }
             catch(error) { this.pending.delete(id); reject(error); }
         });
     }
@@ -108,6 +108,23 @@ export class Slop86Disk {
         try { return await this.call("openReadOnly", {file, readKey:bytes}, [bytes.buffer]); }
         finally { if(bytes.byteLength) bytes.fill(0); }
     }
+    /** Candidate cancellation leaves queued guest I/O valid. */
+    cancelRemoteUpdate() {this.worker.postMessage({op:'cancelRemoteUpdate',epoch:++this.publicationCancelEpoch});}
+    prepareRemoteUpdate(options={}) {return this.call('prepareRemoteUpdate',options);}
+    commitRemoteUpdate(token,{discardChanges=false}={}) {return this.call('commitRemoteUpdate',{token,discardChanges});}
+    discardRemoteUpdate(token) {return this.call('discardRemoteUpdate',{token});}
+    remoteUpdateDisk(token) {
+        const parent=this,view={committed:false,
+            read(offset,length){return view.committed?parent.read(offset,length):parent.call('remoteUpdateRead',{token,offset,length});},
+            write(offset,bytes){if(!view.committed)throw Error('Publication candidate is stopped');return parent.write(offset,bytes);},
+            describe(){return view.committed?parent.describe():parent.call('remoteUpdateDescribe',{token});},
+            prepareState(input){if(input?.publication!==true)throw Error('Choose the published state');return parent.call('remoteUpdateState',{token});},
+            stateDisk(){return {read:(offset,length)=>view.read(offset,length),write:(offset,bytes)=>view.write(offset,bytes)};},
+            commitState(){return parent.call('remoteUpdateDescribe',{token});},discardState(){return Promise.resolve();},
+            setLoadPrefetch(options){return view.committed?parent.setLoadPrefetch(options):parent.call('remoteUpdatePrefetch',{token,...options});},
+            cancel(){parent.cancelRemoteUpdate();},
+        };return view;
+    }
     describe() {return this.call("describe");}
     read(offset,length) {return this.call("read", {offset,length});}
     write(offset,data) {const bytes=new Uint8Array(data).slice();return this.call("write", {offset,bytes}, [bytes.buffer]);}
@@ -125,6 +142,8 @@ export class Slop86Disk {
     }
     exportDisk(format="encrypted") {return this.call("exportDisk",{format});}
     publishDisk(options={}) {return this.call("publishDisk",options);}
+    publicationDetails(options={}) {return this.call("publicationDetails",options);}
+    publishUpdate(options) {return this.call("publishUpdate",options);}
     publicationStatus() {return this.call("publicationStatus");}
     retryPublication() {return this.call("publicationRetry");}
     stopSeeding() {return this.call("stopSeeding");}

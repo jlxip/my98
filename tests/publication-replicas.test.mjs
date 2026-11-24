@@ -98,3 +98,14 @@ test('a historical receipt does not hide fresh loss on a restarted connection',t
     assert.equal(f.value().label,'1');assert.equal(reconnect.request.value.watch,1);
     reconnect.count(20);assert.equal(f.value().complete,0);
 });
+
+test('a four-component publication requires state and profile on the same receiver',t=>{
+    let value;const registry=new PublicationReplicas(root,v=>value=v,['disk','state','profile','catalog']);t.after(()=>registry.close());
+    const hashes={disk:'cd'.repeat(20),state:'ef'.repeat(20),profile:'01'.repeat(20),catalog:root};
+    for(const kind of ['disk','state','profile'])registry.expect(kind,{hash:hashes[kind],length:100,pieceLength:1,count:100});
+    const torrent=new EventEmitter();Object.assign(torrent,{infoHash:root,length:100,pieceLength:1,pieces:Array(100),wires:[]});registry.add('catalog',torrent);
+    const wire=new Wire();registry.attach('catalog',wire);wire.identify(1);wire.count(100);
+    const send=state=>wire.ft_replica.onMessage(bencode.encode({v:1,root:Buffer.from(root,'hex'),node:Buffer.alloc(32,1),parts:Object.entries(hashes).map(([kind,id])=>({id:Buffer.from(id,'hex'),size:100,have:kind==='state'?state:100}))}));
+    send(0);assert.equal(registry.snapshot().complete,0);assert.equal(registry.snapshot().label,'0.75');
+    send(100);assert.equal(registry.snapshot().complete,1);wire.emit('close');assert.equal(registry.snapshot().complete,1);
+});

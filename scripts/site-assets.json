@@ -50,5 +50,7 @@
   "src/browser/publication-options.js": "src/browser/publication-options.js",
   "torrent-sources.json": "torrent-sources.json",
   "vendor/basecoat-1.0.2/basecoat.min.js": "vendor/basecoat-1.0.2/basecoat.min.js",
-  "vendor/basecoat-1.0.2/dropdown-menu.min.js": "vendor/basecoat-1.0.2/dropdown-menu.min.js"
+  "vendor/basecoat-1.0.2/dropdown-menu.min.js": "vendor/basecoat-1.0.2/dropdown-menu.min.js",
+  "src/browser/machine-config.js": "src/browser/machine-config.js",
+  "src/browser/publication-controls.js": "src/browser/publication-controls.js"
 }

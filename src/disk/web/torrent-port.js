@@ -1,3 +1,4 @@
+import {metadataInfoHash} from "./torrent-protocol.js";
 const fail=(code,message)=>Object.assign(new Error(message),{code});
 const errorValue=error=>({code:typeof error?.code==="string"?error.code:
     error?.name==="AbortError"?"CANCELLED":"TRANSPORT_ERROR",message:String(error?.message||error)});
@@ -47,6 +48,7 @@ export class WindowTorrentPort {
     constructor(port,createTransport,clearStorage=async()=>{}) {
         this.port=port;this.createTransport=createTransport;this.clearStorage=clearStorage;
         this.sessions=new Map();this.requests=new Map();this.closed=false;
+        this.publicationSeeds=new Map();this.retired=new Set();
         port.onmessage=({data})=>{
             if(data.op==="abort"){this.requests.get(data.id)?.abort(fail("CANCELLED","Ciphertext operation cancelled"));return;}
             if(!data.id && data.op==="cancel"){this.sessions.get(data.args?.session)?.cancel();return;}
@@ -75,14 +77,29 @@ export class WindowTorrentPort {
             const transport=this.createTransport(args.sources,value=>{
                 if(!this.closed)this.port.postMessage({type:"progress",session,value});
             });
-            if(args.root)transport.trackPublication(args.root);
+            if(args.root)transport.trackPublication(args.root,args.kinds);
 
             this.sessions.set(session,transport);return null;
         }
         const transport=this.sessions.get(session);
         if(!transport)throw fail("TRANSPORT_ERROR","Ciphertext session is closed");
         switch(op) {
-        case "seed":return transport.seedPrepared(args,signal);
+        case "seed": {
+            const hash=await metadataInfoHash(args.metadata),shared=this.publicationSeeds.get(hash);
+            if(shared) {
+                await transport.referencePublication({...args,infoHash:hash},signal);
+                if(signal?.aborted||this.sessions.get(session)!==transport)throw fail('CANCELLED','Publication closed');
+                shared.owners.add(session);return {infoHash:hash};
+            }
+            const result=await transport.seedPrepared(args,signal);
+            if(signal?.aborted||this.sessions.get(session)!==transport){await transport.releaseSeed(hash);throw fail('CANCELLED','Publication closed');}
+            this.publicationSeeds.set(hash,{transport,owners:new Set([session])});return result;
+        }
+        case "reference": {
+            const result=await transport.referencePublication(args,signal);
+            if(signal?.aborted||this.sessions.get(session)!==transport)throw fail('CANCELLED','Publication closed');
+            this.publicationSeeds.get(args.infoHash)?.owners.add(session);return result;
+        }
         case "sources":transport.setSources(args.sources);return null;
         case "open":return transport.open(args,args.startup?signal:undefined);
         case "metadata":
@@ -104,7 +121,18 @@ export class WindowTorrentPort {
         case "clear":await transport.clearCaches();return null;
         case "close":
             if(session.startsWith("publication:"))this.lastSeedDebug=transport.seedDebug;
-            this.sessions.delete(session);await transport.close();return null;
+            this.sessions.delete(session);
+            if(session.startsWith('publication:')) {
+                transport.replicas?.close();this.retired.add(transport);
+                for(const [hash,seed] of this.publicationSeeds) {
+                    seed.owners.delete(session);
+                    if(!seed.owners.size){this.publicationSeeds.delete(hash);await seed.transport.releaseSeed(hash);}
+                }
+                for(const retired of [...this.retired])if(![...this.publicationSeeds.values()].some(seed=>seed.transport===retired)) {
+                    this.retired.delete(retired);await retired.close();
+                }
+            }else await transport.close();
+            return null;
         default:throw fail("TRANSPORT_ERROR","Unknown ciphertext bridge operation");
         }
     }
@@ -112,7 +140,7 @@ export class WindowTorrentPort {
         this.closed=true;
         for(const request of this.requests.values())request.abort(fail("CANCELLED","Ciphertext bridge closed"));
         this.requests.clear();this.port.close();
-        await Promise.allSettled([...this.sessions.values()].map(transport=>transport.close()));
-        this.sessions.clear();
+        await Promise.allSettled([...new Set([...this.sessions.values(),...this.retired])].map(transport=>transport.close()));
+        this.sessions.clear();this.retired.clear();this.publicationSeeds.clear();
     }
 }

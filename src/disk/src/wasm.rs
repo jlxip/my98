@@ -190,3 +190,17 @@ pub fn publication_metadata(
 ) -> Result<String> {
     crate::publication::publication_metadata(number(size)?, &hashes, &public, trackers)
 }
+
+#[wasm_bindgen]
+pub fn publication_component(
+    size: f64,
+    hashes: Vec<u8>,
+    kind: &str,
+    trackers: &str,
+) -> Result<Vec<u8>> {
+    crate::publication::component_metadata(number(size)?, &hashes, kind, trackers)
+}
+#[wasm_bindgen]
+pub fn publication_catalog(entries: &str, public: Vec<u8>, trackers: &str) -> Result<String> {
+    crate::publication::catalog_metadata(entries, &public, trackers)
+}

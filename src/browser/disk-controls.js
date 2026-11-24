@@ -34,6 +34,10 @@ export function diskControls({busy, working, client, state, active, adapter, ana
         resume: !failed,
         'load-state': !open || analyzing,
         'save-state': readOnly || !active || analyzing || failed,
+        'publish-state': readOnly || !remote || !active || analyzing || failed,
+        'publish-state-file': readOnly || !remote || analyzing,
+        'remove-state': readOnly || !remote || analyzing,
+        profiles: readOnly || !remote || analyzing,
         'cancel-state': false,
         cancel: !capturing && !stateInProgress,
     };

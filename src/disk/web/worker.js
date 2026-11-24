@@ -7,8 +7,16 @@ import {RemotePublication,transportFailure} from "./torrent-remote.js";
 import {hex,PUBLICATION_SALT} from "./torrent-protocol.js";
 import {torrentSources} from "./torrent-sources.js";
 import {PublicationJob} from "./publication-publisher.js";
+import {prepareUpdate} from "./publication-update.js";
+import {cachedRecord} from "./torrent-records.js";
 const sources = new Map();
 let stateCandidate, stateSerial = 0;
+let remoteCandidate,remoteSerial=0,readCapability;
+async function dropRemoteCandidate() {
+    const candidate=remoteCandidate;remoteCandidate=undefined;
+    if(candidate){candidate.vault.free();await remove(candidate.source);}
+}
+const publicationEvent=status=>self.postMessage({type:'publication',...status});
 function dropState() {
     if(stateCandidate?.prefetchId!==undefined)
         sources.get(stateCandidate.source)?.discardStartupPrefetch(stateCandidate.prefetchId);
@@ -27,6 +35,7 @@ const originFor = kind => {
 let protocol;
 let torrentIO;
 let publisher;
+const stateHashes=new Map();
 let readBytes = 0, readCalls = 0, progressAt = new Map(), initError;
 const fail = (code, message) => Object.assign(new Error(message), {code});
 const describe = () => ({...JSON.parse(vault.describe()), ...(sources.get(current)?.remote ? {remote:sources.get(current).remote} : {})});
@@ -65,7 +74,7 @@ function remoteArguments(args,owner) {
     if(args.waitForFinal!==undefined&&typeof args.waitForFinal!=="boolean")throw fail("INVALID_PUBLICATION","Invalid publication consistency option");
     if(!torrentIO)throw fail("IO_ERROR","Ciphertext bridge is unavailable");
     return {publicKey:args.publicKey,descriptorInfoHash:args.infoHash,owner,sources:args.sources,prefetchScope:args.prefetchScope,
-        verifySignature:verify,signal:protocol.signal,waitForFinal:args.waitForFinal,onDiscovery:status=>self.postMessage({type:"publication",...status})};
+        verifySignature:verify,signal:protocol.signal,waitForFinal:args.waitForFinal,onDiscovery:publicationEvent};
 }
 // One bounded retry is allowed only before exposing a disk, and only when
 // discovery has authenticated a higher sequence than the failed snapshot.
@@ -178,11 +187,112 @@ async function publishDisk(args) {
     const metadata=JSON.parse(publication_metadata(disk.size,hashes,publicKey,JSON.stringify(config.trackers)));
     const job=new PublicationJob({io:torrentIO,sources:config,publicKey:hex(publicKey),verify,
         sign:(hash,sequence)=>JSON.parse(vault.sign_publication(hash,sequence)),
-        onStatus:value=>self.postMessage({type:"publishing",...value})});
+        onStatus:value=>{if(publisher===job)self.postMessage({type:"publishing",...value});}});
     job.target=hex(publication_piece_hash(new Uint8Array([...publicKey,...new TextEncoder().encode(PUBLICATION_SALT)])));
     publisher=job;
     return await job.start({infoHash:metadata.infoHash,disk,diskMetadata:new Uint8Array(metadata.diskMetadata),
         catalog:new Blob([new Uint8Array(metadata.catalogPayload)]),catalogMetadata:new Uint8Array(metadata.catalogMetadata)},protocol.signal);
+}
+async function editablePublication(args,{requireBase=true}={}) {
+    if(!identity)throw fail('READ_ONLY','Publishing requires the owner identity');
+    const base=sources.get(current);
+    if(requireBase&&!base?.remote)throw fail('INVALID_PUBLICATION','Open the published base disk first');
+    const publicKey=hex(new Uint8Array(identity.publicKey));
+    const remote=await RemotePublication.open(torrentIO,{owner:publicKey,publicKey,sources:args.sources,verifySignature:verify,
+        prefetchScope:'none',waitForFinal:true,signal:protocol.signal});
+    if(requireBase&&remote.publication.disk!==base.publication.disk){await remote.close();throw fail('PUBLICATION_CONFLICT','The published disk has changed. Reopen the publication before updating it.');}
+    return remote;
+}
+async function publicationDetails(args) {
+    let remote;
+    try {
+        remote=await editablePublication(args,{requireBase:args.requireBase!==false});
+        const profiles=args.requireBase===false?[]:await remote.profiles(Math.ceil(describe().size/65536),protocol.signal);
+        return {hasState:!!remote.publication.state,hasProfiles:!!remote.publication.profile,profiles,
+            diskInfoHash:remote.publication.disk,publicationInfoHash:remote.remote.publicationInfoHash};
+    } catch(error) {if(args.requireBase===false&&error.code==='NO_PUBLICATION')return {hasState:false,hasProfiles:false,profiles:[]};throw error;}
+    finally {await remote?.close();}
+}
+async function publishUpdate(args) {
+    if(Object.keys(args).some(k=>!['action','file','profiles','remove','sources','compatibility'].includes(k)))throw fail('INVALID_PUBLICATION','Unknown publication update argument');
+    if(bootAnalysis)throw fail('OPERATION_FAILED','Finish the load analysis first');
+    if(publisher?.active&&publisher.state!=='seeding')throw fail('OPERATION_FAILED','Resolve the current announcement or stop seeding before another update');
+    const remote=await editablePublication(args);
+    try {
+        const config=torrentSources(args.sources),publicKey=new Uint8Array(identity.publicKey);
+        const snapshot=await prepareUpdate(remote,args,{vault,publicKey,trackers:config.trackers,check,progress,signal:protocol.signal,
+            compatibility:args.compatibility,logicalSize:describe().size,stateHashes});
+        const previous=publisher;
+        const job=new PublicationJob({io:torrentIO,sources:config,publicKey:hex(publicKey),verify,
+            sign:(hash,sequence)=>JSON.parse(vault.sign_publication(hash,sequence)),
+            onStatus:value=>{if(publisher===job)self.postMessage({type:'publishing',...value});}});
+        job.target=hex(publication_piece_hash(new Uint8Array([...publicKey,...new TextEncoder().encode(PUBLICATION_SALT)])));
+        publisher=job;
+        try {return await job.start(snapshot,protocol.signal,{previous,expected:remote.record});}
+        catch(error){publisher=previous;if(previous?.active)previous.current();throw error;}
+    } finally {await remote.close();}
+}
+function getRemoteCandidate(token) {
+    if(!remoteCandidate||token!==remoteCandidate.token||remoteCandidate.parent!==current||remoteCandidate.parentVault!==vault)
+        throw fail('INVALID_PUBLICATION','Expired publication candidate');
+    return remoteCandidate;
+}
+function remoteDescription(candidate) {
+    return {...JSON.parse(candidate.vault.describe()),remote:sources.get(candidate.source).remote};
+}
+async function prepareRemoteUpdate(args) {
+    const previous=sources.get(current);
+    if(!previous?.remote?.following)throw fail('INVALID_PUBLICATION','This disk is not following a publication identity');
+    if(bootAnalysis&&args.automatic)throw fail('OPERATION_FAILED','Finish the load analysis before updating');
+    const record=await cachedRecord(previous.remote.publicKey,verify);
+    if(!record||BigInt(record.sequence)<BigInt(args.minimumSequence||previous.remote.sequence))throw fail('PUBLICATION_UNAVAILABLE','The requested signed version is not available');
+    if(record.infoHash===previous.remote.publicationInfoHash) {
+        await dropRemoteCandidate();check();previous.record=record;previous.remote.sequence=record.sequence;
+        return {unchanged:true,description:describe()};
+    }
+    await dropRemoteCandidate();let candidate,id,remote;
+    try {
+        remote=await RemotePublication.open(torrentIO,{owner:previous.remote.publicKey,sources:previous.sources,selectedRecord:record,
+            prefetchScope:'none',verifySignature:verify,signal:protocol.signal});
+        id='source:'+(++sourceId);sources.set(id,remote);
+        if(identity){candidate=vault.fresh();await candidate.open(id,remote.size);}
+        else {if(!readCapability)throw fail('INVALID_READ_KEY','Reader identity is unavailable');candidate=await Vault.open_read_only(id,remote.size,readCapability);}
+        await candidate.read(0,Math.min(512,JSON.parse(candidate.describe()).size));check();remote.check();
+        const latest=await cachedRecord(previous.remote.publicKey,verify);
+        if(!latest||BigInt(latest.sequence)<BigInt(record.sequence))throw fail('PUBLICATION_UNAVAILABLE','The signed publication could not be confirmed');
+        if(latest.sequence===record.sequence&&latest.value!==record.value)throw fail('PUBLICATION_CONFLICT','Conflicting signed publications');
+        if(latest.sequence!==record.sequence) {
+            candidate.free();await remove(id);return {changed:true,sequence:latest?.sequence,infoHash:latest?.infoHash};
+        }
+        remoteCandidate={token:++remoteSerial,vault:candidate,source:id,parent:current,parentVault:vault,record};
+        return {token:remoteCandidate.token,description:remoteDescription(remoteCandidate)};
+    }catch(error){candidate?.free();if(id)await remove(id);else await remote?.close();throw error;}
+}
+async function prepareRemoteState(candidate) {
+    const remote=sources.get(candidate.source);
+    if(!remote.publication.state)throw fail('NO_PUBLISHED_STATE','The new publication has no state. Choose Boot latest version to start it in cold boot.');
+    let decoded;
+    try {
+        const input=await remote.stateInput(protocol.signal);
+        decoded=await decodeState(candidate.vault,input,{check,progress,signal:protocol.signal});
+        if(decoded.metadata.baseInfoHash!=null&&decoded.metadata.baseInfoHash!==remote.publication.disk)throw fail('INVALID_STATE','State belongs to a different published disk');
+        check();remote.check();const next=candidate.vault.fork_state(decoded.overlay);candidate.vault.free();candidate.vault=next;
+        void input.validated?.();candidate.origin={kind:'state',sha256:decoded.stateSha256};
+        return {token:candidate.token,metadata:decoded.metadata,state:decoded.state,size:JSON.parse(candidate.vault.describe()).size};
+    } finally {decoded?.overlay.fill(0);}
+}
+async function commitRemoteUpdate(args) {
+    const candidate=getRemoteCandidate(args.token),remote=sources.get(candidate.source);
+    const latest=await cachedRecord(remote.remote.publicKey,verify);
+    if(!latest||BigInt(latest.sequence)<BigInt(candidate.record.sequence))throw fail('PUBLICATION_UNAVAILABLE','The signed publication could not be confirmed');
+    if(latest.sequence===candidate.record.sequence&&latest.value!==candidate.record.value)throw fail('PUBLICATION_CONFLICT','Conflicting signed publications');
+    if(latest.sequence!==candidate.record.sequence)throw fail('PUBLICATION_CHANGED','A newer publication was discovered during preparation');
+    if(!args.discardChanges&&describe().dirty_bytes)throw fail('DIRTY_DISK','Pending writes require confirmation before updating');
+    check();remote.check();dropState();
+    const oldVault=vault,oldSource=current;vault=candidate.vault;current=candidate.source;remoteCandidate=undefined;
+    prepared=bootAnalysis=undefined;restoredOrigin=candidate.origin;freshRestore=!!candidate.origin;
+    remote.onDiscovery=publicationEvent;oldVault.free();await remove(oldSource).catch(()=>{});
+    return describe();
 }
 async function execute(op,a) {
     if(op === "close" && !vault) return null;
@@ -205,7 +315,7 @@ async function execute(op,a) {
         const {remote,id,candidate}=await prepareRemote(a,hex(a.readKey.subarray(0,32)),a.readKey);
         try {
             vault=candidate;current=id;prepared=undefined;
-            await remote.startPrefetch(protocol.signal);return describe();
+            await remote.startPrefetch(protocol.signal);readCapability=a.readKey.slice();return describe();
         } catch(error){candidate?.free();vault=undefined;current=undefined;await remove(id);throw error;}
     }
     if(op === "unlock") {
@@ -215,8 +325,20 @@ async function execute(op,a) {
     if(!vault) throw fail("OPERATION_FAILED", "Identity is closed");
     if(bootAnalysis && ["create", "createEmpty", "open", "openRemote", "save", "download", "retry", "discard", "verify", "saveState", "prepareState"].includes(op)) throw fail("OPERATION_FAILED", "Finish or cancel the boot analysis first");
     switch(op) {
+    case "prepareRemoteUpdate": return prepareRemoteUpdate(a);
+    case "remoteUpdateRead": return getRemoteCandidate(a.token).vault.read(a.offset,a.length);
+    case "remoteUpdateDescribe": return remoteDescription(getRemoteCandidate(a.token));
+    case "remoteUpdateState": return prepareRemoteState(getRemoteCandidate(a.token));
+    case "remoteUpdatePrefetch": {
+        const candidate=getRemoteCandidate(a.token),remote=sources.get(candidate.source);
+        await remote.setLoadPrefetch(a.origin==='boot'?{kind:'boot'}:candidate.origin,a.scope,{size:JSON.parse(candidate.vault.describe()).size,signal:protocol.signal});return null;
+    }
+    case "commitRemoteUpdate": return commitRemoteUpdate(a);
+    case "discardRemoteUpdate": if(remoteCandidate?.token===a.token)await dropRemoteCandidate();return null;
     case "exportDisk": return {blob:await prepareSnapshot(a),format:a.format};
     case "publishDisk": if(bootAnalysis)throw fail("OPERATION_FAILED","Finish the load analysis first");return publishDisk(a);
+    case "publicationDetails": return publicationDetails(a);
+    case "publishUpdate": return publishUpdate(a);
     case "publicationStatus": return publisher?.current()||{active:false,state:"stopped"};
     case "publicationRetry": if(!publisher?.active)throw fail("OPERATION_FAILED","No active publication");return publisher.announce(protocol.signal);
     case "stopSeeding": await publisher?.stop();publisher=undefined;return null;
@@ -393,7 +515,7 @@ async function execute(op,a) {
         if(sources.get(current)?.clearCache)await sources.get(current).clearCache();
         else await torrentIO?.call("clearStorage",{session:"torrent:0"});
         return null;
-    case "close": await publisher?.stop();publisher=undefined;dropState();bootAnalysis=restoredOrigin=undefined;freshRestore=false;vault.free();vault=undefined;for(const id of [...sources.keys()])await remove(id);identity=current=prepared=undefined;return null;
+    case "close": await dropRemoteCandidate();readCapability?.fill(0);readCapability=undefined;stateHashes.clear();await publisher?.stop();publisher=undefined;dropState();bootAnalysis=restoredOrigin=undefined;freshRestore=false;vault.free();vault=undefined;for(const id of [...sources.keys()])await remove(id);identity=current=prepared=undefined;return null;
     default: throw fail("OPERATION_FAILED","Unknown disk operation");
     }
 }

@@ -96,6 +96,11 @@ export function compareRecords(previous,candidate) {
     }
     return true;
 }
+export async function metadataInfoHash(bytes) {
+    const info=bdecode(bytes).value?.info;
+    if(!info)throw invalid('Missing torrent info');
+    return hex(new Uint8Array(await crypto.subtle.digest('SHA-1',bytes.subarray(info.start,info.end))));
+}
 export async function verifyMetadata(input,expected,kind) {
     infoHash(expected);
     const bytes=input instanceof Uint8Array?input:new Uint8Array(input),outer=bdecode(bytes).value,info=outer?.info;

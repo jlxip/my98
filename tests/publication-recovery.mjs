@@ -23,7 +23,7 @@ try{for(const [name,engine] of Object.entries({chromium,firefox,webkit})){
    const job=new PublicationJob({io,sources,publicKey,verify,sign});job.target=target;
    globalThis.fetch=async(url,options={})=>{
     if(options.method!=='PUT')return stored?new Response(JSON.stringify(stored),{headers:{'Content-Type':'application/json'}}):new Response('{}',{status:404});
-    puts.push(JSON.parse(options.body));stored=job.record;
+    puts.push(JSON.parse(options.body));stored={...JSON.parse(options.body),key:publicKey,salt:hex(new TextEncoder().encode(PUBLICATION_SALT))};
     if(lost){lost=false;throw TypeError('Response lost after accepting write');}
     return new Response(JSON.stringify({target,acknowledged_nodes:2}));
    };
@@ -36,6 +36,26 @@ try{for(const [name,engine] of Object.entries({chromium,firefox,webkit})){
     stored=sign(unhex('22'.repeat(20),20),(BigInt(job.record.sequence)+1n).toString());
     const conflict=await job.announce();check(conflict.error.code==='PUBLICATION_CONFLICT'&&puts.length===2&&job.active,'newer publication prevents reannouncement and retains seed');
     await job.stop();check(calls.at(-1)==='close'&&!job.active,'explicit stop releases transport');
+    // Automatic handover retains the old seed across a lost response, then closes only its own session.
+    stored=null;lost=false;
+    const old=new PublicationJob({io,sources,publicKey,verify,sign});old.target=target;
+    await old.start({...snapshot,infoHash:'44'.repeat(20)},new AbortController().signal);
+    stored=old.record;const baseline=stored;
+    const replacement=new PublicationJob({io,sources,publicKey,verify,sign});replacement.target=target;
+    lost=true;
+    const uncertain=await replacement.start({...snapshot,infoHash:'55'.repeat(20)},new AbortController().signal,{previous:old,expected:baseline});
+    check(uncertain.state==='unconfirmed'&&old.active&&old.suspended&&replacement.active,'uncertain handover retains both seeds and suspends old renewal');
+    stored=replacement.record;
+    await replacement.announce();
+    check(replacement.state==='seeding'&&!old.active&&!replacement.previous,'acknowledged handover releases old transport');
+    const aborted=new PublicationJob({sources,publicKey,verify,sign,io:{async call(op){if(op==='seed')throw Object.assign(Error('Seed failure'),{code:'TRANSPORT_ERROR'});}}});
+    try{await aborted.start(snapshot,new AbortController().signal,{previous:replacement,expected:replacement.record});throw Error('Seed failure accepted');}
+    catch(e){check(e.code==='TRANSPORT_ERROR'&&replacement.active&&!replacement.suspended,'pre-send failure preserves previous publication');}
+    const baseline2=replacement.record;stored=baseline2;const putsBefore=puts.length;
+    const racing=new PublicationJob({sources,publicKey,verify,sign,io:{async call(op,args){calls.push(op);if(op==='seed')stored=sign(unhex('66'.repeat(20),20),(BigInt(baseline2.sequence)+1n).toString());}}});
+    try{await racing.start({...snapshot,infoHash:'77'.repeat(20)},new AbortController().signal,{previous:replacement,expected:baseline2});throw Error('Concurrent update accepted');}
+    catch(e){check(e.code==='PUBLICATION_CONFLICT'&&puts.length===putsBefore&&replacement.active&&!replacement.suspended,'a version change during preparation blocks the send and preserves previous seed');}
+    await replacement.stop();
     const put=IDBObjectStore.prototype.put;
     IDBObjectStore.prototype.put=function(...args){if(this.name==='publishing')throw new DOMException('Quota full','QuotaExceededError');return put.apply(this,args);};
     try{await reservePublication({publicKey,infoHash:'33'.repeat(20),known:null,verify,sign});throw Error('Quota accepted');}catch(e){check(e.code==='STORAGE_FULL','quota failure blocks publication before send');}finally{IDBObjectStore.prototype.put=put;}

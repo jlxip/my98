@@ -122,3 +122,22 @@ html.vm-expanded, html.vm-expanded body { overflow: hidden; overscroll-behavior:
 #disk-replica-info { min-height: 32px; width: 32px; padding: 0; }
 #disk-replica-help { position: absolute; z-index: 30; top: 100%; left: 0; width: min(320px, calc(100vw - 48px)); padding: 12px; border: 1px solid var(--border); border-radius: 8px; color: var(--popover-foreground); background: var(--popover); }
 @media (max-width: 540px) { .disk-replica-help { position: static; } #disk-replica-help { left: 16px; } #disk-replica-row { position: relative; } }
+
+#disk-menu-state { position: static; }
+#disk-menu-state [data-popover] { left: 0; right: auto; width: min(360px, calc(100vw - 48px)); max-width: calc(100vw - 48px); max-height: min(70dvh,600px); overflow-y: auto; transition-property: opacity,scale; }
+#disk-state-items [role=menuitem] { white-space: normal; min-height: 44px; }
+#disk-profiles-dialog > div { width: min(460px,calc(100vw - 32px)); }
+#disk-profiles-dialog header { display: flex; flex-direction: row; align-items: center; justify-content: space-between; gap: 16px; text-align: left; }
+#disk-profiles-dialog header h2 { flex: 1; margin: 0; }
+#disk-profiles-close { min-width: 44px; min-height: 44px; font-size: 20px; }
+#disk-profiles-dialog > div { max-height: calc(100dvh - 32px); overflow-y: auto; transition-property: opacity, scale; }
+#disk-profiles-dialog section { flex: none; overflow: visible; }
+#disk-profiles-dialog header,#disk-profiles-dialog footer { flex-shrink: 0; }
+#disk-profiles-form { display: grid; gap: 12px; }
+#disk-profiles-form label:not(:first-child) { margin-top: 12px; }
+#disk-profiles-form select,#disk-profile-file { width: 100%; min-width: 0; }
+#disk-profiles-status { overflow-wrap: anywhere; }
+
+.publication-update { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.publication-update > p { margin: 0; }
+#vm-publication-update { flex: 0 0 auto; padding: 8px; color: var(--foreground); background: var(--background); font-size: 13px; }
