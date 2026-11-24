@@ -104,6 +104,13 @@ export class DiskSession {
             return result;
         },onStart);
     }
+    async stopForExport() {
+        if(!this.host.diskQuiescent())throw new Error("Shut Windows down and wait for 0.0 MIPS. Pausing it manually does not count.");
+        await this.host.stopForExport();
+        await this.adapter?.drain();
+    }
+    async publishDisk(options) {await this.stopForExport();return this.client.publishDisk(options);}
+    async exportDisk(format) {await this.stopForExport();return this.client.exportDisk(format);}
     async saveDisk() {
         await this.host.stop();
         this.description=await this.client.save();

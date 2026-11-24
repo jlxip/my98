@@ -92,7 +92,7 @@ for(const [name, type] of Object.entries({chromium, webkit})) {
         assert.equal(await page.evaluate(()=>document.activeElement.id), "disk-empty-cancel");
         await page.keyboard.press("Enter");
         assert.equal(await page.locator("#disk-empty-form").isVisible(), false);
-        assert.equal(await page.locator("#disk-menu-disk > summary").evaluate(el=>document.activeElement===el),true);
+        assert.equal(await page.locator("#disk-menu-trigger").evaluate(el=>document.activeElement===el),true);
         assert.equal(downloads.length,0);
         await diskAction(page,"disk-empty");
         for(const size of ["","0","-1","1.5","1048577"]) {
@@ -110,9 +110,9 @@ for(const [name, type] of Object.entries({chromium, webkit})) {
         }
         // A large capacity makes the real Worker operation cancellable even on fast hosts.
         await page.locator("#disk-empty-submit").click();
-        assert.equal(await page.locator("#disk-menu-disk > summary").getAttribute("aria-disabled"),"true");
-        await page.locator("#disk-menu-disk > summary").focus();await page.keyboard.press("Enter");
-        assert.equal(await page.locator("#disk-menu-disk").evaluate(el=>el.open),false);
+        assert.equal(await page.locator("#disk-menu-trigger").isDisabled(),true);
+        await page.locator("#disk-menu-trigger").focus();await page.keyboard.press("Enter");
+        assert.equal(await page.locator("#disk-menu-trigger").getAttribute("aria-expanded"),"false");
         await page.locator("#disk-cancel").click();
         await page.waitForFunction(()=>document.querySelector("#disk-status").textContent.includes("cancelled") && !document.querySelector("#disk-empty-submit").disabled);
         assert.equal(downloads.length,0);

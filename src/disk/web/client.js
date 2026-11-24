@@ -19,12 +19,12 @@ export function readOnlyPublicKey(readKey) {
 }
 
 export class Slop86Disk {
-    static async create({ workerUrl = new URL("./worker.js", import.meta.url), onProgress, onAnalysis, onPublication } = {}) {
-        const client = new Slop86Disk(workerUrl, onProgress, onAnalysis, onPublication);
+    static async create({ workerUrl = new URL("./worker.js", import.meta.url), onProgress, onAnalysis, onPublication, onPublishing } = {}) {
+        const client = new Slop86Disk(workerUrl, onProgress, onAnalysis, onPublication, onPublishing);
         try { await client.ready; return client; }
         catch(error) { client.terminate(); throw error; }
     }
-    constructor(url, onProgress, onAnalysis, onPublication) {
+    constructor(url, onProgress, onAnalysis, onPublication, onPublishing) {
         this.worker = new Worker(url, { type: "module" });
         this.pending = new Map(); this.next = 0; this.closed = false; this.cancelEpoch = 0;
         this.closeListeners = new Set();
@@ -41,6 +41,7 @@ export class Slop86Disk {
         this.timer = setTimeout(() => this.fail(new Error("Disk Worker timed out")), 30000);
         this.worker.onmessage = ({data}) => {
             if(data.type === "ready") { clearTimeout(this.timer); this.readyResolve(); return; }
+            if(data.type === "publishing") { onPublishing?.(data); return; }
             if(data.type === "publication") { onPublication?.(data); return; }
             if(data.type === "progress") { onProgress?.(data); return; }
             if(data.type === "analysis") { onAnalysis?.(data); return; }
@@ -122,6 +123,11 @@ export class Slop86Disk {
             write(offset,data) {if(!this.committed)throw new Error("State candidate is stopped");return parent.write(offset,data);},
         };
     }
+    exportDisk(format="encrypted") {return this.call("exportDisk",{format});}
+    publishDisk(options={}) {return this.call("publishDisk",options);}
+    publicationStatus() {return this.call("publicationStatus");}
+    retryPublication() {return this.call("publicationRetry");}
+    stopSeeding() {return this.call("stopSeeding");}
     save() {return this.call("save");}
     downloadCurrent() {return this.call("download");}
     retryDownload() {return this.call("retry");}

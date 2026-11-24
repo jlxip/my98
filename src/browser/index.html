@@ -6,6 +6,8 @@
     <title>Windows 98 · my98</title>
     <link rel="stylesheet" href="vendor/basecoat-1.0.2/basecoat.min.css">
     <link rel="stylesheet" href="win98.css">
+    <script src="vendor/basecoat-1.0.2/basecoat.min.js" defer></script>
+    <script src="vendor/basecoat-1.0.2/dropdown-menu.min.js" defer></script>
     <script type="module">
         import("./src/browser/bootstrap.js").then(module => module.start()).catch(() => {
             document.body.inert = false;
@@ -37,19 +39,53 @@
                 <button id="disk-resume-state" class="btn" data-variant="primary" data-disk-action="resume-state" hidden>Resume state</button>
                 <button id="disk-boot" class="btn" data-variant="secondary" data-disk-action="boot" hidden>Boot</button>
             </div>
+            <section id="disk-seeding" hidden aria-label="Publication seed">
+                <p id="disk-seed-status" role="status" aria-live="polite"></p>
+                <div id="disk-replica-row">
+                    <span>Seedboxes: <output id="disk-replica-count" aria-live="polite">0</output></span>
+                    <span class="disk-replica-help">
+                        <button id="disk-replica-info" class="btn" type="button" data-variant="ghost" aria-label="About seedbox progress" aria-describedby="disk-replica-help" aria-expanded="false">i</button>
+                        <span id="disk-replica-help" role="tooltip" hidden>Complete copies observed in FeedTorrent, plus the progress of the most advanced connected receiver. Complete means the catalog and every published component on the same seedbox. Completed copies remain counted after disconnecting; this does not guarantee permanent availability.</span>
+                    </span>
+                </div>
+                <p id="disk-replica-status" class="hint" role="status"></p>
+                <p id="disk-seed-local" class="hint"></p>
+                <div class="disk-action-row">
+                    <button id="disk-copy-magnet" class="btn" type="button" data-variant="secondary">Copy follow magnet</button>
+                    <button id="disk-copy-catalog" class="btn" type="button" data-variant="secondary">Copy catalog magnet</button>
+                    <button id="disk-retry-publication" class="btn" type="button" data-variant="secondary" hidden>Retry announcement</button>
+                    <button id="disk-stop-seeding" class="btn" type="button" data-variant="secondary">Stop seeding</button>
+                </div>
+            </section>
             <div id="disk-menu-bar">
-                <details id="disk-menu-disk" class="disk-menu">
-                    <summary class="btn" data-variant="ghost">Disk <span aria-hidden="true">⌄</span></summary>
-                    <div class="disk-menu-items">
-                        <button id="disk-open" class="btn" data-variant="ghost" data-disk-action="open">Open encrypted disk…</button>
-                        <button id="disk-create" class="btn" data-variant="ghost" data-disk-action="create">Create disk from image…</button>
-                        <button id="disk-empty" class="btn" data-variant="ghost" data-disk-action="empty" aria-expanded="false" aria-controls="disk-empty-form">Create empty disk…</button>
-                        <button id="disk-save" class="btn" data-variant="ghost" data-disk-action="save">Save full disk after Windows shutdown…</button>
-                        <button id="disk-download" class="btn" data-variant="ghost" data-disk-action="download">Download full disk</button>
-                        <button id="disk-discard" class="btn" data-variant="ghost" data-disk-action="discard">Discard pending writes…</button>
-                        <button id="disk-retry" class="btn" data-variant="ghost" data-disk-action="retry">Retry download</button>
+                <div id="disk-menu-disk" class="dropdown-menu">
+                    <button id="disk-menu-trigger" class="btn" type="button" data-variant="ghost" aria-haspopup="menu" aria-controls="disk-menu-items" aria-expanded="false">Disk <span aria-hidden="true">⌄</span></button>
+                    <div data-popover aria-hidden="true">
+                        <div id="disk-menu-items" role="menu" aria-labelledby="disk-menu-trigger">
+                            <div role="group">
+                                <button id="disk-open" type="button" role="menuitem" data-disk-action="open">Open encrypted disk…</button>
+                                <button id="disk-create" type="button" role="menuitem" data-disk-action="create">Create disk from image…</button>
+                                <button id="disk-empty" type="button" role="menuitem" data-disk-action="empty" aria-expanded="false" aria-controls="disk-empty-form">Create empty disk…</button>
+                            </div>
+                            <hr role="separator">
+                            <div role="group">
+                                <button id="disk-publish" type="button" role="menuitem" data-disk-action="publish">Publish disk</button>
+                                <button id="disk-publish-file" type="button" role="menuitem" data-disk-action="publish-file">Publish disk from file</button>
+                                <button id="disk-publish-raw" type="button" role="menuitem" data-disk-action="publish-raw">Publish raw unencrypted disk from file</button>
+                            </div>
+                            <hr role="separator">
+                            <div role="group">
+                                <button id="disk-download" type="button" role="menuitem" data-disk-action="download">Download encrypted disk</button>
+                                <button id="disk-download-raw" type="button" role="menuitem" data-disk-action="download-raw">Download unencrypted disk</button>
+                            </div>
+                            <hr role="separator">
+                            <div role="group">
+                                <button id="disk-discard" type="button" role="menuitem" data-disk-action="discard">Discard pending writes…</button>
+                                <button id="disk-retry" type="button" role="menuitem" data-disk-action="retry">Retry download</button>
+                            </div>
+                        </div>
                     </div>
-                </details>
+                </div>
                 <details id="disk-menu-state" class="disk-menu" hidden>
                     <summary class="btn" data-variant="ghost">State <span aria-hidden="true">⌄</span></summary>
                     <div class="disk-menu-items">
@@ -93,7 +129,7 @@
         <button id="disk-cancel" hidden class="btn" data-variant="secondary">Cancel operation</button>
         <p id="disk-publication-status" class="hint" role="status" aria-live="polite" hidden></p>
         <p id="disk-status" class="alert" role="status" aria-live="polite"></p>
-        <p id="disk-notice" class="hint" hidden>Saving the disk downloads a complete disk. A state file requires its original base disk. Your password, pending changes and prepared download are lost when you close this page.</p>
+        <p id="disk-notice" class="hint" hidden>A state file requires its original base disk. <span id="disk-replica-notice" hidden>Keep this page open while seeding until FeedTorrent has a complete replica. </span> Your password, pending changes and prepared download are lost when you close this page.</p>
         <p id="acceleration-status" class="alert" role="status" aria-live="polite"></p>
         <p id="welcome-status" class="alert" role="status" aria-live="polite"></p>
         <noscript>Enable JavaScript to boot Windows.</noscript>

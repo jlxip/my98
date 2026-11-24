@@ -63,6 +63,19 @@ impl Vault {
             engine: Engine::new(username, password, machine)?,
         })
     }
+    pub fn snapshot(&self, original: bool) -> Result<Vault> {
+        Ok(Vault {
+            engine: self.engine.snapshot(original)?,
+        })
+    }
+    pub fn fresh(&self) -> Result<Vault> {
+        Ok(Vault {
+            engine: self.engine.fresh()?,
+        })
+    }
+    pub fn sign_publication(&self, hash: Vec<u8>, sequence: &str) -> Result<String> {
+        self.engine.sign_publication(&hash, sequence)
+    }
     pub fn identity(&self) -> Result<String> {
         Ok(serde_json::json!({"publicKey":self.engine.identity()?.public_key().map_err(operation)?}).to_string())
     }
@@ -162,4 +175,18 @@ impl Vault {
     pub async fn verify_step(&mut self) -> Result<Option<Vec<u8>>> {
         self.engine.verify_step(&BrowserIo).await
     }
+}
+
+#[wasm_bindgen]
+pub fn publication_piece_hash(bytes: Vec<u8>) -> Result<Vec<u8>> {
+    crate::publication::piece_hash(&bytes)
+}
+#[wasm_bindgen]
+pub fn publication_metadata(
+    size: f64,
+    hashes: Vec<u8>,
+    public: Vec<u8>,
+    trackers: &str,
+) -> Result<String> {
+    crate::publication::publication_metadata(number(size)?, &hashes, &public, trackers)
 }

@@ -1,10 +1,12 @@
-import init, {Vault,verify} from "../pkg/slop86_disk.js";
+import init, {Vault,verify,publication_piece_hash,publication_metadata} from "../pkg/slop86_disk.js";
 import {BootAnalysis} from "./boot-analysis.js";
 import {encodeState, decodeState} from "./state-format.js";
 import {WorkerProtocol} from "./worker-protocol.js";
 import {TorrentPort} from "./torrent-port.js";
 import {RemotePublication,transportFailure} from "./torrent-remote.js";
-import {hex} from "./torrent-protocol.js";
+import {hex,PUBLICATION_SALT} from "./torrent-protocol.js";
+import {torrentSources} from "./torrent-sources.js";
+import {PublicationJob} from "./publication-publisher.js";
 const sources = new Map();
 let stateCandidate, stateSerial = 0;
 function dropState() {
@@ -24,6 +26,7 @@ const originFor = kind => {
 };
 let protocol;
 let torrentIO;
+let publisher;
 let readBytes = 0, readCalls = 0, progressAt = new Map(), initError;
 const fail = (code, message) => Object.assign(new Error(message), {code});
 const describe = () => ({...JSON.parse(vault.describe()), ...(sources.get(current)?.remote ? {remote:sources.get(current).remote} : {})});
@@ -40,6 +43,8 @@ globalThis.slopDiskRead = async (id, offset, length) => {
     readBytes += length; readCalls++; return bytes;
 };
 function torrentProgress(session,value) {
+    if(publisher?.session===session&&value.replicas)publisher.replication(value.replicas);
+    if(publisher?.session===session&&value.error)publisher.seedingError(value.error);
     for(const [id,input] of sources) {
         if(input.session!==session)continue;
         input.progress(value);
@@ -112,6 +117,73 @@ async function build() {
         return {...describe(), outcome:"created", download:prepared};
     } catch(error) { if(id && id !== current) await remove(id); vault.cancel(); throw error; }
 }
+async function verifyCandidate(candidate) {
+    candidate.verify_start();
+    for(let count=0;;count++) {
+        check();const hash=await candidate.verify_step();if(hash)return;
+        if(count%16===0){progress("verify",count*65536,JSON.parse(candidate.describe()).size);await yieldEvents();}
+    }
+}
+async function candidateBlob(candidate) {
+    const parts=[candidate.header()];
+    for(let count=0;;count++) {
+        check();const bytes=await candidate.next();if(!bytes)break;
+        parts.push(new Blob([bytes]));
+        if(count%16===0){progress("encrypt",count*65536,0);await yieldEvents();}
+    }
+    await yieldEvents();check();return new Blob(parts,{type:"application/octet-stream"});
+}
+async function copyCiphertext(input) {
+    const parts=[];
+    for(let offset=0;offset<input.size;offset+=1048576){
+        check();const length=Math.min(1048576,input.size-offset),bytes=await input.read(offset,length,protocol.signal);check();
+        if(bytes.length!==length)throw fail("IO_ERROR","Short ciphertext snapshot read");
+        parts.push(new Blob([bytes]));progress("download",offset+length,input.size);
+    }
+    check();return new Blob(parts,{type:"application/octet-stream"});
+}
+async function prepareSnapshot({kind="current",file,format="encrypted"}={}) {
+    if(!["current","encrypted","raw"].includes(kind)||!["encrypted","raw"].includes(format))throw fail("OPERATION_FAILED","Invalid disk export");
+    let candidate,id,detached;
+    try {
+        if(kind!=="current") {
+            if(!identity)throw fail("READ_ONLY","Publishing requires the owner identity");
+            if(!(file instanceof Blob)||!file.size)throw fail("IO_ERROR","Choose a nonempty disk file");
+            id=source(file);candidate=vault.fresh();
+            if(kind==="raw") {candidate.begin_create(id,file.size);return await candidateBlob(candidate);}
+            detached=await copyCiphertext(sources.get(id));await remove(id);id=source(detached);
+            await candidate.open(id,detached.size);
+        } else candidate=vault.snapshot(!identity&&format==="encrypted");
+        if(format==="raw") {
+            const size=JSON.parse(candidate.describe()).size,parts=[];
+            for(let offset=0;offset<size;offset+=65536){check();const bytes=await candidate.read(offset,Math.min(65536,size-offset));parts.push(new Blob([bytes]));bytes.fill(0);if(offset%1048576===0){progress("decrypt",offset,size);await yieldEvents();}}
+            check();return new Blob(parts,{type:"application/octet-stream"});
+        }
+        if(identity&&JSON.parse(candidate.describe()).dirty_bytes&&await candidate.begin_save())return await candidateBlob(candidate);
+        await verifyCandidate(candidate);
+        return detached||await copyCiphertext(sources.get(current));
+    } finally {candidate?.free();if(id)await remove(id);}
+}
+async function publishDisk(args) {
+    if(Object.keys(args).some(key=>!["kind","file","sources"].includes(key)))throw fail("INVALID_PUBLICATION","Unknown publication argument");
+    if(!identity)throw fail("READ_ONLY","Publishing requires the owner identity");
+    if(publisher?.active)throw fail("OPERATION_FAILED","Stop the current seed before publishing another disk");
+    const config=torrentSources(args.sources);
+    if(!config.gateways.length||!config.trackers.length)throw fail("INVALID_SOURCE","Configure a publishing gateway and WebRTC trackers");
+    const disk=await prepareSnapshot({...args,format:"encrypted"}),pieces=[];
+    for(let offset=0;offset<disk.size;offset+=262144){check();pieces.push(publication_piece_hash(new Uint8Array(await disk.slice(offset,offset+262144).arrayBuffer())));progress("hash",Math.min(offset+262144,disk.size),disk.size);}
+    const hashes=new Uint8Array(pieces.length*20);pieces.forEach((p,i)=>hashes.set(p,i*20));
+    await yieldEvents();check();
+    const publicKey=new Uint8Array(identity.publicKey);
+    const metadata=JSON.parse(publication_metadata(disk.size,hashes,publicKey,JSON.stringify(config.trackers)));
+    const job=new PublicationJob({io:torrentIO,sources:config,publicKey:hex(publicKey),verify,
+        sign:(hash,sequence)=>JSON.parse(vault.sign_publication(hash,sequence)),
+        onStatus:value=>self.postMessage({type:"publishing",...value})});
+    job.target=hex(publication_piece_hash(new Uint8Array([...publicKey,...new TextEncoder().encode(PUBLICATION_SALT)])));
+    publisher=job;
+    return await job.start({infoHash:metadata.infoHash,disk,diskMetadata:new Uint8Array(metadata.diskMetadata),
+        catalog:new Blob([new Uint8Array(metadata.catalogPayload)]),catalogMetadata:new Uint8Array(metadata.catalogMetadata)},protocol.signal);
+}
 async function execute(op,a) {
     if(op === "close" && !vault) return null;
     if(vault && !identity && ["unlock", "create", "createEmpty", "open", "openRemote", "save", "exportReadOnlyKey", "saveState"].includes(op)) {
@@ -143,6 +215,11 @@ async function execute(op,a) {
     if(!vault) throw fail("OPERATION_FAILED", "Identity is closed");
     if(bootAnalysis && ["create", "createEmpty", "open", "openRemote", "save", "download", "retry", "discard", "verify", "saveState", "prepareState"].includes(op)) throw fail("OPERATION_FAILED", "Finish or cancel the boot analysis first");
     switch(op) {
+    case "exportDisk": return {blob:await prepareSnapshot(a),format:a.format};
+    case "publishDisk": if(bootAnalysis)throw fail("OPERATION_FAILED","Finish the load analysis first");return publishDisk(a);
+    case "publicationStatus": return publisher?.current()||{active:false,state:"stopped"};
+    case "publicationRetry": if(!publisher?.active)throw fail("OPERATION_FAILED","No active publication");return publisher.announce(protocol.signal);
+    case "stopSeeding": await publisher?.stop();publisher=undefined;return null;
     case "startLoadAnalysis": {
         const state=describe(), origin=originFor(a.origin);
         if(bootAnalysis || !state.remote?.infoHash || (a.origin==='boot' ? state.dirty_bytes : !freshRestore))throw fail('OPERATION_FAILED','Analysis requires a clean remote boot or a freshly restored remote state');
@@ -316,7 +393,7 @@ async function execute(op,a) {
         if(sources.get(current)?.clearCache)await sources.get(current).clearCache();
         else await torrentIO?.call("clearStorage",{session:"torrent:0"});
         return null;
-    case "close": dropState();bootAnalysis=restoredOrigin=undefined;freshRestore=false;vault.free();vault=undefined;for(const id of [...sources.keys()])await remove(id);identity=current=prepared=undefined;return null;
+    case "close": await publisher?.stop();publisher=undefined;dropState();bootAnalysis=restoredOrigin=undefined;freshRestore=false;vault.free();vault=undefined;for(const id of [...sources.keys()])await remove(id);identity=current=prepared=undefined;return null;
     default: throw fail("OPERATION_FAILED","Unknown disk operation");
     }
 }

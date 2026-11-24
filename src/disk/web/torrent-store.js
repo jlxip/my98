@@ -11,7 +11,7 @@ export function openTorrentDatabase(factory=globalThis.indexedDB) {
     return new Promise((resolve,reject)=>{
         if(!factory){reject(failure("STORAGE_ERROR","IndexedDB is unavailable"));return;}
         let request,settled=false;
-        try {request=factory.open(TORRENT_DATABASE,2);}
+        try {request=factory.open(TORRENT_DATABASE,3);}
         catch(error){reject(storageError(error));return;}
         request.onupgradeneeded=()=>{
             const db=request.result;
@@ -20,6 +20,7 @@ export function openTorrentDatabase(factory=globalThis.indexedDB) {
                 pieces.createIndex("hash","hash",{unique:false});
             }
             if(!db.objectStoreNames.contains("metadata"))db.createObjectStore("metadata",{keyPath:"hash"});
+            if(!db.objectStoreNames.contains("publishing"))db.createObjectStore("publishing",{keyPath:"publicKey"});
             // Public high-water marks survive ciphertext cache cleanup.
             if(!db.objectStoreNames.contains("names"))db.createObjectStore("names",{keyPath:"publicKey"});
 

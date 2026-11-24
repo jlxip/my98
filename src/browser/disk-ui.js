@@ -7,8 +7,26 @@ import {publicationOptions} from './publication-options.js';
 export function setupDisk(host) {
     const $ = id => document.getElementById("disk-" + id);
     const session=new DiskSession(host);
-    let working=false,capturing=false,readOnlyAccess=false;
+    let working=false,capturing=false,readOnlyAccess=false,seed={active:false};
     const menus=[...$("workspace").querySelectorAll(".disk-menu")];
+    const diskMenu=$("menu-disk");
+    // WebKit on macOS does not focus a native button on a mouse click.
+    // Basecoat handles keys on its wrapper, so keep the open trigger focused.
+    $("menu-trigger").addEventListener('click',()=>$("menu-trigger").focus({preventScroll:true}));
+    diskMenu.addEventListener('click',event=>{
+        if(event.target.closest('#disk-empty')&&!$("empty-form").hidden)$("empty-size").focus();
+    });
+    document.addEventListener('basecoat:popover',event=>{if(event.detail.source===diskMenu)for(const menu of menus)if(menu.open)closeMenu(menu);});
+    for(const menu of menus)menu.addEventListener('toggle',()=>{if(menu.open)diskMenu.close?.(false);});
+    const help=$("replica-help"),info=$("replica-info");
+    let helpPinned=false;
+    const showHelp=show=>{help.hidden=!show;info.setAttribute('aria-expanded',String(show));};
+    info.addEventListener('mouseenter',()=>showHelp(true));
+    info.addEventListener('mouseleave',()=>{if(document.activeElement!==info&&!helpPinned)showHelp(false);});
+    info.addEventListener('focus',()=>showHelp(true));info.addEventListener('blur',()=>{helpPinned=false;showHelp(false);});
+    info.addEventListener('click',()=>{helpPinned=!helpPinned;showHelp(helpPinned);});
+    document.addEventListener('click',event=>{if(!event.target.closest('.disk-replica-help')){helpPinned=false;showHelp(false);}});
+    info.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();helpPinned=false;showHelp(false);}});
     function closeMenu(menu,restoreFocus=false) {
         const focused=menu.querySelector(".disk-menu-items").contains(document.activeElement);
         menu.open=false;
@@ -51,9 +69,25 @@ export function setupDisk(host) {
         element.hidden=false;element.textContent=version+text;element.classList.toggle("error",!!value.fatal);
         if(value.fatal&&session.active)void host.fail(Object.assign(new Error(value.error.message),value.error)).catch(()=>{});
     }
+    function publishingStatus(value) {
+        seed=value;
+        $("seeding").hidden=!value.active;
+        const labels={preparing:"Preparing publication…",announcing:"Announcing publication…",seeding:"Publication announced.",unconfirmed:"Publication announcement not confirmed."};
+        $("seed-status").textContent=(labels[value.state]||"")+(value.error?" "+value.error.message:"");
+        const replicas=value.replicas||{complete:0,label:'0',unavailable:0};
+        $("replica-notice").hidden=!value.active||replicas.complete>0;
+        $("replica-count").textContent=replicas.label;
+        $("replica-status").textContent=replicas.complete>0?'Complete replica confirmed.':replicas.unavailable?'Some FeedTorrent receivers cannot report progress. Keep this page open.':'Waiting for a complete replica. Keep this page open.';
+        if(replicas.complete>0&&replicas.unavailable)$("replica-status").textContent+=' Some receivers cannot report progress.';
+        $("seed-local").textContent=value.seedError?'Snapshot retained. Seeding error: '+value.seedError.message:value.active&&value.state!=='preparing'?'This page is seeding the prepared snapshot.':'';
+        $("retry-publication").hidden=value.state!=="unconfirmed";
+        $("copy-magnet").disabled=$("copy-catalog").disabled=!value.magnet;
+        syncControls(host.busy());
+    }
+    window.addEventListener("beforeunload",event=>{if(seed.active&&!(seed.replicas?.complete>0)){event.preventDefault();event.returnValue="";}});
     function syncControls(busy) {
         progress.update();
-        const view=diskControls({busy,working,client:session.client,state:session.description,active:session.active,adapter:session.adapter,analyzing:session.analyzing,prepared:session.prepared,capturing,stateAbort:session.stateAbort});
+        const view=diskControls({busy,working,client:session.client,state:session.description,active:session.active,adapter:session.adapter,analyzing:session.analyzing,prepared:session.prepared,capturing,stateAbort:session.stateAbort,quiescent:host.diskQuiescent(),seeding:seed.active});
         $("workspace").hidden=!view.authenticated;
         if(!view.authenticated)$("publication-status").hidden=true;
         $("login").hidden=view.authenticated||readOnlyAccess;
@@ -62,7 +96,7 @@ export function setupDisk(host) {
         $("auth-switch").textContent=readOnlyAccess?"Or log in":"Or use a read key";
         $("brand").hidden=view.authenticated;$("notice").hidden=!view.authenticated;
         document.getElementById("welcome").classList.toggle("authenticated",view.authenticated);
-        if(busy||working||!view.authenticated)for(const menu of menus)if(menu.open)closeMenu(menu);
+        if(busy||working||!view.authenticated){diskMenu.close?.(false);for(const menu of menus)if(menu.open)closeMenu(menu);}
         $("panel").querySelectorAll("button,input").forEach(element=>element.disabled=busy||working);
         $("workspace").querySelectorAll("[data-disk-action]").forEach(element=>{
             element.hidden=!!view.hidden[element.dataset.diskAction];
@@ -70,6 +104,7 @@ export function setupDisk(host) {
         $("primary-actions").hidden=![...$("primary-actions").querySelectorAll("[data-disk-action]")].some(element=>!element.hidden);
         $("boot").dataset.variant=view.hidden['resume-state']?"primary":"secondary";
         $("save-state").disabled=view.disabled['save-state'];
+        $("download").textContent=session.description?.readOnly?"Download original encrypted disk":"Download encrypted disk";
         for(const menu of menus) {
             menu.hidden=![...menu.querySelectorAll("[data-disk-action]")].some(element=>!element.hidden);
             menu.querySelector("summary").setAttribute("aria-disabled",String(busy||working));
@@ -89,6 +124,17 @@ export function setupDisk(host) {
             const element=id==='save-state' ? stateSaveButton : id==='cancel-state' ? stateCancelButton : $(id);
             if(element)element.disabled=disabled;
         }
+        const diskActions=[...diskMenu.querySelectorAll('[data-disk-action]')];
+        diskMenu.hidden=!diskActions.some(element=>!element.hidden);
+        $("menu-trigger").disabled=busy||working||!diskActions.some(element=>!element.hidden&&!element.disabled);
+        let groupBefore=false;
+        for(const group of $("menu-items").querySelectorAll('[role=group]')) {
+            group.hidden=![...group.querySelectorAll('[data-disk-action]')].some(element=>!element.hidden);
+            if(group.previousElementSibling?.matches('hr'))group.previousElementSibling.hidden=group.hidden||!groupBefore;
+            if(!group.hidden)groupBefore=true;
+        }
+        if(diskMenu.hidden||$("menu-trigger").disabled)diskMenu.close?.(false);
+        diskMenu.refresh?.();
     }
     async function run(text,work) {
         if(working||host.busy())return;
@@ -116,7 +162,7 @@ export function setupDisk(host) {
         $("publication-status").hidden=true;
         run("Unlocking identity…",async()=>{
             let identity;
-            try {identity=await session.unlock(username,password,machine,{onPublication:publicationStatus,onAnalysis:event=>{
+            try {identity=await session.unlock(username,password,machine,{onPublication:publicationStatus,onPublishing:publishingStatus,onAnalysis:event=>{
                 session.analysisError = event.error;
                 message(session.analysisError, true);
                 void session.cancelLoadAnalysis().then(() => syncControls(host.busy())).catch(error => message(error.message, true));
@@ -127,7 +173,7 @@ export function setupDisk(host) {
                     message(`${labels[p.phase] || "Preparing state"}: ${(p.completed/1048576).toFixed(1)} MiB…`);
                 }
                 if(capturing && p.phase==="resolve") message("Finding remote disk…");
-                else if(capturing) message(`${({verify:"Verifying",encrypt:"Encrypting",download:"Downloading",resolve:"Finding remote disk"})[p.phase]||"Working"}: ${(p.completed/1048576).toFixed(1)} MiB…`);
+                else if(capturing) message(`${({verify:"Verifying",encrypt:"Encrypting",decrypt:"Decrypting",hash:"Hashing",download:"Downloading",resolve:"Finding remote disk"})[p.phase]||"Working"}: ${(p.completed/1048576).toFixed(1)} MiB…`);
             }});} finally {username=password=machine="";}
             $("identity").textContent=identity.publicKey.map(n=>n.toString(16).padStart(2,"0")).join("");
             message("Opening publication…");capturing=true;syncControls(true);
@@ -163,11 +209,11 @@ export function setupDisk(host) {
     });
     $("empty").onclick=()=>{
         if(!session.client || session.description || working || host.busy())return;
-        $("empty-form").hidden=false;$("empty").setAttribute("aria-expanded","true");$("empty-size").focus();
+        $("empty-form").hidden=false;$("empty").setAttribute("aria-expanded","true");
     };
     $("empty-cancel").onclick=()=>{
         if(working || host.busy())return;
-        $("empty-form").hidden=true;$("empty").setAttribute("aria-expanded","false");$("menu-disk").querySelector("summary").focus();
+        $("empty-form").hidden=true;$("empty").setAttribute("aria-expanded","false");$("menu-trigger").focus();
     };
     $("empty-form").onsubmit=event=>{
         event.preventDefault();
@@ -240,12 +286,30 @@ export function setupDisk(host) {
         });
     }
     $("analyze-cancel").onclick=()=>{$("analysis-options").hidden=true;};
-    $("save").onclick=()=>run("Preparing save…",async()=>{
-        if(!window.confirm("Has Windows finished shutting down? Confirm to stop the VM and save the full disk.")){message("Save cancelled.");return;}
-        capturing=true;syncControls(true);const saved=await session.saveDisk();
-        if(saved.outcome==="unchanged")message("No changes. The VM remains stopped.");else download(saved.download);
+    async function publish(kind="current") {
+        let file;
+        if(kind!=="current"){[file]=await host.pickFiles();if(!file)return;}
+        capturing=true;syncControls(true);
+        const result=await session.publishDisk({kind,file,sources:await publicationOptions().then(value=>value.sources)});
+        message("");
+    }
+    for(const [id,kind] of [["publish","current"],["publish-file","encrypted"],["publish-raw","raw"]])
+        $(id).onclick=()=>run("Preparing publication…",()=>publish(kind));
+    for(const [id,format] of [["download","encrypted"],["download-raw","raw"]])$(id).onclick=()=>run("Preparing disk download…",async()=>{
+        capturing=true;syncControls(true);
+        const result=await session.exportDisk(format);
+        const id=Array.from(session.description.disk_id.slice(0,4),n=>n.toString(16).padStart(2,"0")).join("");
+        host.download(result.blob,id+(format==="raw"?".img":".my98"));
+        message("Disk download prepared. Check that the file was saved.");
     });
-    $("download").onclick=()=>run("Preparing full download…",async()=>{capturing=true;syncControls(true);download(await session.downloadCurrent());});
+    $("stop-seeding").onclick=()=>run("Stopping seed…",async()=>{
+        if(!(seed.replicas?.complete>0)&&!window.confirm("No complete replica has been confirmed. Stopping the seed may make this publication unavailable."))return;
+        await session.client.stopSeeding();message("Seeding stopped.");
+    });
+    $("retry-publication").onclick=()=>run("Retrying announcement…",async()=>{capturing=true;syncControls(true);await session.client.retryPublication();message("");});
+    for(const [id,key] of [["copy-magnet","magnet"],["copy-catalog","catalogMagnet"]])$(id).onclick=()=>run("Copying magnet…",async()=>{
+        await navigator.clipboard.writeText(seed[key]);message("Magnet copied.");
+    });
     $("retry").onclick=()=>run("Retrying download…",async()=>download(await session.retryDownload()));
     $("verify").onclick=()=>run("Verifying full disk…",async()=>{
         capturing=true;syncControls(true);const hash=await session.verifyImage();
@@ -263,7 +327,7 @@ export function setupDisk(host) {
     });
     $("cancel").onclick=()=>{session.cancel();message("Cancellation requested…");};
     $("close").onclick=()=>run("Closing identity…",async()=>{
-        if(!window.confirm("Close the identity? Pending changes and the prepared download for this session will be lost."))return;
+        if(!window.confirm("Close the identity? Pending changes and the prepared download for this session will be lost."+(seed.active&&!(seed.replicas?.complete>0)?" No complete replica has been confirmed; this also stops seeding.":"")))return;
         await session.close();$("identity").textContent="";$("analysis-options").hidden=true;
         $("password").value="";$("empty-size").value="1024";
         message("");

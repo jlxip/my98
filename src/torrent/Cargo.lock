@@ -497,7 +497,7 @@ checksum = "00d174d5400e5e8fd687ad1049e2f578285fa914201b1af7e8b112a4546bd826"
 
 [[package]]
 name = "feedtorrent-bep"
-version = "0.0.6-alpha"
+version = "0.0.7-alpha"
 dependencies = [
  "bendy",
  "ed25519-dalek 3.0.0",
@@ -508,7 +508,7 @@ dependencies = [
 
 [[package]]
 name = "feedtorrent-libtorrent"
-version = "0.0.6-alpha"
+version = "0.0.7-alpha"
 dependencies = [
  "cxx",
  "cxx-build",

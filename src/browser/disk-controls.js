@@ -1,5 +1,5 @@
 /** Availability of disk actions, independent of the DOM. */
-export function diskControls({busy, working, client, state, active, adapter, analyzing, prepared, capturing, stateAbort}) {
+export function diskControls({busy, working, client, state, active, adapter, analyzing, prepared, capturing, stateAbort, quiescent=true, seeding=false}) {
     const locked = busy || working;
     const open = !!state;
     const remote = !!state?.remote;
@@ -17,8 +17,11 @@ export function diskControls({busy, working, client, state, active, adapter, ana
         open: open,
         'relay-key': readOnly,
         boot: !open || active || failed,
-        save: readOnly || !open || !active || failed || analyzing,
-        download: !open || !!state?.dirty_bytes || analyzing,
+        publish: readOnly || !open || analyzing || seeding,
+        'publish-file': readOnly || analyzing || seeding,
+        'publish-raw': readOnly || analyzing || seeding,
+        'download-raw': !open || analyzing,
+        download: !open || analyzing,
         discard: !open || analyzing,
         verify: !open || analyzing,
         'clear-cache': !open || analyzing,
@@ -35,6 +38,7 @@ export function diskControls({busy, working, client, state, active, adapter, ana
         cancel: !capturing && !stateInProgress,
     };
     const disabled=Object.fromEntries(Object.entries(unavailable).map(([id,value])=>[id,locked||value]));
+    for(const key of ["publish","publish-file","publish-raw","download","download-raw"])disabled[key] ||= !quiescent;
     disabled.cancel=unavailable.cancel;
     disabled['cancel-state']=false;
     return {

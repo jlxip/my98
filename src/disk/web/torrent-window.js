@@ -1,6 +1,7 @@
 import {TorrentPieceStore,clearTorrentCache} from "./torrent-store.js";
 import {verifyMetadata,infoHash,COMPONENT_NAMES} from "./torrent-protocol.js";
 import {torrentSources,DEFAULT_TORRENT_SOURCES} from "./torrent-sources.js";
+import {PublicationReplicas} from "./publication-replicas.js";
 export {torrentSources} from "./torrent-sources.js";
 
 const fail=(code,message)=>Object.assign(new Error(message),{code});
@@ -38,6 +39,9 @@ export class WindowTorrents {
         this.closed=false;this.epoch=0;this.discoveries=new Set();this.recovering=new Map();this.openingJobs=new Map();this.componentMetadata=new Map();this.probes=new Map();
     }
     setSources(sources) {this.sources=torrentSources(sources);}
+    trackPublication(root) {
+        this.replicas=new PublicationReplicas(root,replicas=>this.onProgress({replicas}));
+    }
     async initialize() {
         if(this.closed)throw fail("CANCELLED","Torrent transport is closed");
         if(!this.clientPromise)this.clientPromise=(async()=>{
@@ -50,6 +54,44 @@ export class WindowTorrents {
             return this.client;
         })();
         return this.clientPromise;
+    }
+    /** Seed only Worker-produced immutable bytes with their Rust-computed piece hashes.
+     * This is not the remote/cache reader: that path always uses skipVerify:false.
+     * Rehashing the same prepared Blob in WebTorrent duplicates preparation and
+     * can strand its async verification callback in Gecko during repeated seeds. */
+    async seedPrepared({metadata,blob,kind},signal) {
+        if(!(blob instanceof Blob))throw fail("INVALID_PUBLICATION","Expected an immutable ciphertext snapshot");
+        const client=await waitFor(this.initialize(),signal);
+        const debug={reads:0,completed:0,verified:0,ready:false,preverified:true};
+        (this.seedDebug||=Object.create(null))[kind]=debug;
+        class BlobStore {
+            constructor(length){this.length=length;this.chunkLength=length;}
+            get(index,options,callback){
+                if(typeof options==="function"){callback=options;options={};}
+                const offset=options?.offset??0,start=index*this.length+offset,n=options?.length??Math.min(this.length-offset,blob.size-start);
+                if(!Number.isSafeInteger(index)||index<0||start>=blob.size||!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(n)||n<0||offset+n>this.length||start+n>blob.size){queueMicrotask(()=>callback(Error("Invalid snapshot range")));return;}
+                debug.reads++;
+                blob.slice(start,start+n).arrayBuffer().then(bytes=>{debug.completed++;callback(null,new Uint8Array(bytes));},error=>{debug.error=error.message;callback(error);});
+            }
+            put(index,bytes,callback){queueMicrotask(()=>callback(Error("Immutable seed")));}
+            close(callback){queueMicrotask(()=>callback?.());}
+            destroy(callback){this.close(callback);}
+        }
+        return await new Promise((resolve,reject)=>{
+            let torrent,done=false;
+            const finish=error=>{if(done)return;done=true;clearTimeout(timer);signal?.removeEventListener("abort",abort);if(error){torrent?.destroy({destroyStore:true},()=>{});reject(error);}else resolve({infoHash:torrent.infoHash});};
+            const abort=()=>finish(cancelled(signal)),timer=setTimeout(()=>finish(fail("TRANSPORT_TIMEOUT","Snapshot verification timed out")),300000);
+            signal?.addEventListener("abort",abort,{once:true});
+            torrent=client.add(new Uint8Array(metadata),{announce:this.sources.trackers,urlList:[],getAnnounceOpts:()=>({numwant:1}),store:BlobStore,storeCacheSlots:0,skipVerify:true,deselect:true});
+            torrent.once("error",finish);torrent.on("error",error=>this.onProgress({error:{code:"TRANSPORT_ERROR",message:error.message}}));
+            const ready=()=>queueMicrotask(()=>{
+                debug.ready=true;debug.verified=torrent.pieces.length;
+                this.replicas?.add(kind,torrent);
+                if(torrent.length!==blob.size||!torrent.done)finish(fail("CORRUPTION","Prepared snapshot length does not match its torrent"));else finish();
+            });
+            torrent.once("ready",ready);if(torrent.ready)ready();
+            if(signal?.aborted)abort();
+        });
     }
     failed(entry,error) {
         entry.error=error;
@@ -526,6 +568,7 @@ export class WindowTorrents {
         } finally {this.clearing=false;}
     }
     async close() {
+        this.replicas?.close();
         this.closed=true;this.cancel();
         await Promise.all([...this.entries.keys()].map(hash=>this.remove(hash)));
         await Promise.allSettled([...this.opening.values()]);

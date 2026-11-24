@@ -4,5 +4,15 @@
   "style": "vega",
   "source": "https://registry.npmjs.org/basecoat-css/-/basecoat-css-1.0.2.tgz",
   "file": "dist/basecoat-vega.cdn.min.css",
-  "sha256": "8123677adb9bba43be3298e1543bcc5fc763e8cda3d32dc74c806046a3537ca0"
+  "sha256": "8123677adb9bba43be3298e1543bcc5fc763e8cda3d32dc74c806046a3537ca0",
+  "additionalFiles": {
+    "basecoat.min.js": {
+      "file": "dist/js/basecoat.min.js",
+      "sha256": "93fa012baa09fa49a06d411da3ced2176a121e45ae977955ecf82c5bd3eb6a50"
+    },
+    "dropdown-menu.min.js": {
+      "file": "dist/js/dropdown-menu.min.js",
+      "sha256": "7ef7efd87cc655249a9c86c38fdac3c202c9025bf46021921c5853a74570766c"
+    }
+  }
 }

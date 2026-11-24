@@ -15,7 +15,7 @@ function concat(...parts) {
     const result=new Uint8Array(parts.reduce((n,part)=>n+part.length,0));
     let offset=0;for(const part of parts){result.set(part,offset);offset+=part.length;}return result;
 }
-function bdecode(bytes) {
+export function bdecode(bytes) {
     if(!(bytes instanceof Uint8Array) || bytes.length>8*1024*1024)throw invalid("Torrent metadata exceeds limits");
     let offset=0,nodes=0;
     function number(end,negative=false) {

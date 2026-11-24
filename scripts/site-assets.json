@@ -48,5 +48,7 @@
   "licenses/process.txt": "node_modules/process/LICENSE",
   "licenses/buffer.txt": "node_modules/buffer/LICENSE",
   "src/browser/publication-options.js": "src/browser/publication-options.js",
-  "torrent-sources.json": "torrent-sources.json"
+  "torrent-sources.json": "torrent-sources.json",
+  "vendor/basecoat-1.0.2/basecoat.min.js": "vendor/basecoat-1.0.2/basecoat.min.js",
+  "vendor/basecoat-1.0.2/dropdown-menu.min.js": "vendor/basecoat-1.0.2/dropdown-menu.min.js"
 }

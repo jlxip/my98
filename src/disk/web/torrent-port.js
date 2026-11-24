@@ -63,24 +63,26 @@ export class WindowTorrentPort {
     }
     async execute(op,args,signal) {
         if(signal?.aborted)throw signal.reason||fail("CANCELLED","Ciphertext operation cancelled");
-        if(!args || typeof args.session!=="string" || !/^torrent:[0-9]+$/.test(args.session))
+        if(!args || typeof args.session!=="string" || !/^(torrent|publication):[0-9]+$/.test(args.session))
             throw fail("TRANSPORT_ERROR","Invalid ciphertext session");
         const session=args.session;
         if(op==="clearStorage") {
-            await Promise.allSettled([...this.sessions.values()].map(transport=>transport.close()));
-            this.sessions.clear();await this.clearStorage();return null;
+            for(const [id,transport] of this.sessions)if(id.startsWith("torrent:")){this.sessions.delete(id);await transport.close();}
+            await this.clearStorage();return null;
         }
         if(op==="create") {
             if(this.sessions.has(session))throw fail("TRANSPORT_ERROR","Ciphertext session already exists");
             const transport=this.createTransport(args.sources,value=>{
                 if(!this.closed)this.port.postMessage({type:"progress",session,value});
             });
+            if(args.root)transport.trackPublication(args.root);
 
             this.sessions.set(session,transport);return null;
         }
         const transport=this.sessions.get(session);
         if(!transport)throw fail("TRANSPORT_ERROR","Ciphertext session is closed");
         switch(op) {
+        case "seed":return transport.seedPrepared(args,signal);
         case "sources":transport.setSources(args.sources);return null;
         case "open":return transport.open(args,args.startup?signal:undefined);
         case "metadata":
@@ -101,6 +103,7 @@ export class WindowTorrentPort {
         case "stats":return transport.describe(transport.entry(args.infoHash));
         case "clear":await transport.clearCaches();return null;
         case "close":
+            if(session.startsWith("publication:"))this.lastSeedDebug=transport.seedDebug;
             this.sessions.delete(session);await transport.close();return null;
         default:throw fail("TRANSPORT_ERROR","Unknown ciphertext bridge operation");
         }

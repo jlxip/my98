@@ -111,3 +111,14 @@ html.vm-expanded, html.vm-expanded body { overflow: hidden; overscroll-behavior:
 #vm-view.direct-input:not(.expanded) #view-controls { display: none; }
 
 #disk-auth-switch { display: block; margin: 12px auto 0; min-height: 44px; padding: 8px; border: 0; background: transparent; color: var(--muted-foreground); font: inherit; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+
+#disk-seeding { margin-block: 12px; }
+#disk-menu-disk { position: static; }
+#disk-menu-disk [data-popover] { left: 0; right: auto; width: min(360px, calc(100vw - 48px)); max-width: calc(100vw - 48px); max-height: min(70dvh, 600px); overflow-y: auto; transition-property: opacity, scale; }
+#disk-menu-items [role=menuitem] { white-space: normal; min-height: 44px; }
+#disk-replica-row { display: flex; align-items: center; gap: 4px; }
+#disk-replica-count { font-variant-numeric: tabular-nums; }
+.disk-replica-help { position: relative; }
+#disk-replica-info { min-height: 32px; width: 32px; padding: 0; }
+#disk-replica-help { position: absolute; z-index: 30; top: 100%; left: 0; width: min(320px, calc(100vw - 48px)); padding: 12px; border: 1px solid var(--border); border-radius: 8px; color: var(--popover-foreground); background: var(--popover); }
+@media (max-width: 540px) { .disk-replica-help { position: static; } #disk-replica-help { left: 16px; } #disk-replica-row { position: relative; } }

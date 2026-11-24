@@ -284,7 +284,7 @@ function bind(id, message, work)
 }
 
 bind("pause", "", async () => {
-    if(emulator.is_running()) await emulator.stop(); else emulator.run();
+    if(emulator.is_running()){manualPause=true;exportStopped=false;await emulator.stop();}else{manualPause=false;roundedMips=undefined;exportStopped=false;emulator.run();}
     status(emulator.is_running() ? "Windows is running." : "Machine paused.");
 });
 function cancelReset()
@@ -398,12 +398,16 @@ document.addEventListener("pointerlockchange", () => {
 document.addEventListener("pointerlockerror", () => status("Could not capture the mouse."));
 new ResizeObserver(fitScreen).observe($("display"));
 window.addEventListener("resize", fitScreen);
-let lastCount = 0, lastTime = performance.now();
+let lastCount = 0, lastTime = performance.now(), lastMipsMachine, roundedMips, manualPause=false, exportStopped=false;
 setInterval(() => {
     const now = performance.now();
     const count = emulator?.get_instruction_counter() || 0;
+    const valid=emulator===lastMipsMachine&&count>=lastCount;
     const mips = Math.max(0, (count - lastCount) / ((now - lastTime) * 1000));
-    $("ips").textContent = mips.toFixed(1) + " MIPS";
+    roundedMips=valid?mips.toFixed(1):undefined;lastMipsMachine=emulator;
+    if(emulator?.is_running())exportStopped=false;
+    $("ips").textContent = (roundedMips??"…") + " MIPS";
+    diskController?.syncControls(busy);
     lastCount = count;
     lastTime = now;
 }, 1000);
@@ -411,6 +415,13 @@ setInterval(() => {
 
 diskController = setupDisk({
     pickFiles, download,
+    diskQuiescent:()=>!emulator||!manualPause&&(exportStopped||emulator.is_running()&&lastMipsMachine===emulator&&roundedMips==="0.0"),
+    async stopForExport() {
+        if(emulator) {
+            if(manualPause||!exportStopped&&(!emulator.is_running()||lastMipsMachine!==emulator||roundedMips!=="0.0"))throw new Error("Shut Windows down and wait for 0.0 MIPS.");
+            await emulator.stop();exportStopped=true;
+        }
+    },
     busy: () => busy,
     hasSession: () => !!emulator,
     setBusy(value) { busy = value; updateControls(); },
@@ -434,7 +445,7 @@ diskController = setupDisk({
             const text=container.querySelector("div"), canvas=container.querySelector("canvas");
             text.id="screen";canvas.id="vga";
             $("screen_container").replaceChildren(text,canvas);
-            emulator=restored.machine;machineAdapter=restored.adapter;machineConfig=restored.config;
+            emulator=restored.machine;machineAdapter=restored.adapter;machineConfig=restored.config;manualPause=false;exportStopped=false;roundedMips=undefined;
             relayState(emulator.network_adapter?.status || 'identity-closed');
             diskBlocked=false;$("session").hidden=false;
             for(const drive of Object.keys(media))media[drive]=null;
@@ -456,6 +467,7 @@ diskController = setupDisk({
         touch.release();
         if(emulator) { await emulator.destroy(); emulator = undefined; }
         diskBlocked = false;
+        manualPause=false;exportStopped=false;roundedMips=undefined;
         await start(adapter, name, autoFullscreen);
     },
     async close() {

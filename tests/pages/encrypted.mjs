@@ -7,6 +7,9 @@ export async function unlockIdentity(page) {
 }
 export async function diskAction(page,id) {
     const action=page.locator('#'+id);
+    const dropdown=await action.evaluate(element=>element.closest('.dropdown-menu')?.id);
+    if(dropdown&&await page.locator('#'+dropdown+' > button').getAttribute('aria-expanded')!=='true')
+        await page.locator('#'+dropdown+' > button').click();
     const menu=await action.evaluate(element=>element.closest('details')?.id);
     if(menu&&!await page.locator('#'+menu).evaluate(element=>element.open))
         await page.locator('#'+menu+' > summary').click();
