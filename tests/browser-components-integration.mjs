@@ -7,6 +7,7 @@ import {createHash} from 'node:crypto';
 import {chromium,firefox,webkit} from 'playwright';
 import {serveSite,quietAudio} from './pages/server.mjs';
 import {browserOptions} from './browser-options.mjs';
+import {coldReader} from './publishing-reader.mjs';
 const root=resolve('.'),ft=resolve(process.env.MY98_FEEDTORRENT_TEST_ROOT||'build/feedtorrent');
 const output=join(root,'build/ans414-integration-'+Date.now());await mkdir(output,{recursive:true});
 process.chdir(ft);
@@ -41,10 +42,10 @@ try {
   },{sources,name});assert.equal(first.state,'seeding',JSON.stringify(first));
   await app.command({type:'follow_post',uri:first.magnet,config:{name:'ans414 '+name,mode:'mirror_all',automatic_limit:null}});
   const post=()=>app.api().then(s=>s.posts.find(p=>p.magnet===first.magnet));
-  async function copied(publication) {
-    const p=await post();if(p)await app.command({type:'refresh_post',id:p.id});
+  async function copied(publication,{refresh=true,timeout=90000}={}) {
+    const p=await post();if(p&&refresh)await app.command({type:'refresh_post',id:p.id});
     const catalog=new URL(publication.catalogMagnet).searchParams.get('xt').slice(9);
-    const t=await wait(async()=>{const t=(await app.api()).transfers.find(t=>t.id===catalog);if(t?.error)throw Error(t.error);return t?.total>0&&t.verified===t.total&&t;},'complete catalog '+catalog,90000);
+    const t=await wait(async()=>{const t=(await app.api()).transfers.find(t=>t.id===catalog);if(t?.error)throw Error(t.error);return t?.total>0&&t.verified===t.total&&t;},'complete catalog '+catalog,timeout);
     const result={catalog};
     for(const f of t.files.filter(f=>/\/(disk|state|profile)\.torrent$/.test('/'+f.name))) {
       const kind=f.name.split('/').at(-1).slice(0,-8),meta=await readFile(join(t.save_path,f.name)),hash=(await parseTorrent(meta)).infoHash;
@@ -78,7 +79,9 @@ try {
     window.stateFile=(await capture()).blob;window.beforeState=await publisher.describe();
     return publisher.publishUpdate({action:'state',file:stateFile,compatibility:machineCompat,sources});
   },sources);assert.equal(statePublication.state,'seeding',JSON.stringify(statePublication));
-  const state=await copied(statePublication);assert.equal(state.disk.hash,base.disk.hash);assert.deepEqual(await readFile(state.disk.file),baseBytes);
+  console.log(name+': '+(name==='chromium'?'waiting for automatic FeedTorrent update (no refresh_post)':'refreshing test publication'));
+  const state=await copied(statePublication,{refresh:name!=='chromium',timeout:name==='chromium'?17*60*1000:90000});
+  assert(BigInt(statePublication.sequence)>BigInt(first.sequence));assert.equal(state.disk.hash,base.disk.hash);assert.deepEqual(await readFile(state.disk.file),baseBytes);
   assert.equal(sha(await readFile(state.state.file)),await page.evaluate(async()=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await stateFile.arrayBuffer())),n=>n.toString(16).padStart(2,'0')).join('')));
   const profilePublication=await page.evaluate(async sources=>{
     const {restoreMachineState}=await import('/src/browser/machine-state.js');const {createMachine}=await import('/src/browser/machine-factory.js');
@@ -132,8 +135,8 @@ try {
     const result={activeSeed:current.active,memory:next.machine.v86.cpu.mem8[0x70000],overlay:(await publisher.read(10000,1))[0],ram:next.config.memory_size};
     await next.machine.destroy();next.adapter.dispose();await machine.destroy();adapter.dispose();await publisher.close();return result;
   });assert.deepEqual(refresh,{activeSeed:true,memory:81,overlay:55,ram:32*1048576});phase='closed';await context.close();
-  const readerContext=await browser.newContext({ignoreHTTPSErrors:true});await readerContext.addInitScript(quietAudio);
-  const reader=await readerContext.newPage();reader.setDefaultTimeout(120000);await reader.goto(tr.page);await reader.goto(gateway.page);await reader.goto(site.url);await reader.waitForFunction(()=>!document.body.inert);
+  const cold=await coldReader(browser,{site,gateway,tracker:tr}),reader=cold.page;
+  reader.on('pageerror',e=>errors.push({message:String(e),phase:'cold-reader'}));
   const restored=await reader.evaluate(async({sources,name})=>{
     const {Slop86Disk}=await import('/build/disk/web/client.js');const {restoreMachineState}=await import('/src/browser/machine-state.js');const {createMachine,compatibility}=await import('/src/browser/machine-factory.js');
     const client=await Slop86Disk.create();await client.unlock('ans414 '+name,'public test password','main');await client.openRemote({sources,prefetchScope:'none',waitForFinal:true});
@@ -142,8 +145,9 @@ try {
     const result={ram:restored.config.memory_size,memory:restored.machine.v86.cpu.mem8[0x70000],overlay:(await client.read(10000,1))[0]};
     await restored.machine.destroy();restored.adapter.dispose();await client.close();return result;
   },{sources,name});assert.deepEqual(restored,{ram:32*1048576,memory:81,overlay:55});
-  assert.deepEqual(errors,[]);report.push({browser:name,status:'PASS',base,full,replacement,withoutState,bare,finalReplica,rejects,restored,refresh});await writeFile(join(output,'progress.json'),JSON.stringify(report,null,2));
-  clearInterval(diagnosticTimer);await readerContext.close();await browser.close();browser=null;console.log(name+': state/profile updates and independent restore PASS');
+  const transport=await cold.verify();
+  assert.deepEqual(errors,[]);report.push({browser:name,status:'PASS',automaticUpdate:name==='chromium',transport,base,full,replacement,withoutState,bare,finalReplica,rejects,restored,refresh});await writeFile(join(output,'progress.json'),JSON.stringify(report,null,2));
+  clearInterval(diagnosticTimer);await cold.context.close();await browser.close();browser=null;console.log(name+': state/profile updates and independent restore PASS');
  }
  await writeFile(join(output,'report.json'),JSON.stringify({status:'PASS',report},null,2));
 } catch(error){await writeFile(join(output,'failure.json'),JSON.stringify({error:String(error),stack:error.stack,report,diagnostic,nativeExit:app?{code:app.child.exitCode,signal:app.child.signalCode}:null,app:app?await app.api().catch(()=>null):null,logs:app?.logs,announces:tr?.announces},null,2));throw error;}

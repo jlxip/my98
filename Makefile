@@ -111,29 +111,16 @@ relay-test:
 	node --test tests/relay-discovery.test.mjs
 	PYTHONDONTWRITEBYTECODE=1 python3 tests/relay-deploy.test.py
 
-# FeedTorrent source, native backend and the provisional publishing CLI.
-.PHONY: torrent-native torrent-test torrent-integration-test
-torrent-native:
-	python3 scripts/prepare-feedtorrent.py
-	CARGO_TARGET_DIR="$$PWD/build/torrent-target" sh -c 'cd build/feedtorrent && cargo build --manifest-path ../../src/torrent/Cargo.toml --locked --release'
+# Build the pinned replica runtime independently of the browser/WASM toolchain.
+MY98_FEEDTORRENT_TEST_ROOT := $(or $(MY98_FEEDTORRENT_TEST_ROOT),$(CURDIR)/build/feedtorrent)
+export MY98_FEEDTORRENT_TEST_ROOT
+.PHONY: feedtorrent-test-runtime publishing-integration-test state-publishing-integration-test
+feedtorrent-test-runtime:
+	@if [ "$(abspath $(MY98_FEEDTORRENT_TEST_ROOT))" = "$(CURDIR)/build/feedtorrent" ]; then python3 scripts/prepare-feedtorrent.py; fi
+	$(MAKE) -C "$(MY98_FEEDTORRENT_TEST_ROOT)" build test-deps
 
-torrent-test: torrent-native
-	python3 tests/torrent-prompt.test.py build/torrent-target/release/my98-torrent
-	CARGO_TARGET_DIR="$$PWD/build/torrent-target" sh -c 'cd build/feedtorrent && cargo test --manifest-path ../../src/torrent/Cargo.toml --locked'
-	node --test tests/publication-session.test.mjs tests/feedtorrent-protocol.test.mjs tests/torrent-state-queue.test.mjs tests/torrent-startup-window.test.mjs
-
-torrent-integration-test: torrent-native site
-	$(MAKE) -C build/feedtorrent build test-deps
-	CARGO_TARGET_DIR="$(CURDIR)/build/disk-target" cargo build --manifest-path src/disk/Cargo.toml --locked --release --example compat
-	BROWSER_TEST_TIMEOUT_MS=1800000 node scripts/run-browser-test.mjs tests/feedtorrent-integration.mjs
-
-.PHONY: publishing-integration-test
-# Use the tested FeedTorrent gateway candidate; the pinned 0.0.6 read gateway predates PUT.
-publishing-integration-test: site torrent-native
-	@test -n "$(MY98_FEEDTORRENT_TEST_ROOT)" || { echo 'Set MY98_FEEDTORRENT_TEST_ROOT to the FeedTorrent candidate checkout.' >&2; exit 2; }
+publishing-integration-test: site feedtorrent-test-runtime
 	node tests/browser-publishing-integration.mjs
 
-.PHONY: state-publishing-integration-test
-state-publishing-integration-test: site
-	@test -n "$(MY98_FEEDTORRENT_TEST_ROOT)" || { echo 'Set MY98_FEEDTORRENT_TEST_ROOT to the tested FeedTorrent checkout.' >&2; exit 2; }
+state-publishing-integration-test: site feedtorrent-test-runtime
 	node tests/browser-components-integration.mjs

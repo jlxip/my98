@@ -59,7 +59,10 @@ export function addHelp(label, {id, text, button, content}) {
 }
 
 document.addEventListener('keydown',event=>{if(event.key==='Escape'){const current=[...helpers].find(helper=>helper.opened());if(current){event.preventDefault();event.stopImmediatePropagation();current.escape();}}},true);
-document.addEventListener('click',event=>{for(const helper of helpers)if(helper.opened()&&!helper.contains(event.target))helper.close();},true);
+const dismissOutside = event => {for(const helper of helpers)if(helper.opened()&&!helper.contains(event.target))helper.close();};
+// Touch engines may deliver pointer events without a click on non-interactive text.
+document.addEventListener('pointerdown',event=>{if(event.pointerType==='touch'||event.pointerType==='pen')dismissOutside(event);},true);
+document.addEventListener('click',dismissOutside,true);
 document.addEventListener('my98:controlchange', () => helpers.forEach(helper => helper.update()));
 document.addEventListener('my98:modalchange', () => helpers.forEach(helper => helper.close()));
 window.addEventListener('resize', () => helpers.forEach(helper => helper.update()));
