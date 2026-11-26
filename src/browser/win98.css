@@ -22,15 +22,6 @@ body { margin: 0; }
 #disk-workspace .disk-action-row { display: flex; flex-wrap: wrap; }
 #disk-primary-actions { gap: 8px; margin-bottom: 12px; }
 #disk-menu-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; position: relative; }
-#disk-menu-bar .disk-menu::details-content { block-size: auto; opacity: 1; transition: none; }
-#disk-menu-bar .disk-menu:not([open])::details-content { display: none; }
-#disk-menu-bar summary { list-style: none; min-height: 44px; cursor: pointer; }
-#disk-menu-bar summary::-webkit-details-marker { display: none; }
-#disk-menu-bar summary span { margin-left: 8px; color: var(--muted-foreground); }
-#disk-menu-bar summary[aria-disabled=true] { opacity: .5; cursor: default; }
-#disk-menu-bar details[open] summary { background: var(--secondary); }
-#disk-menu-bar .disk-menu-items { position: absolute; top: calc(100% + 8px); left: 0; z-index: 20; width: min(280px, 100%); padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--popover); color: var(--popover-foreground); }
-#disk-menu-bar .disk-menu-items .btn { display: flex; justify-content: flex-start; text-align: left; width: 100%; min-height: 44px; margin: 0; }
 .disk-text-action { min-height: 44px; padding: 8px; border: 0; background: transparent; color: var(--muted-foreground); font: inherit; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
 #disk-close { margin-left: auto; }
 #disk-empty-form { max-width: 28rem; margin: 1rem 0; padding: 1rem; border: 1px solid var(--border); border-radius: .5rem; }
@@ -118,10 +109,6 @@ html.vm-expanded, html.vm-expanded body { overflow: hidden; overscroll-behavior:
 #disk-menu-items [role=menuitem] { white-space: normal; min-height: 44px; }
 #disk-replica-row { display: flex; align-items: center; gap: 4px; }
 #disk-replica-count { font-variant-numeric: tabular-nums; }
-.disk-replica-help { position: relative; }
-#disk-replica-info { min-height: 32px; width: 32px; padding: 0; }
-#disk-replica-help { position: absolute; z-index: 30; top: 100%; left: 0; width: min(320px, calc(100vw - 48px)); padding: 12px; border: 1px solid var(--border); border-radius: 8px; color: var(--popover-foreground); background: var(--popover); }
-@media (max-width: 540px) { .disk-replica-help { position: static; } #disk-replica-help { left: 16px; } #disk-replica-row { position: relative; } }
 
 #disk-menu-state { position: static; }
 #disk-menu-state [data-popover] { left: 0; right: auto; width: min(360px, calc(100vw - 48px)); max-width: calc(100vw - 48px); max-height: min(70dvh,600px); overflow-y: auto; transition-property: opacity,scale; }
@@ -141,3 +128,22 @@ html.vm-expanded, html.vm-expanded body { overflow: hidden; overscroll-behavior:
 .publication-update { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .publication-update > p { margin: 0; }
 #vm-publication-update { flex: 0 0 auto; padding: 8px; color: var(--foreground); background: var(--background); font-size: 13px; }
+
+#disk-menu-tools { position: static; }
+#disk-menu-tools [data-popover] { left: 0; width: min(360px, calc(100vw - 48px)); min-width: 0; max-width: calc(100vw - 48px); max-height: min(70dvh,600px); overflow-y: auto; transition-property: opacity, scale; }
+#disk-tools-items [role=menuitem] { white-space: normal; min-height: 44px; }
+#disk-workspace .icon-button { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; min-height: 40px; padding: 0; flex-shrink: 0; }
+#disk-workspace .icon-button .icon-mark, #disk-workspace .icon-button svg { display: block; width: 20px; height: 20px; }
+.ui-close { min-width: 44px; min-height: 44px; font-size: 20px; }
+.ui-confirm > div { width: min(460px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; }
+.ui-confirm header { display: flex; align-items: center; justify-content: space-between; gap: 16px; text-align: left; }
+.ui-confirm header h2 { margin: 0; font-size: 18px; }
+.ui-confirm section { padding: 0 18px; overflow-wrap: anywhere; }
+.ui-confirm section p { margin: 12px 0; }
+.ui-confirm footer { padding: 12px 18px; }
+.ui-help { display: inline-flex; align-items: center; flex-shrink: 0; margin-left: 4px; }
+.ui-help > .ui-info, #disk-workspace .ui-help > .ui-info { display: inline-flex; align-items: center; justify-content: center; width: 32px; min-width: 32px; height: 32px; min-height: 32px; padding: 0; margin: 0; font-size: 13px; }
+.ui-help > [data-popover] { transition-property: opacity, scale; position: fixed; z-index: 1100; inset: auto; width: max-content; min-width: 0; max-width: min(22rem, calc(100vw - 16px)); max-height: calc(100dvh - 16px); overflow-y: auto; white-space: pre-line; overflow-wrap: anywhere; text-align: left; font-size: 13px; font-weight: 400; user-select: text; }
+.ui-help > [aria-hidden=true] { display: none; }
+#controls legend { display: flex; align-items: center; }
+@media (any-pointer: coarse) { .ui-help > .ui-info, #disk-workspace .ui-help > .ui-info { min-width: 44px; width: 44px; height: 44px; min-height: 44px; } #disk-workspace .icon-button { min-width: 44px; width: 44px; height: 44px; } }

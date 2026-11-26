@@ -1,3 +1,4 @@
+import {autoConfirm} from './confirmations.mjs';
 import assert from 'node:assert/strict';
 import {chromium,webkit} from 'playwright';
 import {serveSite} from './server.mjs';
@@ -45,19 +46,19 @@ for(const [name,type] of Object.entries({chromium,webkit})) {
             assert.equal(await page.locator('#disk-open').isVisible(),true);
             assert.equal(await page.locator('#disk-save').isVisible(),false);
             await page.screenshot({path:`build/transport-retirement/${name}-workspace-disk-${width}.png`,fullPage:true});
-            await page.locator('#disk-menu-tools > summary').click();
+            await page.locator('#disk-tools-trigger').click();
             await page.waitForFunction(()=>document.querySelector('#disk-menu-trigger').getAttribute('aria-expanded')==='false');
             assert.equal(await page.locator('#disk-relay-key').isVisible(),true);
             assert.equal(await page.locator('#disk-clear-cache').isVisible(),false);
             assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
             await page.keyboard.press('Escape');
-            assert.equal(await page.locator('#disk-menu-tools').evaluate(el=>el.open),false);
-            assert.equal(await page.locator('#disk-menu-tools > summary').evaluate(el=>document.activeElement===el),true);
+            assert.equal(await page.locator('#disk-tools-trigger').getAttribute('aria-expanded'),'false');
+            assert.equal(await page.locator('#disk-tools-trigger').evaluate(el=>document.activeElement===el),true);
             await page.locator('#disk-menu-trigger').click();
             await page.locator('#disk-identity').click();
             assert.equal(await page.locator('#disk-menu-trigger').getAttribute('aria-expanded'),'false');
         }
-        page.on('dialog',d=>d.accept());await page.locator('#disk-close').click();
+        await autoConfirm(page);await page.locator('#disk-close').click();
         await page.waitForFunction(()=>!document.querySelector('#disk-login').hidden);
         fixtureOptions.publicationStatus=503;
         await unlockIdentity(page);assert.equal(await page.locator('#disk-identity').textContent(),key);

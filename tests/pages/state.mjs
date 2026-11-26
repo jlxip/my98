@@ -1,3 +1,4 @@
+import {autoConfirm} from './confirmations.mjs';
 import assert from "node:assert/strict";
 import {mkdir,readFile,writeFile} from "node:fs/promises";
 import {chromium,webkit} from "playwright";
@@ -31,7 +32,7 @@ try {for(const [name,type] of Object.entries({chromium,webkit})) {
   await page.waitForFunction(()=>!document.querySelector("#save-state").disabled);
   assert.equal(await page.locator("#pause").getAttribute("aria-label"),"Resume");
   await page.evaluate(async()=>{vm.v86.cpu.mem8[0x70000]=77;await disk.write(10000,new Uint8Array([99]));});
-  page.on("dialog",d=>d.accept());
+  await autoConfirm(page);
   async function load(file) {const chooser=page.waitForEvent("filechooser");await page.locator("#load-state").click();await(await chooser).setFiles(file);await page.waitForFunction(()=>!document.querySelector("#load-state").disabled);}
   const corrupt=Buffer.from(await readFile(path));corrupt[corrupt.length-1]^=1;
   await load({name:"broken.my98state",mimeType:"application/octet-stream",buffer:corrupt});

@@ -1,3 +1,4 @@
+import {autoConfirm} from './confirmations.mjs';
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { chromium, webkit } from "playwright";
@@ -24,7 +25,7 @@ for(const [name, type] of Object.entries({ chromium, webkit })) {
             });
             const page = await context.newPage(), errors = [];
             page.on("pageerror", error => errors.push(String(error)));
-            page.on("dialog", dialog => dialog.accept());
+            await autoConfirm(page);
             await page.goto(server.url);
             await page.waitForFunction(() => !document.body.inert);
             await page.evaluate(async () => {

@@ -52,5 +52,8 @@
   "vendor/basecoat-1.0.2/basecoat.min.js": "vendor/basecoat-1.0.2/basecoat.min.js",
   "vendor/basecoat-1.0.2/dropdown-menu.min.js": "vendor/basecoat-1.0.2/dropdown-menu.min.js",
   "src/browser/machine-config.js": "src/browser/machine-config.js",
-  "src/browser/publication-controls.js": "src/browser/publication-controls.js"
+  "src/browser/publication-controls.js": "src/browser/publication-controls.js",
+  "src/browser/ui-dialogs.js": "src/browser/ui-dialogs.js",
+  "src/browser/ui-help.js": "src/browser/ui-help.js",
+  "vendor/basecoat-1.0.2/popover.min.js": "vendor/basecoat-1.0.2/popover.min.js"
 }

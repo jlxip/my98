@@ -1,3 +1,4 @@
+import {autoConfirm} from './confirmations.mjs';
 import assert from 'node:assert/strict';
 import {mkdir} from 'node:fs/promises';
 import {chromium,firefox,webkit} from 'playwright';
@@ -44,7 +45,7 @@ try{for(const [name,engine] of Object.entries({chromium,firefox,webkit}).filter(
   await page.screenshot({path:output+'/'+name+'-replicas.png',animations:'disabled'});
   assert.equal(await page.locator('#disk-publish-group').count(),0);
   const readKey=await page.evaluate(async()=>{fixturePublishingStatus({active:false,state:'stopped'});return fixtureDiskClient.exportReadOnlyKey();});
-  page.on('dialog',dialog=>dialog.accept());await page.locator('#disk-close').click();await page.waitForFunction(()=>!document.querySelector('#disk-login').hidden);
+  await autoConfirm(page);await page.locator('#disk-close').click();await page.waitForFunction(()=>!document.querySelector('#disk-login').hidden);
   // Exercise real reader permissions, replacing only remote discovery with the
   // local compatibility file; WAN discovery has its own integration acceptance.
   await page.evaluate(async()=>{const input=document.createElement('input');input.type='file';input.id='fixture-reader';input.hidden=true;document.body.append(input);const {Slop86Disk}=await import('/build/disk/web/client.js');Slop86Disk.prototype.openRemoteReadOnly=function({readKey}){return this.openReadOnly({file:document.querySelector('#fixture-reader').files[0],readKey});};});

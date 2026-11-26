@@ -27,6 +27,7 @@ export async function authenticateState(vault,input,{compatibility,base,check,pr
 }
 export async function component(blob,kind,trackers,{check,progress}) {
     const hashes=new Uint8Array(Math.ceil(blob.size/262144)*20);
+    progress('hash',0,blob.size);await tick();check();
     for(let offset=0,index=0;offset<blob.size;offset+=262144,index++){
         check();hashes.set(publication_piece_hash(new Uint8Array(await blob.slice(offset,offset+262144).arrayBuffer())),index*20);
         progress('hash',Math.min(offset+262144,blob.size),blob.size);await tick();

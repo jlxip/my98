@@ -101,19 +101,20 @@ async function prepareRemote(args,owner,readKey) {
     }
 }
 function progress(phase, completed, total) {
-    if(performance.now() - (progressAt.get(phase)??-Infinity) > 100 || completed === total) {
+    if(completed === 0 || performance.now() - (progressAt.get(phase)??-Infinity) > 100 || completed === total) {
         progressAt.set(phase,performance.now()); self.postMessage({type:"progress", phase, completed, total, readBytes, readCalls, networkBytes, networkRequests});
     }
 }
 const yieldEvents = () => new Promise(resolve => setTimeout(resolve, 0));
 const ready = init().then(() => self.postMessage({type:"ready"})).catch(error => {initError = error; self.postMessage({type:"fatal",error:"Disk WASM could not initialize"});});
-async function build() {
+async function build(total) {
     const parts = [vault.header()]; let count = 0, id;
     try {
+        progress("encrypt",0,total);await yieldEvents();
         for(;;) {
             check(); const bytes = await vault.next(); if(!bytes) break;
             parts.push(new Blob([bytes]));
-            if(++count % 16 === 0) { progress("encrypt", count * 65536, 0); await yieldEvents(); }
+            if(++count % 16 === 0) { if(count*65536<total)progress("encrypt",count*65536,total); await yieldEvents(); }
         }
         check(); const blob = new Blob(parts, {type:"application/octet-stream"});
         // Accept only after Blob assembly succeeds and queued cancellation has been observed.
@@ -122,7 +123,7 @@ async function build() {
         const previous = current; current = id;restoredOrigin=undefined;freshRestore=false;
         prepared = {id:++nextDownload, blob, size:blob.size};
         if(previous) await remove(previous);
-        progress("encrypt", describe().size, describe().size);
+        progress("encrypt",total,total);
         return {...describe(), outcome:"created", download:prepared};
     } catch(error) { if(id && id !== current) await remove(id); vault.cancel(); throw error; }
 }
@@ -133,14 +134,16 @@ async function verifyCandidate(candidate) {
         if(count%16===0){progress("verify",count*65536,JSON.parse(candidate.describe()).size);await yieldEvents();}
     }
 }
-async function candidateBlob(candidate) {
-    const parts=[candidate.header()];
-    for(let count=0;;count++) {
+async function candidateBlob(candidate,total) {
+    const parts=[candidate.header()];let count=0;
+    progress("encrypt",0,total);await yieldEvents();
+    for(;;) {
         check();const bytes=await candidate.next();if(!bytes)break;
         parts.push(new Blob([bytes]));
-        if(count%16===0){progress("encrypt",count*65536,0);await yieldEvents();}
+        if(++count%16===0){if(count*65536<total)progress("encrypt",count*65536,total);await yieldEvents();}
     }
-    await yieldEvents();check();return new Blob(parts,{type:"application/octet-stream"});
+    await yieldEvents();check();const blob=new Blob(parts,{type:"application/octet-stream"});
+    progress("encrypt",total,total);return blob;
 }
 async function copyCiphertext(input) {
     const parts=[];
@@ -159,7 +162,7 @@ async function prepareSnapshot({kind="current",file,format="encrypted"}={}) {
             if(!identity)throw fail("READ_ONLY","Publishing requires the owner identity");
             if(!(file instanceof Blob)||!file.size)throw fail("IO_ERROR","Choose a nonempty disk file");
             id=source(file);candidate=vault.fresh();
-            if(kind==="raw") {candidate.begin_create(id,file.size);return await candidateBlob(candidate);}
+            if(kind==="raw") {candidate.begin_create(id,file.size);return await candidateBlob(candidate,file.size);}
             detached=await copyCiphertext(sources.get(id));await remove(id);id=source(detached);
             await candidate.open(id,detached.size);
         } else candidate=vault.snapshot(!identity&&format==="encrypted");
@@ -168,7 +171,7 @@ async function prepareSnapshot({kind="current",file,format="encrypted"}={}) {
             for(let offset=0;offset<size;offset+=65536){check();const bytes=await candidate.read(offset,Math.min(65536,size-offset));parts.push(new Blob([bytes]));bytes.fill(0);if(offset%1048576===0){progress("decrypt",offset,size);await yieldEvents();}}
             check();return new Blob(parts,{type:"application/octet-stream"});
         }
-        if(identity&&JSON.parse(candidate.describe()).dirty_bytes&&await candidate.begin_save())return await candidateBlob(candidate);
+        if(identity&&JSON.parse(candidate.describe()).dirty_bytes&&await candidate.begin_save())return await candidateBlob(candidate,JSON.parse(candidate.describe()).size);
         await verifyCandidate(candidate);
         return detached||await copyCiphertext(sources.get(current));
     } finally {candidate?.free();if(id)await remove(id);}
@@ -180,7 +183,8 @@ async function publishDisk(args) {
     const config=torrentSources(args.sources);
     if(!config.gateways.length||!config.trackers.length)throw fail("INVALID_SOURCE","Configure a publishing gateway and WebRTC trackers");
     const disk=await prepareSnapshot({...args,format:"encrypted"}),pieces=[];
-    for(let offset=0;offset<disk.size;offset+=262144){check();pieces.push(publication_piece_hash(new Uint8Array(await disk.slice(offset,offset+262144).arrayBuffer())));progress("hash",Math.min(offset+262144,disk.size),disk.size);}
+    progress("hash",0,disk.size);await yieldEvents();check();
+    for(let offset=0;offset<disk.size;offset+=262144){check();pieces.push(publication_piece_hash(new Uint8Array(await disk.slice(offset,offset+262144).arrayBuffer())));check();progress("hash",Math.min(offset+262144,disk.size),disk.size);}
     const hashes=new Uint8Array(pieces.length*20);pieces.forEach((p,i)=>hashes.set(p,i*20));
     await yieldEvents();check();
     const publicKey=new Uint8Array(identity.publicKey);
@@ -376,12 +380,12 @@ async function execute(op,a) {
         // Supply only the requested block; never allocate a full plaintext image.
         const id = `source:${++sourceId}`;
         sources.set(id, {size, read:async(offset, length) => new Uint8Array(length)});
-        try {vault.begin_create(id, size);return await build();}
+        try {vault.begin_create(id, size);return await build(size);}
         finally {await remove(id);}
     }
     case "create": {
         const id = source(a.file);
-        try {vault.begin_create(id,a.file.size);return await build();}
+        try {vault.begin_create(id,a.file.size);return await build(a.file.size);}
         finally {await remove(id);}
     }
     case "open": {
@@ -480,7 +484,7 @@ async function execute(op,a) {
     case "write": freshRestore=false;await vault.write(a.offset,a.bytes);return describe();
     case "save": {
         if(!await vault.begin_save()) {await yieldEvents();check();vault.accept_unchanged();return {...describe(),outcome:"unchanged"};}
-        return build();
+        return build(describe().size);
     }
     case "download": {
         if(describe().dirty_bytes) throw fail("OPERATION_FAILED", "Save or discard pending writes before downloading");

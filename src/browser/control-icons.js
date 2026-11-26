@@ -18,7 +18,9 @@ export function setControlIcon(button, name, label, help = label)
 {
     button.classList.add("icon-button");
     button.setAttribute("aria-label", label);
-    button.title = help;
+    const changed = button.dataset.help !== help;
+    button.dataset.help = help;button.removeAttribute("title");
+    if(changed) button.dispatchEvent(new Event("my98:controlchange",{bubbles:true}));
     if(button.dataset.icon === name) return;
     button.dataset.icon = name;
     const parts = name === "direct" ? [["tablet", "tablet-body"], ["pen", "stylus"]] :
@@ -34,6 +36,7 @@ export function setControlIcon(button, name, label, help = label)
 export function setupControlIcons()
 {
     const controls = {
+        "disk-copy-magnet": ["magnet", "Copy magnet"], "disk-stop-seeding": ["pause", "Stop seeding"], "disk-close": ["log-out", "Close identity"],
         pause: ["pause", "Pause"], reset: ["rotate-cw", "Reset"],
         "save-state": ["file-down", "Save state"], "load-state": ["folder-open", "Load state"],
         "cancel-state": ["x", "Cancel operation"], ctrlaltdel: ["keyboard", "Ctrl+Alt+Del"],

@@ -23,6 +23,9 @@
     "hand",
     "mouse-right",
     "triangle",
-    "minus"
-  ]
+    "minus",
+    "magnet",
+    "log-out"
+  ],
+  "selectionSha256": "e5091a395e2098bbf13cd5b5d33f507f509d997cce44ae5b50ed5e49ce025ee9"
 }

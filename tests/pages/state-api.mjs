@@ -15,7 +15,7 @@ try {for(const [name,type] of Object.entries({chromium,webkit})) {
    let checks=0;const ok=(v,m)=>{if(!v)throw Error(m);checks++;};
    const fails=async(work,pattern)=>{try{await work();}catch(e){ok(pattern.test(e.message+e.code),String(e));return;}throw Error("Expected rejection");};
    const file=new Blob([new Uint8Array(encrypted)]);
-   const owner=await Slop86Disk.create(),reader=await Slop86Disk.create(),other=await Slop86Disk.create();
+   const progress=[];const owner=await Slop86Disk.create({onProgress:p=>progress.push(p)}),reader=await Slop86Disk.create(),other=await Slop86Disk.create();
    try {
     await owner.unlock("disk fixtures","public compatibility password","main");
     await owner.open(file);const readKey=await owner.exportReadOnlyKey();
@@ -24,6 +24,9 @@ try {for(const [name,type] of Object.entries({chromium,webkit})) {
     const expected=Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",random)));
     const snapshot=await owner.saveState(random.buffer,{version:1,compatibility:"fixture",config:{},running:false});
     ok(snapshot.size>3*1024*1024,"multiple encrypted records");
+    const encryption=progress.filter(p=>p.phase==='encrypt-state'),total=encryption.at(-1)?.total;
+    ok(encryption[0]?.completed===0&&total>0&&encryption.at(-1)?.completed===total,"state encryption starts and completes");
+    ok(encryption.every((p,i)=>p.total===total&&p.completed>=0&&p.completed<=total&&(!i||p.completed>=encryption[i-1].completed)),"state encryption bounded progress");
     await owner.write(10000,new Uint8Array([99]));
     const url=URL.createObjectURL(snapshot.blob);
     let state=await owner.prepareState(url);URL.revokeObjectURL(url);

@@ -72,6 +72,7 @@ site-test: site
 	node scripts/run-browser-test.mjs tests/pages/media.mjs
 	node scripts/run-browser-test.mjs tests/pages/mobile.mjs
 	node scripts/run-browser-test.mjs tests/pages/controls.mjs
+	node scripts/run-browser-test.mjs tests/pages/ux.mjs
 	node --test tests/publication-session.test.mjs tests/feedtorrent-protocol.test.mjs tests/torrent-state-queue.test.mjs tests/startup-prefetch.test.mjs tests/torrent-startup-window.test.mjs tests/publication-replicas.test.mjs tests/publication-seeds.test.mjs
 	node scripts/run-browser-test.mjs tests/torrent-store.mjs
 	node scripts/run-browser-test.mjs tests/feedtorrent-records.mjs

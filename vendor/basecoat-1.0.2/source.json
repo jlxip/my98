@@ -13,6 +13,10 @@
     "dropdown-menu.min.js": {
       "file": "dist/js/dropdown-menu.min.js",
       "sha256": "7ef7efd87cc655249a9c86c38fdac3c202c9025bf46021921c5853a74570766c"
+    },
+    "popover.min.js": {
+      "file": "dist/js/popover.min.js",
+      "sha256": "b3eb0e639c88611965d978e18d74a84cd48e00b94a4d3ce03dbb034532d51933"
     }
   }
 }

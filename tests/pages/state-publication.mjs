@@ -1,3 +1,4 @@
+import {autoConfirm} from './confirmations.mjs';
 import assert from 'node:assert/strict';
 import {mkdir} from 'node:fs/promises';
 import {chromium,firefox,webkit} from 'playwright';
@@ -10,7 +11,7 @@ const fixture=await diskFixture(),server=await serveSite({headers:true});
 try{for(const [name,engine] of Object.entries({chromium,firefox,webkit}).filter(([name])=>!process.env.MY98_PUBLISH_BROWSERS||process.env.MY98_PUBLISH_BROWSERS.split(',').includes(name))){
  const browser=await engine.launch(browserOptions(name));
  try{
-  const page=await browser.newPage({viewport:{width:1280,height:900}}),errors=[];page.on('pageerror',e=>errors.push(String(e)));page.on('dialog',d=>d.accept());await page.addInitScript(quietAudio);
+  const page=await browser.newPage({viewport:{width:1280,height:900}}),errors=[];page.on('pageerror',e=>errors.push(String(e)));await autoConfirm(page);await page.addInitScript(quietAudio);
   await page.goto(server.url);await page.waitForFunction(()=>!document.body.inert);
   await page.evaluate(async()=>{
    const {V86}=await import('/build/libv86.mjs'),run=V86.prototype.run;V86.prototype.run=function(...a){window.fixtureVm=this;return run.apply(this,a);};
@@ -18,10 +19,12 @@ try{for(const [name,engine] of Object.entries({chromium,firefox,webkit}).filter(
    const base='ab'.repeat(20);window.publishedProfiles=[];window.updates=[];
    window.profile={version:2,infoHash:base,unitBytes:65536,origin:{kind:'boot'},ranges:Array(32).fill(null)};profile.ranges[0]=[0,0];
    // UI contract fixture only; Worker validation and real transport are covered by the private chain.
-   Slop86Disk.create=async function(events){const client=await create.call(this,events);window.client=client;
+   Slop86Disk.create=async function(events){
+    window.stateProgress=[];window.fixtureProgress=p=>{events.onProgress(p);if(p.phase==='encrypt-state')stateProgress.push({completed:p.completed,total:p.total,disk:document.querySelector('#disk-status').textContent,session:document.querySelector('#session-status').textContent});};
+    const client=await create.call(this,{...events,onProgress:fixtureProgress});window.client=client;
     const describe=client.describe.bind(client);client.describe=async()=>({...await describe(),remote:{infoHash:base,stateInfoHash:'cd'.repeat(20)}});
     client.publicationDetails=async()=>({hasState:true,hasProfiles:publishedProfiles.length>0,profiles:publishedProfiles});
-    client.publishUpdate=async options=>{if(window.failPublication)throw Error('Injected announcement failure');updates.push(options);if(options.action==='profiles')publishedProfiles=options.profiles;events.onPublishing({active:true,state:'seeding',replicas:{complete:1,label:'1'}});return {active:true,state:'seeding'};};
+    client.publishUpdate=async options=>{if(window.failPublication)throw Error('Injected announcement failure');if(window.holdPublication)await new Promise(resolve=>window.finishPublication=resolve);updates.push(options);if(options.action==='profiles')publishedProfiles=options.profiles;events.onPublishing({active:true,state:'seeding',replicas:{complete:1,label:'1'}});return {active:true,state:'seeding'};};
     client.startLoadAnalysis=async()=>{};client.finishLoadAnalysis=async()=>[structuredClone(profile)];return client;};
    Slop86Disk.prototype.open=async function(file){const state=await open.call(this,file);return {...state,remote:{infoHash:base,stateInfoHash:'cd'.repeat(20)}};};
   });
@@ -33,11 +36,39 @@ try{for(const [name,engine] of Object.entries({chromium,firefox,webkit}).filter(
   const runningBefore=await page.evaluate(()=>fixtureVm.is_running());
   await diskAction(page,'disk-publish-state');await page.waitForFunction(()=>updates.length===1&&!document.querySelector('#disk-publish-state').disabled);
   assert.equal(await page.evaluate(()=>fixtureVm.is_running()),runningBefore);assert.equal(await page.evaluate(()=>updates[0].file instanceof Blob),true);
+  const stateProgress=await page.evaluate(()=>window.stateProgress);
+  assert.equal(stateProgress[0]?.disk,'Encrypting state: 0%…');assert.equal(stateProgress.at(-1)?.disk,'Encrypting state: 100%…');
+  assert(stateProgress.every(p=>p.disk===p.session&&/^Encrypting state: \d+%…$/.test(p.disk)));
   const mediaChooser=page.waitForEvent('filechooser');await page.locator('#insert-fda').click();await (await mediaChooser).setFiles({name:'blank.img',mimeType:'application/octet-stream',buffer:Buffer.alloc(1440*1024)});
   await page.waitForFunction(()=>!document.querySelector('#disk-publish-state').disabled);await diskAction(page,'disk-publish-state');
   await page.waitForFunction(()=>document.querySelector('#disk-status').textContent.includes('Eject'));assert.equal(await page.evaluate(()=>updates.length),1);
   assert.equal(await page.locator('#fda-name').textContent(),'blank.img');await page.locator('#insert-fda').click();
   await page.waitForFunction(()=>!document.querySelector('#disk-publish-state').disabled);
+  // A held update keeps working=true without capturing: all target phases must render.
+  await page.waitForFunction(()=>!document.querySelector('#disk-remove-state').disabled);
+  await page.evaluate(()=>window.holdPublication=true);await diskAction(page,'disk-remove-state');
+  await page.waitForFunction(()=>typeof finishPublication==='function');
+  for(const [phase,label] of [['encrypt','Encrypting'],['hash','Hashing'],['encrypt-state','Encrypting state']]) {
+   for(const [completed,total,expected] of [[0,1000,'0%'],[427,1000,'42%'],[999,1000,'99%'],[1000,1000,'100%'],[1,0,null],[1,NaN,null],[-1,10,null],[11,10,'100%']]) {
+    await page.evaluate(p=>fixtureProgress(p),{phase,completed,total});
+    assert.equal(await page.locator('#disk-status').textContent(),expected===null?label+'…':label+': '+expected+'…');
+   }
+  }
+  for(const width of [1280,390,320]) {
+   await page.setViewportSize({width,height:900});await page.evaluate(()=>fixtureProgress({phase:'hash',completed:427,total:1000}));
+   await page.locator('#disk-status').scrollIntoViewIfNeeded();assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+   await page.screenshot({path:output+'/'+name+'-percentage-'+width+'.png',animations:'disabled'});
+  }
+  await page.evaluate(()=>{fixtureProgress({error:{message:'Injected progress error'}});fixtureProgress({phase:'hash',completed:1000,total:1000});});
+  assert.equal(await page.locator('#disk-status').textContent(),'Injected progress error');assert(await page.locator('#disk-status').evaluate(e=>e.classList.contains('error')));
+  await page.evaluate(()=>{window.holdPublication=false;finishPublication();});
+  await page.waitForFunction(()=>!document.querySelector('#disk-remove-state').disabled);
+  const finalStatus=await page.locator('#disk-status').textContent();await page.evaluate(()=>fixtureProgress({phase:'hash',completed:1,total:2}));
+  assert.equal(await page.locator('#disk-status').textContent(),finalStatus,'late progress does not replace the result');
+  await page.evaluate(()=>{window.holdPublication=true;window.finishPublication=undefined;});await diskAction(page,'disk-remove-state');
+  await page.waitForFunction(()=>typeof finishPublication==='function');await page.evaluate(()=>fixtureProgress({phase:'hash',completed:0,total:1}));
+  assert.equal(await page.locator('#disk-status').textContent(),'Hashing: 0%…','new operation resets progress errors');
+  await page.evaluate(()=>{window.holdPublication=false;finishPublication();});await page.waitForFunction(()=>!document.querySelector('#disk-remove-state').disabled);
   // State dropdown uses the same Basecoat keyboard and viewport behavior as Disk.
   for(const width of [1280,390,320]){
    await page.setViewportSize({width,height:900});await page.locator('#disk-state-trigger').focus();await page.keyboard.press('ArrowDown');

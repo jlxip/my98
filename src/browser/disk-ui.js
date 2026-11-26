@@ -3,55 +3,31 @@ import {diskControls} from './disk-controls.js';
 import {DiskSession} from './disk-session.js';
 import {publicationOptions} from './publication-options.js';
 import {setupPublicationControls} from './publication-controls.js';
+import {addHelp} from './ui-help.js';
+import {confirmAction,hasOpenDialog,restoreDialogFocus} from './ui-dialogs.js';
 
 /** Disk/VM controls. Secret contexts stay in the independent disk Worker. */
 export function setupDisk(host) {
     const $ = id => document.getElementById("disk-" + id);
     const session=new DiskSession(host);
-    let working=false,capturing=false,readOnlyAccess=false,seed={active:false};
-    const menus=[...$("workspace").querySelectorAll(".disk-menu")];
-    const diskMenu=$("menu-disk"),stateMenu=$("menu-state"),dropdowns=[diskMenu,stateMenu];
+    let working=false,capturing=false,progressFailed=false,readOnlyAccess=false,seed={active:false};
+    const diskMenu=$("menu-disk"),dropdowns=[diskMenu,$("menu-state"),$("menu-tools")];
     for(const menu of dropdowns)menu.querySelector(':scope > button').addEventListener('click',()=>menu.querySelector(':scope > button').focus({preventScroll:true}));
-    // WebKit on macOS does not focus a native button on a mouse click.
-    // Basecoat handles keys on its wrapper, so keep the open trigger focused.
-    $("menu-trigger").addEventListener('click',()=>$("menu-trigger").focus({preventScroll:true}));
-    diskMenu.addEventListener('click',event=>{
-        if(event.target.closest('#disk-empty')&&!$("empty-form").hidden)$("empty-size").focus();
-    });
-    document.addEventListener('basecoat:popover',event=>{if(dropdowns.includes(event.detail.source)){for(const menu of menus)if(menu.open)closeMenu(menu);for(const menu of dropdowns)if(menu!==event.detail.source)menu.close?.(false);}});
-    for(const menu of menus)menu.addEventListener('toggle',()=>{if(menu.open)for(const dropdown of dropdowns)dropdown.close?.(false);});
-    const help=$("replica-help"),info=$("replica-info");
-    let helpPinned=false;
-    const showHelp=show=>{help.hidden=!show;info.setAttribute('aria-expanded',String(show));};
-    info.addEventListener('mouseenter',()=>showHelp(true));
-    info.addEventListener('mouseleave',()=>{if(document.activeElement!==info&&!helpPinned)showHelp(false);});
-    info.addEventListener('focus',()=>showHelp(true));info.addEventListener('blur',()=>{helpPinned=false;showHelp(false);});
-    info.addEventListener('click',()=>{helpPinned=!helpPinned;showHelp(helpPinned);});
-    document.addEventListener('click',event=>{if(!event.target.closest('.disk-replica-help')){helpPinned=false;showHelp(false);}});
-    info.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();helpPinned=false;showHelp(false);}});
-    function closeMenu(menu,restoreFocus=false) {
-        const focused=menu.querySelector(".disk-menu-items").contains(document.activeElement);
-        menu.open=false;
-        if((focused||restoreFocus)&&!menu.hidden)menu.querySelector("summary").focus();
+    diskMenu.addEventListener('click',event=>{if(event.target.closest('#disk-empty')&&!$("empty-form").hidden)$("empty-size").focus();});
+    addHelp(null,{id:'seedboxes',button:$("replica-info"),content:$("replica-help"),text:$("replica-help").textContent});
+    const publicationLabel=document.createElement('span');publicationLabel.textContent='Publication';
+    $("seeding").insertBefore(publicationLabel,$("seeding").lastElementChild);
+    addHelp(publicationLabel,{id:'publication',text:'Copy magnet: copy the link that follows this identity.\nStop seeding: stop sharing the prepared snapshot from this page.'});
+    let operationTrigger,confirmationUsed=false;
+    const context = () => [session.client,session.description?.disk_id?.join(','),session.description?.remote?.infoHash,session.description?.remote?.sequence,session.pendingPublication?.sequence];
+    async function confirm(title,text,confirmLabel) {
+        const before=context();confirmationUsed=true;
+        const accepted=await confirmAction({title,message:text,confirmLabel,trigger:operationTrigger});
+        if(!accepted){message('Operation cancelled.');return false;}
+        if(context().some((value,i)=>value!==before[i])){message('The selection changed. Please try again.',true);return false;}
+        return true;
     }
-    for(const menu of menus) {
-        menu.querySelector("summary").addEventListener("click",event=>{
-            if(working||host.busy())event.preventDefault();
-        });
-        menu.addEventListener("toggle",()=>{
-            if(menu.open)for(const other of menus)if(other!==menu)closeMenu(other);
-        });
-    }
-    $("workspace").addEventListener("click",event=>{
-        if(event.target.closest(".disk-menu-items button"))for(const menu of menus)if(menu.open)closeMenu(menu);
-    });
-    document.addEventListener("click",event=>{
-        if(!event.target.closest(".disk-menu"))for(const menu of menus)if(menu.open)closeMenu(menu);
-    });
-    $("workspace").addEventListener("keydown",event=>{
-        const menu=event.target.closest(".disk-menu");
-        if(event.key==="Escape"&&menu?.open){event.preventDefault();event.stopPropagation();closeMenu(menu,true);}
-    });
+    document.addEventListener('my98:modalchange',()=>{if(!hasOpenDialog())schedulePublicationUpdate();});
     const progress = setupDiskProgress($("progress"), () => session.active && host.hasSession() && session.description?.remote ?
         {client:session.client, adapter:session.adapter, infoHash:session.description.remote.infoHash, busy:working || host.busy()} : null);
     const stateSaveButton=document.getElementById("save-state"), stateLoadButton=document.getElementById("load-state"), stateCancelButton=document.getElementById("cancel-state");
@@ -85,17 +61,17 @@ export function setupDisk(host) {
         document.getElementById('vm-cancel-publication').hidden=!updatingPublication;document.getElementById('vm-cancel-publication').disabled=false;
     }
     function schedulePublicationUpdate() {
-        if(!working&&!host.busy()&&!updatingPublication&&session.automaticUpdate&&!$('profiles-dialog').open) {
+        if(!working&&!host.busy()&&!updatingPublication&&session.automaticUpdate&&!hasOpenDialog()) {
             queueMicrotask(()=>{
-                if(!working&&!host.busy()&&session.automaticUpdate&&!$('profiles-dialog').open)void changePublication(false);
+                if(!working&&!host.busy()&&session.automaticUpdate&&!hasOpenDialog())void changePublication(false);
             });
         }
     }
     async function changePublication(manual) {
         if(working||host.busy()||session.analyzing||!session.pendingPublication)return;
         const restart=manual&&session.usedForVm;
-        if(manual&&(restart||session.description.dirty_bytes)&&!window.confirm('Open the latest publication? The current Windows session, RAM and pending disk changes will be discarded.'))return;
         await run('Opening latest publication…',async()=>{
+            if(manual&&(restart||session.description.dirty_bytes)&&!await confirm('Open latest publication?', 'The current Windows session, RAM and pending disk changes will be discarded.', 'Open latest version'))return;
             updatingPublication=true;publicationError=undefined;renderPublication();
             try {
                 await session.updatePublication({restart,mode:bootLatest===session.pendingPublication?.sequence?'boot':session.remoteMode,discardChanges:manual,onStart:()=>syncControls(true)});
@@ -120,7 +96,7 @@ export function setupDisk(host) {
         if(replicas.complete>0&&replicas.unavailable)$("replica-status").textContent+=' Some receivers cannot report progress.';
         $("seed-local").textContent=value.seedError?'Snapshot retained. Seeding error: '+value.seedError.message:value.active&&value.state!=='preparing'?'This page is seeding the prepared snapshot.':'';
         $("retry-publication").hidden=value.state!=="unconfirmed";
-        $("copy-magnet").disabled=$("copy-catalog").disabled=!value.magnet;
+        $("copy-magnet").disabled=!value.magnet;
         syncControls(host.busy());
     }
     window.addEventListener("beforeunload",event=>{if(seed.active&&!(seed.replicas?.complete>0)){event.preventDefault();event.returnValue="";}});
@@ -135,8 +111,8 @@ export function setupDisk(host) {
         $("auth-switch").textContent=readOnlyAccess?"Or log in":"Or use a read key";
         $("brand").hidden=view.authenticated;$("notice").hidden=!view.authenticated;
         document.getElementById("welcome").classList.toggle("authenticated",view.authenticated);
-        if(busy||working||!view.authenticated){for(const dropdown of dropdowns)dropdown.close?.(false);for(const menu of menus)if(menu.open)closeMenu(menu);}
-        $("panel").querySelectorAll("button,input,select").forEach(element=>element.disabled=busy||working);
+        if(busy||working||!view.authenticated)for(const dropdown of dropdowns)dropdown.close?.(false);
+        $("panel").querySelectorAll("button,input,select").forEach(element=>{if(element.classList.contains("ui-info")||element.id==="disk-profiles-close")element.disabled=false;else element.disabled=busy||working;});
         $("workspace").querySelectorAll("[data-disk-action]").forEach(element=>{
             element.hidden=!!view.hidden[element.dataset.diskAction];
         });
@@ -144,11 +120,6 @@ export function setupDisk(host) {
         $("boot").dataset.variant=view.hidden['resume-state']?"primary":"secondary";
         $("save-state").disabled=view.disabled['save-state'];
         $("download").textContent=session.description?.readOnly?"Download original encrypted disk":"Download encrypted disk";
-        for(const menu of menus) {
-            menu.hidden=![...menu.querySelectorAll("[data-disk-action]")].some(element=>!element.hidden);
-            menu.querySelector("summary").setAttribute("aria-disabled",String(busy||working));
-            if(menu.hidden&&menu.open)closeMenu(menu);
-        }
         if(view.hideEmptyForm) {$("empty-form").hidden=true;$("empty").setAttribute("aria-expanded","false");}
         $("analyze").textContent=view.analyzing ? "Stop analyzing" : "Analyze loads";
         $("resume").hidden=!view.showRetry;
@@ -182,12 +153,12 @@ export function setupDisk(host) {
     }
     async function run(text,work) {
         if(working||host.busy())return;
-        working=true;host.setBusy(true);message(text);
+        operationTrigger=document.activeElement;confirmationUsed=false;progressFailed=false;working=true;host.setBusy(true);message(text);
         try {await work();}
         catch(error) {message(error.code==="CANCELLED"?"Operation cancelled. The previous disk and its pending changes are preserved.":error.message,true);}
-        finally {working=false;capturing=false;host.setBusy(false);renderPublication();schedulePublicationUpdate();}
+        finally {working=false;capturing=false;host.setBusy(false);renderPublication();if(confirmationUsed)restoreDialogFocus(operationTrigger);schedulePublicationUpdate();}
     }
-    const publicationControls=setupPublicationControls({session,$,host,run,message,syncControls,sources:async()=>(await publicationOptions()).sources});
+    const publicationControls=setupPublicationControls({session,$,host,run,message,syncControls,confirm,sources:async()=>(await publicationOptions()).sources});
     function download(result) {
         session.prepared=true;
         host.download(result.blob,`${session.description.disk_id.slice(0,4).map(n=>n.toString(16).padStart(2,"0")).join("")}.my98`);
@@ -212,7 +183,16 @@ export function setupDisk(host) {
                 message(session.analysisError, true);
                 void session.cancelLoadAnalysis().then(() => syncControls(host.busy())).catch(error => message(error.message, true));
             },onProgress:p=>{
-                if(p.error){stateMessage(p.error.message,true);return;}
+                if(p.error){progressFailed=true;stateMessage(p.error.message,true);return;}
+                if(progressFailed)return;
+                const label=({encrypt:"Encrypting",hash:"Hashing","encrypt-state":"Encrypting state"})[p.phase];
+                if(label) {
+                    if(!working)return;
+                    const known=Number.isSafeInteger(p.total)&&p.total>0&&Number.isSafeInteger(p.completed)&&p.completed>=0;
+                    const percent=known?(p.completed>=p.total?100:Math.min(99,Math.floor(100*p.completed/p.total))):undefined;
+                    message(percent===undefined?`${label}…`:`${label}: ${percent}%…`);
+                    return;
+                }
                 if(session.stateAbort) {
                     const labels={compress:"Compressing state", "encrypt-state":"Encrypting state", "decrypt-state":"Decrypting state", "download-state":"Downloading state", decompress:"Decompressing state"};
                     message(`${labels[p.phase] || "Preparing state"}: ${(p.completed/1048576).toFixed(1)} MiB…`);
@@ -260,6 +240,7 @@ export function setupDisk(host) {
         if(working || host.busy())return;
         $("empty-form").hidden=true;$("empty").setAttribute("aria-expanded","false");$("menu-trigger").focus();
     };
+    for(const [panel,close] of [['empty-form','empty-cancel'],['analysis-options','analyze-cancel']])$(panel).addEventListener('keydown',event=>{if(event.key==='Escape'&&!working&&!host.busy()){event.preventDefault();event.stopPropagation();$(close).click();}});
     $("empty-form").onsubmit=event=>{
         event.preventDefault();
         if(!session.client || session.description || working || host.busy())return;
@@ -270,7 +251,7 @@ export function setupDisk(host) {
         }
         run("Creating empty disk…",async()=>{
             capturing=true;syncControls(true);
-            const description=await session.createEmpty(sizeMiB*1048576);download(description.download);
+            const description=await session.createEmpty(sizeMiB*1048576);download(description.download);$("empty-form").reset();
         });
     };
     $("open").onclick=()=>run("Opening encrypted disk…",async()=>{
@@ -279,7 +260,7 @@ export function setupDisk(host) {
     });
     async function boot(analyze = false) {
         message("Booting encrypted disk…");
-        if(host.hasSession()&&!window.confirm("Close the current Windows session and boot this disk? Save its disk first."))return;
+        if(host.hasSession()&&!await confirm("Boot this disk?","Close the current Windows session and boot this disk? Save its disk first.","Boot"))return;
         capturing=true;syncControls(true);
         await session.boot({analyze,onDiskError:async error=>{await host.fail(error);message("Disk stopped: "+error.message+". You can retry the operation.",true);syncControls(host.busy());}});
         message(session.analysisError || (session.analyzing ? "Recording disk reads. Perform the expected actions, then select Stop analyzing to download the profile." : "Windows is using the encrypted disk. Shut it down before saving."), !!session.analysisError);
@@ -292,7 +273,7 @@ export function setupDisk(host) {
         } catch(error) {stateMessage(error.message,true);throw error;}
     }
     async function restoreState(input, {analyze=false,published=false}={}) {
-        if(host.hasSession()&&!window.confirm("Replace the current session with this state? Changes made since it was saved will be lost."))return;
+        if(host.hasSession()&&!await confirm("Replace current session?","Changes made since it was saved will be lost.","Restore state"))return;
         try {
             await session.restoreState(input,{analyze,onStart:()=>syncControls(true)});
             stateMessage(analyze ? "Recording disk reads. Perform the expected actions, then select Stop analyzing to download the profile." : "State restored. Pending disk writes were replaced by the saved state.");
@@ -330,12 +311,12 @@ export function setupDisk(host) {
             try {await action();}catch(error){if(id!=='boot')await session.cancelLoadAnalysis().catch(()=>{});session.analyzing=false;throw error;}
         });
     }
-    $("analyze-cancel").onclick=()=>{$("analysis-options").hidden=true;};
+    $("analyze-cancel").onclick=()=>{$("analysis-options").hidden=true;$("tools-trigger").focus();};
     async function publish(kind="current") {
         let file;
         if(kind!=="current"){[file]=await host.pickFiles();if(!file)return;}
         const details=await session.client.publicationDetails({sources:(await publicationOptions()).sources,requireBase:false});
-        if((details.hasState||details.hasProfiles)&&!window.confirm('Publishing a disk removes the published state and load profiles. Continue?'))return;
+        if((details.hasState||details.hasProfiles)&&!await confirm('Replace published disk?','Publishing a disk removes the published state and load profiles.','Publish disk'))return;
         capturing=true;syncControls(true);
         const result=await session.publishDisk({kind,file,sources:await publicationOptions().then(value=>value.sources)});
         message("");
@@ -350,12 +331,12 @@ export function setupDisk(host) {
         message("Disk download prepared. Check that the file was saved.");
     });
     $("stop-seeding").onclick=()=>run("Stopping seed…",async()=>{
-        if(!(seed.replicas?.complete>0)&&!window.confirm("No complete replica has been confirmed. Stopping the seed may make this publication unavailable."))return;
+        if(!(seed.replicas?.complete>0)&&!await confirm("Stop seeding?","No complete replica has been confirmed. Stopping the seed may make this publication unavailable.","Stop seeding"))return;
         await session.client.stopSeeding();message("Seeding stopped.");
     });
     $("retry-publication").onclick=()=>run("Retrying announcement…",async()=>{capturing=true;syncControls(true);await session.client.retryPublication();message("");});
-    for(const [id,key] of [["copy-magnet","magnet"],["copy-catalog","catalogMagnet"]])$(id).onclick=()=>run("Copying magnet…",async()=>{
-        await navigator.clipboard.writeText(seed[key]);message("Magnet copied.");
+    $("copy-magnet").onclick=()=>run("Copying magnet…",async()=>{
+        await navigator.clipboard.writeText(seed.magnet);message("Magnet copied.");
     });
     $("retry").onclick=()=>run("Retrying download…",async()=>download(await session.retryDownload()));
     $("verify").onclick=()=>run("Verifying full disk…",async()=>{
@@ -369,12 +350,12 @@ export function setupDisk(host) {
     });
     $("resume").onclick=()=>run("Retrying disk access…",async()=>{await session.retryAdapter();message("Disk access restored. Windows retains its RAM and writes.");});
     $("discard").onclick=()=>run("Discarding writes…",async()=>{
-        if(!window.confirm("Discard pending writes and close this Windows session? The source file is preserved."))return;
+        if(!await confirm("Discard pending writes?","Discard pending writes and close this Windows session? The source file is preserved.","Discard writes"))return;
         await session.discardWrites();message("Writes discarded.");
     });
     $("cancel").onclick=()=>{session.cancel();message("Cancellation requested…");};
     $("close").onclick=()=>run("Closing identity…",async()=>{
-        if(!window.confirm("Close the identity? Pending changes and the prepared download for this session will be lost."+(seed.active&&!(seed.replicas?.complete>0)?" No complete replica has been confirmed; this also stops seeding.":"")))return;
+        if(!await confirm("Close identity?","Pending changes and the prepared download for this session will be lost."+(seed.active&&!(seed.replicas?.complete>0)?" No complete replica has been confirmed; this also stops seeding.":""),"Close identity"))return;
         publicationControls.close();await session.close();bootLatest=false;$("identity").textContent="";$("analysis-options").hidden=true;
         $("password").value="";$("empty-size").value="1024";
         message("");

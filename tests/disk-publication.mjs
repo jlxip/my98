@@ -20,14 +20,20 @@ try{for(const [name,engine] of Object.entries({chromium,firefox,webkit}).filter(
    const {default:init,Vault,verify}=await import('/build/disk/pkg/slop86_disk.js');await init();
    const checks=[],check=(b,text)=>{if(!b)throw Error(text);checks.push(text);};
    const reject=async(work,code)=>{try{await work;throw Error('Unexpected success');}catch(e){check(e.code===code,'reject '+code+': '+e.message);}};
-   const c=await Slop86Disk.create(),credentials=['publication fixtures','public test password','main'];
+   const events=[];let cancelAt;
+   const c=await Slop86Disk.create({onProgress:p=>{events.push(p);if(cancelAt===p.phase&&(p.phase==='encrypt'||p.completed===p.total))c.cancel();}}),credentials=['publication fixtures','public test password','main'];
+   const progress=(phase,total)=>{
+    const values=events.filter(p=>p.phase===phase);
+    check(values[0]?.completed===0&&values.at(-1)?.completed===total,phase+' starts and completes');
+    check(values.every((p,i)=>p.total===total&&p.completed>=0&&p.completed<=total&&(!i||p.completed>=values[i-1].completed)),phase+' exact bounded progress');
+   };
    try{
     await c.unlock(...credentials);const bytes=new Uint8Array(65536+512);bytes[0]=12;bytes[510]=85;bytes[511]=170;
-    const original=(await c.createFromImage(new Blob([bytes]))).download.blob;
+    const original=(await c.createFromImage(new Blob([bytes]))).download.blob;progress("encrypt",bytes.length);events.length=0;
     await c.write(10,new Uint8Array([99]));const before=await c.describe();
     const raw=(await c.exportDisk('raw')).blob;
     check(new Uint8Array(await raw.arrayBuffer())[10]===99,'raw export includes overlay');
-    const encrypted=(await c.exportDisk()).blob;
+    const encrypted=(await c.exportDisk()).blob;progress('encrypt',bytes.length);events.length=0;
     const reader=await Slop86Disk.create();await reader.unlock(...credentials);await reader.open(encrypted);
     check((await reader.read(10,1))[0]===99,'encrypted snapshot authenticates and includes overlay');await reader.close();
     check(JSON.stringify(await c.describe())===JSON.stringify(before),'exports preserve original disk, overlay and revision');
@@ -40,6 +46,11 @@ try{for(const [name,engine] of Object.entries({chromium,firefox,webkit}).filter(
     check(a.length===b.length&&a.every((v,i)=>v===b[i]),'read-only encrypted export is byte-identical original');await ro.close();
     const foreign=await Slop86Disk.create();await foreign.unlock('other','public test password','main');const wrong=(await foreign.createFromImage(new Blob([bytes]))).download.blob;await foreign.close();
     const sources={gateways:[location.origin],trackers:['ws://127.0.0.1:1']};
+    cancelAt='encrypt';await reject(c.publishDisk({kind:'raw',file:new Blob([bytes]),sources}),'CANCELLED');
+    check(!events.some(p=>p.phase==='encrypt'&&p.completed===p.total),'cancelled candidate never completes');events.length=0;
+    cancelAt='hash';await reject(c.publishDisk({kind:'raw',file:new Blob([bytes]),sources}),'CANCELLED');
+    progress('encrypt',bytes.length);progress('hash',original.size);events.length=0;cancelAt=undefined;
+    check(JSON.stringify(await c.describe())===JSON.stringify(before),'cancelled raw publication preserves current disk');
     await reject(c.publishDisk({format:'raw',sources}),'INVALID_PUBLICATION');
     await reject(c.publishDisk({kind:'encrypted',file:wrong,sources}),'AUTHENTICATION_FAILED');
     const damaged=new Uint8Array(await original.arrayBuffer());damaged[damaged.length-1]^=1;

@@ -1,3 +1,4 @@
+import {autoConfirm} from './confirmations.mjs';
 import assert from "node:assert/strict";
 import {mkdir, stat, writeFile} from "node:fs/promises";
 import {chromium, webkit} from "playwright";
@@ -28,12 +29,21 @@ for(const [name, type] of Object.entries({chromium, webkit})) {
                 await c.unlock("disk fixtures",password,"main");return c;
             };
             try {
-                const c=await make();
+                const events=[],onProgress=p=>events.push(p);
+                const progress=(label,total)=>{
+                    const values=events.filter(p=>p.phase==='encrypt');
+                    check(label+' starts at zero',values[0]?.completed===0);
+                    check(label+' ends at logical size',values.at(-1)?.completed===total);
+                    check(label+' has exact bounded totals',values.every((p,i)=>p.total===total&&p.completed>=0&&p.completed<=total&&(!i||p.completed>=values[i-1].completed)));
+                    events.length=0;
+                };
+                const c=await make({onProgress});
                 for(const size of [undefined,null,"1048576",NaN,Infinity,-512,0,1,513,1.5,2**40+512,Number.MAX_SAFE_INTEGER+1]) {
                     await rejects("invalid size "+String(size),()=>c.createEmpty(size),"INVALID_SIZE");
                 }
                 check("invalid sizes leave no disk",await c.describe().then(()=>false,()=>true));
                 const size=65536+512, saved=await c.createEmpty(size);
+                progress("partial create",size);
                 check("partial final block and full encrypted length",saved.size===size && saved.download.size===198+size+2*62);
                 check("all plaintext bytes zero",(await c.read(0,size)).every(byte=>byte===0));
                 const identity=(await c.describe()).disk_id.join();
@@ -42,10 +52,10 @@ for(const [name, type] of Object.entries({chromium, webkit})) {
                 check("failed replacement preserves identity and writes",(await c.describe()).disk_id.join()===identity && (await c.read(0,1))[0]===42);
                 const original=saved.download.blob;
                 await c.close();
-                const d=await make();await d.open(original);
+                const d=await make({onProgress});await d.open(original);
                 check("reopened empty disk exact",(await d.read(0,size)).every(byte=>byte===0));
                 await d.write(65535,new Uint8Array([1,2,3]));await d.write(size-1,new Uint8Array([9]));
-                const changed=(await d.save()).download.blob;await d.close();
+                const changed=(await d.save()).download.blob;progress("partial save",size);await d.close();
                 const e=await make();await e.open(changed);
                 const expected=new Uint8Array(size);expected.set([1,2,3],65535);expected[size-1]=9;
                 check("write/save/reopen preserves all bytes",(await e.read(0,size)).every((byte,i)=>byte===expected[i]));
@@ -53,11 +63,12 @@ for(const [name, type] of Object.entries({chromium, webkit})) {
                 const wrong=await make({},"wrong password");
                 await rejects("wrong credentials",()=>wrong.open(original),"AUTHENTICATION_FAILED");await wrong.close();
                 let armed=false,cancel;
-                cancel=await make({onProgress:()=>{if(armed){armed=false;cancel.cancel();}}});
+                cancel=await make({onProgress:p=>{events.push(p);if(armed){armed=false;cancel.cancel();}}});
                 armed=true;
                 await rejects("cancel at valid 1 TiB maximum",()=>cancel.createEmpty(2**40),"CANCELLED");
                 check("cancel leaves no partial disk",await cancel.describe().then(()=>false,()=>true));
-                const retried=await cancel.createEmpty(512);
+                check("cancel has known total without completion",events.some(p=>p.phase==='encrypt'&&p.total===2**40)&&!events.some(p=>p.phase==='encrypt'&&p.completed===p.total));events.length=0;
+                const retried=await cancel.createEmpty(512);progress("cancel retry",512);
                 check("retry after cancellation creates minimum sector",retried.size===512 && (await cancel.read(0,512)).every(byte=>byte===0));
                 await cancel.close();
                 const workerURL=URL.createObjectURL(new Blob([`
@@ -71,10 +82,11 @@ for(const [name, type] of Object.entries({chromium, webkit})) {
                     await import(${JSON.stringify(new URL("./build/disk/web/worker.js",location.href).href)});
                 `],{type:"text/javascript"}));
                 try {
-                    const failure=await make({workerUrl:workerURL});
+                    const failure=await make({workerUrl:workerURL,onProgress});
                     await rejects("assembly failure",()=>failure.createEmpty(1048576));
                     check("assembly failure leaves no partial disk",await failure.describe().then(()=>false,()=>true));
-                    check("assembly failure retry",(await failure.createEmpty(512)).size===512);
+                    check("assembly failure never completes progress",!events.some(p=>p.phase==='encrypt'&&p.completed===p.total));events.length=0;
+                    check("assembly failure retry",(await failure.createEmpty(512)).size===512);progress("assembly retry",512);
                     await failure.close();
                 } finally {URL.revokeObjectURL(workerURL);}
                 return checks;
@@ -134,7 +146,7 @@ for(const [name, type] of Object.entries({chromium, webkit})) {
         assert.equal(await page.locator("#disk-create").isDisabled(),true);
         assert.equal(await page.locator("#session").isVisible(),false);
         await page.screenshot({path:`${output}/${name}-created.png`,fullPage:true});
-        page.on("dialog",dialog=>dialog.accept());
+        await autoConfirm(page);
         await page.locator("#disk-close").click();
         await page.waitForFunction(()=>!document.querySelector("#disk-login").hidden && !document.querySelector("#disk-user").disabled);
         await unlockIdentity(page);

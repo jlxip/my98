@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="win98.css">
     <script src="vendor/basecoat-1.0.2/basecoat.min.js" defer></script>
     <script src="vendor/basecoat-1.0.2/dropdown-menu.min.js" defer></script>
+    <script src="vendor/basecoat-1.0.2/popover.min.js" defer></script>
     <script type="module">
         import("./src/browser/bootstrap.js").then(module => module.start()).catch(() => {
             document.body.inert = false;
@@ -51,8 +52,7 @@
                 <p id="disk-replica-status" class="hint" role="status"></p>
                 <p id="disk-seed-local" class="hint"></p>
                 <div class="disk-action-row">
-                    <button id="disk-copy-magnet" class="btn" type="button" data-variant="secondary">Copy follow magnet</button>
-                    <button id="disk-copy-catalog" class="btn" type="button" data-variant="secondary">Copy catalog magnet</button>
+                    <button id="disk-copy-magnet" class="btn" type="button" data-variant="secondary">Copy magnet</button>
                     <button id="disk-retry-publication" class="btn" type="button" data-variant="secondary" hidden>Retry announcement</button>
                     <button id="disk-stop-seeding" class="btn" type="button" data-variant="secondary">Stop seeding</button>
                 </div>
@@ -103,16 +103,18 @@
                         </div>
                     </div>
                 </div>
-                <details id="disk-menu-tools" class="disk-menu">
-                    <summary class="btn" data-variant="ghost">Tools <span aria-hidden="true">⌄</span></summary>
-                    <div class="disk-menu-items">
-                        <button id="disk-profiles" class="btn" data-variant="ghost" data-disk-action="profiles">Publish load profiles…</button>
-                        <button id="disk-analyze" class="btn" data-variant="ghost" data-disk-action="analyze">Analyze loads</button>
-                        <button id="disk-verify" class="btn" data-variant="ghost" data-disk-action="verify">Verify full disk</button>
-                        <button id="disk-clear-cache" class="btn" data-variant="ghost" data-disk-action="clear-cache">Clear cache</button>
-                        <button id="disk-relay-key" class="btn" data-variant="ghost" data-disk-action="relay-key">Copy relay public key</button>
+                <div id="disk-menu-tools" class="dropdown-menu">
+                    <button id="disk-tools-trigger" class="btn" type="button" data-variant="ghost" aria-haspopup="menu" aria-controls="disk-tools-items" aria-expanded="false">Tools <span aria-hidden="true">⌄</span></button>
+                    <div data-popover aria-hidden="true">
+                        <div id="disk-tools-items" role="menu" aria-labelledby="disk-tools-trigger">
+                        <button id="disk-profiles" type="button" role="menuitem" data-disk-action="profiles">Publish load profiles…</button>
+                        <button id="disk-analyze" type="button" role="menuitem" data-disk-action="analyze">Analyze loads</button>
+                        <button id="disk-verify" type="button" role="menuitem" data-disk-action="verify">Verify full disk</button>
+                        <button id="disk-clear-cache" type="button" role="menuitem" data-disk-action="clear-cache">Clear cache</button>
+                        <button id="disk-relay-key" type="button" role="menuitem" data-disk-action="relay-key">Copy relay public key</button>
+                        </div>
                     </div>
-                </details>
+                </div>
                 <button id="disk-close" class="disk-text-action" type="button">Close identity</button>
             </div>
             <div class="disk-action-row">
@@ -124,7 +126,7 @@
                 <input class="input" id="disk-empty-size" type="number" min="1" max="1048576" step="1" value="1024" required aria-describedby="disk-empty-hint">
                 <p id="disk-empty-hint" class="hint">The disk is unformatted and has no operating system. The download contains the full capacity plus encryption overhead.</p>
                 <button id="disk-empty-submit" class="btn" type="submit" data-variant="primary">Create</button>
-                <button id="disk-empty-cancel" class="btn" type="button" data-variant="secondary">Cancel</button>
+                <button id="disk-empty-cancel" class="btn ui-close" type="button" data-variant="ghost" aria-label="Close disk creation">×</button>
             </form>
             <div id="disk-analysis-options" hidden>
                 <p class="hint">Choose the starting point. Perform the expected actions, then stop analyzing to download its load profile.</p>
@@ -132,7 +134,7 @@
                     <button id="disk-analyze-boot" class="btn" data-variant="secondary">Boot</button>
                     <button id="disk-analyze-resume" class="btn" data-variant="secondary">Resume state</button>
                     <button id="disk-analyze-file" class="btn" data-variant="secondary">Load state</button>
-                    <button id="disk-analyze-cancel" class="btn" data-variant="secondary">Cancel</button>
+                    <button id="disk-analyze-cancel" class="btn ui-close" type="button" data-variant="ghost" aria-label="Close analysis options">×</button>
                 </div>
             </div>
         </div>
@@ -166,7 +168,7 @@
     <main id="session" hidden>
         <header>
             <div class="session-title"><strong>Windows 98</strong><span id="disk-name"></span><div class="session-stats">
-                <div id="disk-progress" hidden role="progressbar" aria-label="Disk downloaded" aria-valuemin="0" aria-valuemax="100" title="Disk available in this session">
+                <div id="disk-progress" hidden role="progressbar" aria-label="Disk downloaded" aria-valuemin="0" aria-valuemax="100">
                     <svg viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="17"/><circle cx="20" cy="20" r="17" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 20 20)"/></svg>
                     <span aria-hidden="true"></span>
                 </div>
@@ -200,7 +202,7 @@
             </div>
             <div id="view-controls">
                 <span id="touch-hint" class="touch-control">Slide to move · Tap to click</span>
-                <button id="touch-drag" class="btn touch-control" aria-pressed="false" title="Hold the left mouse button during the next swipe" data-variant="secondary">Drag</button>
+                <button id="touch-drag" class="btn touch-control" aria-pressed="false" data-variant="secondary">Drag</button>
                 <button id="touch-right" class="btn touch-control" data-variant="secondary">Right click</button>
             </div>
         </div>

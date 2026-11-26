@@ -53,7 +53,7 @@ try {
                 await page.locator("#pause").scrollIntoViewIfNeeded();
                 const metrics = await page.locator("#session").evaluate(session => ({
                     overflow: document.documentElement.scrollWidth > innerWidth,
-                    buttons: [...session.querySelectorAll("button:not([hidden])")].filter(b => b.getBoundingClientRect().width).map(b => {
+                    buttons: [...session.querySelectorAll("button.icon-button:not([hidden])")].filter(b => b.getBoundingClientRect().width).map(b => {
                         const r = b.getBoundingClientRect(), svg = b.querySelector("svg").getBoundingClientRect();
                         return {id: b.id, width: r.width, height: r.height, svgWidth: svg.width, label: b.getAttribute("aria-label"), text: b.textContent};
                     }),

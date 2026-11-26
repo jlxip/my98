@@ -1,7 +1,8 @@
+import {bindDialog} from "./ui-dialogs.js";
 import {compatibility} from './machine-factory.js';
 
 /** State/profile publication leaves the running VM and its pinned disk untouched. */
-export function setupPublicationControls({session,$,host,run,message,syncControls,sources}) {
+export function setupPublicationControls({session,$,host,run,message,syncControls,sources,confirm}) {
     const dialog=$('profiles-dialog'),status=$('profiles-status');
     let imported=[],owner,disk,awaitingProfiles=false;
     const drafts=new Map();
@@ -22,7 +23,7 @@ export function setupPublicationControls({session,$,host,run,message,syncControl
     $('remove-state').onclick=()=>run('Removing published state…',async()=>{
         const options=await config(),details=await session.client.publicationDetails(options);
         if(!details.hasState){message('This publication has no state.');return;}
-        if(!window.confirm('Remove the published state and its resume profile? The base disk and boot profile are preserved.'))return;
+        if(!await confirm('Remove published state?', 'Remove the published state and its resume profile? The base disk and boot profile are preserved.', 'Remove state'))return;
         await session.client.publishUpdate({...options,action:'remove-state'});message('State removal prepared.');
     });
     $('profiles').onclick=()=>run('Checking published profiles…',async()=>{
@@ -41,8 +42,7 @@ export function setupPublicationControls({session,$,host,run,message,syncControl
         dialog.showModal();
     });
     $('profiles-close').onclick=()=>dialog.close();
-    dialog.addEventListener('pointerdown',event=>{dialog.dataset.backdropPress=String(event.target===dialog);});
-    dialog.addEventListener('click',event=>{if(event.target===dialog&&dialog.dataset.backdropPress==='true')dialog.close();});
+    bindDialog(dialog);
     $('profile-file').onchange=async()=>{
         const file=$('profile-file').files[0];if(!file)return;
         try {

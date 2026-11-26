@@ -1,3 +1,4 @@
+import {autoConfirm} from './confirmations.mjs';
 /** General UI follows signed identities; real V86 is replaced only after preparation. */
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
@@ -13,14 +14,14 @@ const gateway=createServer((_q,r)=>{r.writeHead(200,{'Content-Type':'text/event-
 await new Promise(r=>gateway.listen(0,'127.0.0.1',r));
 const server=await serveSite({headers:true,sources:{gateways:['http://127.0.0.1:'+gateway.address().port],trackers:[]}}),fixture=await publicationFixture();
 const announce=(page,hash,seq)=>page.evaluate(record=>announcePublication(record),fixture.record(hash,String(seq)));
-const selected=async(page,hash)=>{await page.waitForFunction(hash=>window.fixtureSession?.description?.remote.publicationInfoHash===hash,hash);assert.equal(await page.evaluate(async()=>(await fixtureClient.describe()).remote.publicationInfoHash),hash);};
+const selected=async(page,hash)=>{try{await page.waitForFunction(hash=>window.fixtureSession?.description?.remote.publicationInfoHash===hash,hash);}catch(error){console.error('Live selection diagnostic',await page.evaluate(()=>({open:[...document.querySelectorAll('dialog[open]')].map(e=>e.id),focus:document.activeElement?.id,status:document.querySelector('#disk-status').textContent,publication:document.querySelector('#disk-publication-status').textContent,selected:fixtureSession.description?.remote,pending:fixtureSession.pendingPublication,automatic:fixtureSession.automaticUpdate,analyzing:fixtureSession.analyzing,used:fixtureSession.usedForVm,failed:fixtureSession.failedUpdate})));throw error;}assert.equal(await page.evaluate(async()=>(await fixtureClient.describe()).remote.publicationInfoHash),hash);};
 const idle=page=>page.waitForFunction(()=>!document.querySelector('#disk-close').disabled);
 async function login(page){await page.locator('#disk-user').fill('disk fixtures');await page.locator('#disk-password').fill('public compatibility password');await page.locator('#disk-login button').click();await page.waitForFunction(()=>!document.querySelector('#disk-boot').disabled);}
 try {for(const [name,engine] of Object.entries({chromium,firefox,webkit}).filter(([name])=>!process.env.MY98_PUBLISH_BROWSERS||process.env.MY98_PUBLISH_BROWSERS.split(',').includes(name))) {
  const browser=await engine.launch(browserOptions(name));
  try {
   const page=await browser.newPage({viewport:{width:1280,height:900}}),errors=[];page.on('pageerror',e=>errors.push(String(e)));await page.addInitScript(quietAudio);
-  let accept=true;page.on('dialog',d=>accept?d.accept():d.dismiss());await page.goto(server.url);await page.waitForFunction(()=>!document.body.inert);
+  let accept=true;await autoConfirm(page,()=>accept);await page.goto(server.url);await page.waitForFunction(()=>!document.body.inert);
   const state=await makePublishedState(page,fixture),cs=fixture.addState(state.bytes),cs2=fixture.addState(state.bytes,true);await installPublicationFixture(page,fixture);
   await page.evaluate(async()=>{const {DiskSession}=await import('/src/browser/disk-session.js'),update=DiskSession.prototype.updatePublication;window.refreshTrace=[];DiskSession.prototype.updatePublication=function(options){refreshTrace.push({options,mode:this.remoteMode,used:this.usedForVm,pending:this.pendingPublication});return update.call(this,options);};const {V86}=await import('/build/libv86.mjs'),run=V86.prototype.run;V86.prototype.run=function(...args){window.fixtureVm=this;return run.apply(this,args);};});
   await login(page);
@@ -32,7 +33,7 @@ try {for(const [name,engine] of Object.entries({chromium,firefox,webkit}).filter
   await page.evaluate(()=>{window.originalVm=fixtureVm;document.querySelector('#display').focus();});
   await announce(page,fixture.cb.hash,103);await page.locator('#disk-update-publication').waitFor({state:'visible'});
   assert(await page.locator('#display').evaluate(e=>document.activeElement===e));assert(await page.evaluate(()=>fixtureVm===originalVm));
-  accept=false;await page.locator('#disk-update-publication').click();assert(await page.evaluate(()=>fixtureVm===originalVm));accept=true;
+  accept=false;await page.locator('#disk-update-publication').click();await page.locator('#ui-confirm-dialog > div').waitFor({state:'hidden'});assert(await page.evaluate(()=>fixtureVm===originalVm));accept=true;
   await page.locator('#disk-update-publication').click();await page.waitForFunction(()=>document.querySelector('#disk-update-publication').textContent==='Boot latest version'&&!document.querySelector('#disk-update-publication').disabled);
   assert(await page.evaluate(()=>fixtureVm===originalVm));await selected(page,cs.hash);
   // New C supersedes missing-state B; preserve Resume rather than keeping B's fallback.
@@ -71,16 +72,16 @@ try {for(const [name,engine] of Object.entries({chromium,firefox,webkit}).filter
   assert.deepEqual(errors,[]);await page.close();
   // Drafts are deferred with the dialog open and remain attached to their base.
   const draft=await browser.newPage();await draft.goto(server.url);await draft.waitForFunction(()=>!document.body.inert);await installPublicationFixture(draft,fixture);await login(draft);
-  await draft.evaluate(()=>fixtureClient.publicationDetails=async()=>({profiles:[]}));await diskAction(draft,'disk-profiles');
+  await draft.evaluate(()=>fixtureClient.publicationDetails=async()=>({profiles:[]}));await diskAction(draft,'disk-profiles');await draft.waitForFunction(()=>document.querySelector('#disk-profiles-dialog').open);
   await draft.locator('#disk-profile-file').setInputFiles({name:'profile.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify([{version:2,infoHash:fixture.a.hash,unitBytes:65536,origin:{kind:'boot'},ranges:Array(8).fill(null)}]))});
   await draft.waitForFunction(()=>document.querySelector('#disk-profile-boot').value==='file');
   await announce(draft,fixture.cb.hash,101);await draft.waitForFunction(()=>document.querySelector('#disk-publication-status').textContent.includes('101'));await selected(draft,fixture.ca.hash);
-  await draft.locator('#disk-profiles-close').click();await selected(draft,fixture.cb.hash);await idle(draft);await diskAction(draft,'disk-profiles');await draft.locator('#disk-profiles-dialog > div').waitFor({state:'visible'});
+  await draft.locator('#disk-profiles-close').click();await selected(draft,fixture.cb.hash);await idle(draft);await diskAction(draft,'disk-profiles');await draft.waitForFunction(()=>document.querySelector('#disk-profiles-dialog').open);await draft.locator('#disk-profiles-dialog > div').waitFor({state:'visible'});
   assert.equal(await draft.locator('#disk-profile-boot').inputValue(),'keep');assert.equal(await draft.locator('#disk-profile-file').evaluate(e=>e.files.length),0);
-  await draft.keyboard.press('Escape');await announce(draft,fixture.ca.hash,102);await selected(draft,fixture.ca.hash);await idle(draft);await diskAction(draft,'disk-profiles');await draft.locator('#disk-profiles-dialog > div').waitFor({state:'visible'});
+  await draft.keyboard.press('Escape');assert.equal(await draft.evaluate(()=>document.querySelector('#disk-profiles-dialog').open),false,'Profiles closes on Escape');await announce(draft,fixture.ca.hash,102);await selected(draft,fixture.ca.hash);await idle(draft);await diskAction(draft,'disk-profiles');await draft.waitForFunction(()=>document.querySelector('#disk-profiles-dialog').open);await draft.locator('#disk-profiles-dialog > div').waitFor({state:'visible'});
   assert.equal(await draft.locator('#disk-profile-boot').inputValue(),'file');assert.equal(await draft.locator('#disk-profile-file').evaluate(e=>e.files.length),1);await draft.close();
   // The opposite race: Boot has already started when B arrives.
-  const cold=await browser.newPage({viewport:{width:1280,height:900}});await cold.addInitScript(quietAudio);cold.on('dialog',d=>d.accept());
+  const cold=await browser.newPage({viewport:{width:1280,height:900}});await cold.addInitScript(quietAudio);await autoConfirm(cold);
   await cold.goto(server.url);await cold.waitForFunction(()=>!document.body.inert);await installPublicationFixture(cold,fixture);await login(cold);
   assert((await cold.locator('#disk-publication-status').textContent()).includes('Checking'));
   await cold.locator('#disk-boot').click();await announce(cold,fixture.cb.hash,101);await cold.locator('#vm-update-publication').waitFor({state:'visible'});await idle(cold);

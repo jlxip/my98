@@ -64,13 +64,15 @@ export async function encodeState(vault, metadata, state, {check,progress}) {
     const base=await vault.state_base();check();
     const header=enc.encode(JSON.stringify({version:1,base:Array.from(base),nonce:Array.from(crypto.getRandomValues(new Uint8Array(16))),raw:raw.size,packed:compressed.size}));
     const parts=[MAGIC,u32(header.length),header];
+    progress("encrypt-state",0,compressed.size);await new Promise(r=>setTimeout(r,0));check();
     for(let offset=0,index=0;offset<compressed.size;offset+=CHUNK,index++) {
         check();const plain=new Uint8Array(await compressed.slice(offset,offset+CHUNK).arrayBuffer());
         try {parts.push(new Blob([vault.seal_state(context(header,index),plain)]));}finally {plain.fill(0);}
-        progress("encrypt-state",Math.min(offset+CHUNK,compressed.size),compressed.size);
+        if(offset+CHUNK<compressed.size)progress("encrypt-state",offset+CHUNK,compressed.size);
         await new Promise(r=>setTimeout(r,0));check();
     }
-    return new Blob(parts,{type:"application/octet-stream"});
+    const blob=new Blob(parts,{type:"application/octet-stream"});
+    progress("encrypt-state",compressed.size,compressed.size);return blob;
 }
 export async function decodeState(vault, input, {check,progress,signal}) {
     check();

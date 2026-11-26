@@ -2,6 +2,8 @@ import {DiskBuffer} from "../../build/disk/web/client.js";
 import {compatibility, createMachine} from "./machine-factory.js";
 import {captureMachineState, restoreMachineState, DEFAULT_CONFIG} from "./machine-state.js";
 import { setupDisk } from "./disk-ui.js";
+import {setupControlHelp} from "./ui-help.js";
+import {hasOpenDialog} from "./ui-dialogs.js";
 import { setupTouch, setupFullscreen } from "./vm-input.js";
 import { setupDirectPointer } from "./direct-pointer.js";
 import { setupControlIcons, setControlIcon } from "./control-icons.js";
@@ -12,6 +14,7 @@ let emulator, diskName = "windows98.img", busy = false, muted = false;
 let diskBlocked = false;
 let directPreferred = false;
 setupControlIcons();
+setupControlHelp();
 let diskController, machineAdapter, machineConfig = {...DEFAULT_CONFIG};
 function relayState(state) {
     const labels={connecting:'Connecting Internet…',online:'Internet connected.',offline:'Internet disconnected. Reconnecting…',rejected:'Internet access rejected. Authorize your relay public key and retry.','identity-closed':'Internet disconnected.',closed:'Internet disconnected.'};
@@ -42,7 +45,7 @@ function syncMediaNames()
 
 function updateControls()
 {
-    document.querySelectorAll("button, input, select").forEach(element => element.disabled = busy);
+    document.querySelectorAll("button, input, select").forEach(element => {if(element.classList.contains("ui-info")||element.id==="disk-profiles-close")element.disabled=false;else if(!element.closest("#ui-confirm-dialog"))element.disabled = busy;});
     diskController?.syncControls(busy);
     // Leaving fullscreen must remain available during a pending operation.
     $("fullscreen").disabled = !screenView.expanded && busy;
@@ -59,13 +62,13 @@ function updateControls()
     for(const drive of Object.keys(media))
     {
         $(drive + "-name").textContent = media[drive] || "Empty";
-        $(drive + "-name").title = media[drive] || "Empty";
+
         const label = drive === "cdrom" ? "CD" : "floppy " + (drive === "fda" ? "A" : "B");
         setControlIcon($("insert-" + drive), media[drive] ? "eject" : drive === "cdrom" ? "disc" : "save",
             (media[drive] ? "Eject " : "Insert ") + label, media[drive] ? "Eject " + label + ": " + media[drive] : "Insert " + label);
         if(drive !== "cdrom") $("download-" + drive).disabled = busy || !media[drive];
     }
-    if(diskBlocked) document.querySelectorAll("#controls button").forEach(button => button.disabled = true);
+    if(diskBlocked) document.querySelectorAll("#controls button:not(.ui-info)").forEach(button => button.disabled = true);
 }
 
 async function action(message, work)
@@ -136,7 +139,7 @@ async function readDisk(file, drive)
 
 function focusScreen()
 {
-    if(!emulator || busy) return;
+    if(!emulator || busy || hasOpenDialog()) return;
     $("display").focus({ preventScroll: true });
     emulator.keyboard_set_enabled(true);
     emulator.speaker_adapter?.resume().catch(() => {});
@@ -255,7 +258,7 @@ async function start(diskAdapter, name, autoFullscreen = true)
         relayState(emulator.network_adapter?.status || 'identity-closed');
         diskName = name;
         $("disk-name").textContent = diskName;
-        $("disk-name").title = diskName;
+
         for(const drive of Object.keys(media)) media[drive] = null;
         syncMediaNames();
         emulator.add_listener("screen-set-size", fitScreen);
@@ -391,12 +394,15 @@ document.addEventListener("focusin", event => {
 });
 document.addEventListener("pointerlockchange", () => {
     // A delayed lock request must never capture the pointer after leaving fullscreen.
-    if(!screenView.expanded && document.pointerLockElement) { document.exitPointerLock(); return; }
+    if((!screenView.expanded || hasOpenDialog()) && document.pointerLockElement) { document.exitPointerLock(); return; }
     updateControls();
     focusScreen();
     status(document.pointerLockElement ? "Mouse captured. Press Esc to release it." : "Mouse released.");
 });
 document.addEventListener("pointerlockerror", () => status("Could not capture the mouse."));
+document.addEventListener('my98:modalchange',()=>{
+    if(hasOpenDialog()){touch.release();direct.release();if(document.pointerLockElement)document.exitPointerLock();emulator?.keyboard_set_enabled(false);}
+});
 new ResizeObserver(fitScreen).observe($("display"));
 window.addEventListener("resize", fitScreen);
 let lastCount = 0, lastTime = performance.now(), lastMipsMachine, roundedMips, manualPause=false, exportStopped=false;
@@ -450,7 +456,7 @@ diskController = setupDisk({
             relayState(emulator.network_adapter?.status || 'identity-closed');
             diskBlocked=false;$("session").hidden=false;
             for(const drive of Object.keys(media))media[drive]=null;
-            diskName="Restored state";$("disk-name").textContent=diskName;$("disk-name").title=diskName;
+            diskName="Restored state";$("disk-name").textContent=diskName;
             emulator.add_listener("screen-set-size",fitScreen);
             emulator.add_listener("emulator-started",updateControls);
             emulator.add_listener("emulator-stopped",updateControls);
@@ -498,7 +504,7 @@ diskController = setupDisk({
         manualPause=false;exportStopped=false;roundedMips=undefined;diskBlocked=false;$('session').hidden=false;
         relayState(emulator.network_adapter?.status||'identity-closed');
         for(const drive of Object.keys(media))media[drive]=null;syncMediaNames();
-        diskName=value.mode==='resume'?'Restored state':'Encrypted disk';$('disk-name').textContent=diskName;$('disk-name').title=diskName;
+        diskName=value.mode==='resume'?'Restored state':'Encrypted disk';$('disk-name').textContent=diskName;
         emulator.add_listener('screen-set-size',fitScreen);emulator.add_listener('emulator-started',updateControls);emulator.add_listener('emulator-stopped',updateControls);
         if(value.running)emulator.run();fitScreen();status('Latest publication opened.');
     },
